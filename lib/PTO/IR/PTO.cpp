@@ -2668,7 +2668,6 @@ static FailureOr<Type> verifyDistinctRowMajorUnaryTileOpCommon(
     return failure();
   return srcElem;
 }
-
 static LogicalResult verifyArithmeticElemTypeForArch(
     Operation *op, Type elemTy, PTOArch targetArch, bool allowInt8OnA5,
     bool allowBf16OnA5, StringRef a2a3Error, StringRef a5Error) {
@@ -2785,7 +2784,6 @@ static LogicalResult verifyTColArgReductionOpCommon(Operation *op, Type srcTy,
     return op->emitOpError("expects dst element type to be i32 or ui32");
   return success();
 }
-
 static bool hasCompatibleKnownExtent(int64_t lhs, int64_t rhs) {
   return lhs == ShapedType::kDynamic || rhs == ShapedType::kDynamic || lhs == rhs;
 }
