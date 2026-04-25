@@ -9019,7 +9019,7 @@ static void printLayout(AsmPrinter &printer, Attribute layoutAttr) {
 static ArrayAttr getSubsetSizeAttr(DictionaryAttr attributes,
                                    OpaqueProperties properties) {
   if (properties) {
-    const auto *prop = properties.as<SubsetOp::Properties *>();
+    const auto *prop = properties.as<SubViewOp::Properties *>();
     if (prop && prop->sizes)
       return prop->sizes;
   }

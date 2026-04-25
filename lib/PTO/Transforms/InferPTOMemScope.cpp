@@ -473,35 +473,32 @@ static SmallVector<gpu::GPUFuncOp> collectGpuFunctions(Operation *rootOp) {
   return gpuFuncs;
 }
 
-static void inferDeviceFunctionOperandScopes(func::FuncOp func,
-                                             InferPTOMemScopePass &pass) {
+static LogicalResult inferDeviceFunctionOperandScopes(func::FuncOp func) {
+  bool failedInference = false;
   func->walk([&](mlir::pto::TMatmulOp op) {
-    if (failed(pto::inferAndPropagateMemScopeForMatmulDps(op)))
-      pass.signalPassFailure();
+    failedInference |= failed(pto::inferAndPropagateMemScopeForMatmulDps(op));
   });
 
   func->walk([&](mlir::pto::TMatmulAccOp op) {
-    if (failed(pto::inferAndPropagateMemScopeForMatmulAccDps(op)))
-      pass.signalPassFailure();
+    failedInference |= failed(pto::inferAndPropagateMemScopeForMatmulAccDps(op));
   });
 
   func->walk([&](mlir::pto::TMatmulBiasOp op) {
-    if (failed(pto::inferAndPropagateMemScopeForMatmulBiasDps(op)))
-      pass.signalPassFailure();
+    failedInference |= failed(pto::inferAndPropagateMemScopeForMatmulBiasDps(op));
   });
 
   func->walk([&](mlir::pto::TMovOp op) {
-    if (failed(pto::inferAndPropagateMemScopeForMovDps(op)))
-      pass.signalPassFailure();
+    failedInference |= failed(pto::inferAndPropagateMemScopeForMovDps(op));
   });
+  return success(!failedInference);
 }
 
-static void inferRemainingAllocScopes(func::FuncOp func,
-                                      InferPTOMemScopePass &pass) {
+static LogicalResult inferRemainingAllocScopes(func::FuncOp func) {
+  bool failedInference = false;
   func->walk([&](memref::AllocOp op) {
-    if (failed(pto::inferAndPropagateUbufMemScope(op)))
-      pass.signalPassFailure();
+    failedInference |= failed(pto::inferAndPropagateUbufMemScope(op));
   });
+  return success(!failedInference);
 }
 
 void InferPTOMemScopePass::runOnOperation() {
@@ -516,14 +513,16 @@ void InferPTOMemScopePass::runOnOperation() {
 
   // Infer and propagate memory scope for device functions.
   for (auto func : deviceFuncList) {
-    inferDeviceFunctionOperandScopes(func, *this);
+    if (failed(inferDeviceFunctionOperandScopes(func)))
+      signalPassFailure();
 
     // Set device function arguments' memory scope to GM.
     if (failed(pto::inferAndPropagateMemScopeForFunc(func)))
       signalPassFailure();
 
     // Finally, set the remaining memory scope in the device kernel to UB.
-    inferRemainingAllocScopes(func, *this);
+    if (failed(inferRemainingAllocScopes(func)))
+      signalPassFailure();
   }
 
   for (auto func : deviceFuncList) {
