@@ -76,7 +76,7 @@ static EmitCFunctionBuckets collectEmitCFunctions(ModuleOp module) {
 
 static LogicalResult buildEmitCCallGraph(
     ArrayRef<emitc::FuncOp> definitions,
-    const llvm::DenseMap<StringAttr, emitc::FuncOp> &definitionsByName,
+    llvm::DenseMap<StringAttr, emitc::FuncOp> &definitionsByName,
     llvm::DenseMap<Operation *, unsigned> &indegree,
     llvm::DenseMap<Operation *, SmallVector<Operation *>> &outgoing) {
   for (auto func : definitions)
@@ -469,22 +469,6 @@ static void rewriteAsyncEventMarkers(std::string &cpp) {
       {"PTOAS__ASYNC_EVENT_TEST", "Test", 2},
   };
   rewriteMarkerCallsToMembers(cpp, kAsyncEventMarkerRewrites);
-}
-
-static void rewritePtrScalarMarkers(std::string &cpp) {
-  static constexpr MarkerSubscriptRewriteSpec kPtrScalarMarkerRewrites[] = {
-      {"PTOAS__PTR_LOAD", 2, false},
-      {"PTOAS__PTR_STORE", 3, true},
-  };
-  rewriteMarkerCallsToSubscripts(cpp, kPtrScalarMarkerRewrites);
-}
-
-static void rewriteEventIdArrayMarkers(std::string &cpp) {
-  static constexpr MarkerSubscriptRewriteSpec kEventIdArrayMarkerRewrites[] = {
-      {"PTOAS__EVENTID_ARRAY_LOAD", 2, false},
-      {"PTOAS__EVENTID_ARRAY_STORE", 3, true},
-  };
-  rewriteMarkerCallsToSubscripts(cpp, kEventIdArrayMarkerRewrites);
 }
 
 // --------------------------------------------------------------------------
