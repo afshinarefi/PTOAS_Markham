@@ -482,49 +482,6 @@ static ResolvedLayoutInfo resolveLayoutFromViewValue(Value v) {
   return info;
 }
 
-static std::optional<Layout> inferMakeTensorViewLayout(
-    MakeTensorViewOp op, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
-    bool &isAmbiguous) {
-  auto pref = collectPreferredLayoutFromConsumers(op.getResult());
-  auto preferredForAmbiguous =
-      (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
-                                                : std::nullopt;
-  return inferLayout5D(
-      shape, strides,
-      elemByteSize(cast<TensorViewType>(op.getResult().getType())
-                       .getElementType()),
-      preferredForAmbiguous, &isAmbiguous);
-}
-
-static void reconcileAmbiguousTensorViewLayout(MakeTensorViewOp op,
-                                               ArrayRef<int64_t> shape) {
-  auto pref = collectPreferredLayoutFromConsumers(op.getResult());
-  if (!isMinorColsOne(shape))
-    return;
-  if (!op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
-    return;
-  auto cur = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
-  if (cur && pref.preferred && *pref.preferred != cur.getLayout())
-    setLayoutAttr(op.getOperation(), *pref.preferred, /*inferred=*/true);
-}
-
-template <typename SignalFailureFn>
-static bool getConstFoldResults(ArrayRef<OpFoldResult> values,
-                                SmallVectorImpl<int64_t> &result,
-                                SignalFailureFn signalFailure,
-                                Operation *op) {
-  result.clear();
-  result.reserve(values.size());
-  for (OpFoldResult value : values) {
-    auto folded = getConstInt(value);
-    if (!folded) {
-      verifyOrSetLayoutAttr(op, std::nullopt, signalFailure);
-      return false;
-    }
-    result.push_back(*folded);
-  }
-  return true;
-}
 template <typename SignalFailureFn>
 static void inferMakeTensorViewLayoutAttr(MakeTensorViewOp op,
                                           SignalFailureFn signalFailure) {
