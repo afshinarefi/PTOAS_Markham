@@ -214,11 +214,10 @@ static bool samePipeInitSignature(const PipeInitInfo &lhs,
          std::tie(rhs.dirMask, rhs.slotSize, rhs.slotNum, rhs.localSlotNum);
 }
 
-static FailureOr<SmallVector<PipeComponent>>
-buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
-                         const PipeInitGroups &keyedInits) {
-  llvm::DenseMap<Operation *, SmallVector<Operation *>> adjacency;
-  llvm::DenseMap<Operation *, const PipeInitInfo *> infoByOp;
+static void buildPeerAwareAdjacency(
+    const SmallVectorImpl<PipeInitInfo> &initInfos, const PipeInitGroups &keyedInits,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency,
+    llvm::DenseMap<Operation *, const PipeInitInfo *> &infoByOp) {
   for (const PipeInitInfo &info : initInfos) {
     adjacency[info.op];
     infoByOp[info.op] = &info;
@@ -237,6 +236,60 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
       }
     }
   }
+}
+
+static FailureOr<PipeComponent> finalizePeerAwareComponent(
+    ArrayRef<Operation *> ops,
+    const llvm::DenseMap<Operation *, const PipeInitInfo *> &infoByOp) {
+  PipeComponent component;
+  component.ops.append(ops.begin(), ops.end());
+  if (component.ops.size() != kPeerPipeInitOpCount) {
+    return ops.front()->emitOpError(
+        "requires a complete compatible peer init pair when local_addr comes "
+        "from pto.reserve_buffer or pto.import_reserved_buffer");
+  }
+
+  const PipeInitInfo &lhs = *infoByOp.lookup(component.ops[0]);
+  const PipeInitInfo &rhs = *infoByOp.lookup(component.ops[1]);
+  if (!samePipeInitSignature(lhs, rhs)) {
+    return component.ops.front()->emitOpError(
+        "requires peer pipe init ops to agree on direction and pipe shape");
+  }
+
+  component.dirMask = lhs.dirMask;
+  component.slotSize = lhs.slotSize;
+  component.slotNum = lhs.slotNum;
+  component.localSlotNum = lhs.localSlotNum;
+  component.flagWidth = component.dirMask == kBidirectionalDirMask
+                            ? kBidirectionalFlagWidth
+                            : kSingleDirectionFlagWidth;
+
+  for (Operation *op : component.ops) {
+    const PipeInitInfo &info = *infoByOp.lookup(op);
+    component.participants.insert(getFuncSymbol(info.funcOp));
+    if (auto flagBaseAttr = getFlagBaseAttr(op)) {
+      if (component.explicitFlagBase &&
+          *component.explicitFlagBase != flagBaseAttr.getInt()) {
+        return op->emitOpError(
+            "conflicting explicit flag_base across peer pipe inits");
+      }
+      component.explicitFlagBase = flagBaseAttr.getInt();
+    }
+  }
+  if (component.participants.size() != kPeerPipeParticipantCount) {
+    return component.ops.front()->emitOpError(
+        "requires a complete compatible peer init pair when local_addr comes "
+        "from pto.reserve_buffer or pto.import_reserved_buffer");
+  }
+  return component;
+}
+
+static FailureOr<SmallVector<PipeComponent>>
+buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
+                         const PipeInitGroups &keyedInits) {
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> adjacency;
+  llvm::DenseMap<Operation *, const PipeInitInfo *> infoByOp;
+  buildPeerAwareAdjacency(initInfos, keyedInits, adjacency, infoByOp);
 
   SmallVector<PipeComponent> components;
   llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
@@ -254,47 +307,10 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
           stack.push_back(neighbor);
       }
     }
-
-    if (component.ops.size() != kPeerPipeInitOpCount) {
-      return rootInfo.op->emitOpError(
-          "requires a complete compatible peer init pair when local_addr comes "
-          "from pto.reserve_buffer or pto.import_reserved_buffer");
-    }
-
-    const PipeInitInfo &lhs = *infoByOp[component.ops[0]];
-    const PipeInitInfo &rhs = *infoByOp[component.ops[1]];
-    if (!samePipeInitSignature(lhs, rhs)) {
-      return component.ops.front()->emitOpError(
-          "requires peer pipe init ops to agree on direction and pipe shape");
-    }
-
-    component.dirMask = lhs.dirMask;
-    component.slotSize = lhs.slotSize;
-    component.slotNum = lhs.slotNum;
-    component.localSlotNum = lhs.localSlotNum;
-    component.flagWidth = component.dirMask == kBidirectionalDirMask
-                              ? kBidirectionalFlagWidth
-                              : kSingleDirectionFlagWidth;
-
-    for (Operation *op : component.ops) {
-      const PipeInitInfo &info = *infoByOp[op];
-      component.participants.insert(getFuncSymbol(info.funcOp));
-      if (auto flagBaseAttr = getFlagBaseAttr(op)) {
-        if (component.explicitFlagBase &&
-            *component.explicitFlagBase != flagBaseAttr.getInt()) {
-          return op->emitOpError(
-              "conflicting explicit flag_base across peer pipe inits");
-        }
-        component.explicitFlagBase = flagBaseAttr.getInt();
-      }
-    }
-    if (component.participants.size() != kPeerPipeParticipantCount) {
-      return component.ops.front()->emitOpError(
-          "requires a complete compatible peer init pair when local_addr comes "
-          "from pto.reserve_buffer or pto.import_reserved_buffer");
-    }
-
-    components.push_back(std::move(component));
+    auto componentOr = finalizePeerAwareComponent(component.ops, infoByOp);
+    if (failed(componentOr))
+      return failure();
+    components.push_back(std::move(*componentOr));
   }
 
   return components;

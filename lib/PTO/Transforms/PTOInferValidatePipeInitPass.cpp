@@ -156,18 +156,9 @@ static std::optional<PipePeerKey> getPipePeerKey(Value localAddr,
   return std::nullopt;
 }
 
-static LogicalResult
-resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) {
-  std::optional<bool> explicitNoSplit;
-  std::optional<bool> inferredNoSplit;
-
+static LogicalResult collectExplicitNoSplit(
+    ArrayRef<PipeInitInfo *> component, std::optional<bool> &explicitNoSplit) {
   for (PipeInitInfo *info : component) {
-    if (info->usage == PipeSplitUsage::Mixed) {
-      return info->op->emitOpError(
-          "cannot mix 'split = 0' with 'split = 1' or 'split = 2' on the "
-          "same logical pipe");
-    }
-
     if (!info->explicitNoSplit)
       continue;
     if (explicitNoSplit && *explicitNoSplit != *info->explicitNoSplit) {
@@ -176,8 +167,18 @@ resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) 
     }
     explicitNoSplit = info->explicitNoSplit;
   }
+  return success();
+}
 
+static LogicalResult collectInferredNoSplit(
+    ArrayRef<PipeInitInfo *> component, std::optional<bool> &inferredNoSplit) {
   for (PipeInitInfo *info : component) {
+    if (info->usage == PipeSplitUsage::Mixed) {
+      return info->op->emitOpError(
+          "cannot mix 'split = 0' with 'split = 1' or 'split = 2' on the "
+          "same logical pipe");
+    }
+
     auto usageNoSplit = getUsageNoSplit(info->usage);
     if (!usageNoSplit)
       continue;
@@ -187,24 +188,34 @@ resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) 
     }
     inferredNoSplit = *usageNoSplit;
   }
+  return success();
+}
 
-  if (explicitNoSplit && inferredNoSplit && *explicitNoSplit != *inferredNoSplit) {
-    for (PipeInitInfo *info : component) {
-      if (!info->explicitNoSplit || *info->explicitNoSplit == *inferredNoSplit)
-        continue;
-      if (*info->explicitNoSplit) {
-        return info->op->emitOpError(
-            "explicit 'nosplit = true' conflicts with downstream users that "
-            "require split = 1 or split = 2");
-      }
-      return info->op->emitOpError(
-          "explicit 'nosplit = false' conflicts with downstream users that "
-          "require split = 0");
-    }
+static LogicalResult validateResolvedNoSplit(
+    ArrayRef<PipeInitInfo *> component, std::optional<bool> explicitNoSplit,
+    std::optional<bool> inferredNoSplit) {
+  if (!explicitNoSplit || !inferredNoSplit ||
+      *explicitNoSplit == *inferredNoSplit) {
+    return success();
   }
 
-  bool finalNoSplit =
-      explicitNoSplit.value_or(inferredNoSplit.value_or(false));
+  for (PipeInitInfo *info : component) {
+    if (!info->explicitNoSplit || *info->explicitNoSplit == *inferredNoSplit)
+      continue;
+    if (*info->explicitNoSplit) {
+      return info->op->emitOpError(
+          "explicit 'nosplit = true' conflicts with downstream users that "
+          "require split = 1 or split = 2");
+    }
+    return info->op->emitOpError(
+        "explicit 'nosplit = false' conflicts with downstream users that "
+        "require split = 0");
+  }
+  return success();
+}
+
+static void applyResolvedNoSplit(ArrayRef<PipeInitInfo *> component,
+                                 OpBuilder &builder, bool finalNoSplit) {
   auto noSplitAttr = builder.getBoolAttr(finalNoSplit);
   for (PipeInitInfo *info : component) {
     if (auto initOp = dyn_cast<InitializeL2LPipeOp>(info->op)) {
@@ -217,7 +228,104 @@ resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) 
     if (!initOp.getNosplitAttr())
       setNoSplitAttr(initOp, noSplitAttr);
   }
+}
 
+static LogicalResult
+resolveNoSplitComponent(ArrayRef<PipeInitInfo *> component, OpBuilder &builder) {
+  std::optional<bool> explicitNoSplit;
+  std::optional<bool> inferredNoSplit;
+
+  if (failed(collectExplicitNoSplit(component, explicitNoSplit)) ||
+      failed(collectInferredNoSplit(component, inferredNoSplit)) ||
+      failed(validateResolvedNoSplit(component, explicitNoSplit,
+                                     inferredNoSplit))) {
+    return failure();
+  }
+
+  bool finalNoSplit =
+      explicitNoSplit.value_or(inferredNoSplit.value_or(false));
+  applyResolvedNoSplit(component, builder, finalNoSplit);
+  return success();
+}
+
+template <typename InitOpT>
+static void collectPipeInitInfo(InitOpT initOp, SmallVectorImpl<PipeInitInfo> &initInfos,
+                                llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency,
+                                std::map<PipePeerKey, SmallVector<Operation *>> &keyedInits) {
+  PipeInitInfo &info = initInfos.emplace_back();
+  info.op = initOp.getOperation();
+  info.funcOp = initOp->template getParentOfType<func::FuncOp>();
+  info.dirMask = initOp.getDirMask();
+  info.usage = classifyPipeUsage(getPipeResult(initOp));
+  info.explicitNoSplit = getNoSplitAttr(initOp);
+  adjacency[info.op];
+
+  auto recordAddr = [&](Value addr, int8_t effectiveDirMask) {
+    auto key = getPipePeerKey(addr, info.funcOp);
+    if (!key)
+      return;
+    key->dirMask = effectiveDirMask;
+    keyedInits[*key].push_back(info.op);
+  };
+
+  if (info.dirMask == kBidirectionalDirMask) {
+    recordAddr(getLocalAddrOperand(initOp), kC2VDirMask);
+    if (Value peerAddr = initOp.getPeerLocalAddr())
+      recordAddr(peerAddr, kV2CDirMask);
+    return;
+  }
+
+  recordAddr(getLocalAddrOperand(initOp), info.dirMask);
+}
+
+static void connectPeerInitOps(
+    const std::map<PipePeerKey, SmallVector<Operation *>> &keyedInits,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency) {
+  for (const auto &it : keyedInits) {
+    SmallVector<Operation *> uniqueOps;
+    for (Operation *op : it.second) {
+      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end())
+        uniqueOps.push_back(op);
+    }
+    if (uniqueOps.size() < kMinPeerPipeInitCount)
+      continue;
+
+    for (size_t i = 0; i < uniqueOps.size(); ++i) {
+      for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
+        adjacency[uniqueOps[i]].push_back(uniqueOps[j]);
+        adjacency[uniqueOps[j]].push_back(uniqueOps[i]);
+      }
+    }
+  }
+}
+
+static LogicalResult resolveNoSplitForComponents(
+    SmallVectorImpl<PipeInitInfo> &initInfos,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &adjacency,
+    OpBuilder &builder) {
+  llvm::DenseMap<Operation *, PipeInitInfo *> infoByOp;
+  for (PipeInitInfo &info : initInfos)
+    infoByOp[info.op] = &info;
+
+  llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
+  for (PipeInitInfo &rootInfo : initInfos) {
+    if (!visited.insert(rootInfo.op).second)
+      continue;
+
+    SmallVector<Operation *> stack{rootInfo.op};
+    SmallVector<PipeInitInfo *> component;
+    while (!stack.empty()) {
+      Operation *current = stack.pop_back_val();
+      component.push_back(infoByOp[current]);
+      for (Operation *neighbor : adjacency[current]) {
+        if (visited.insert(neighbor).second)
+          stack.push_back(neighbor);
+      }
+    }
+
+    if (failed(resolveNoSplitComponent(component, builder)))
+      return failure();
+  }
   return success();
 }
 
@@ -229,80 +337,16 @@ struct PTOInferValidatePipeInitPass
     SmallVector<PipeInitInfo> initInfos;
     llvm::DenseMap<Operation *, SmallVector<Operation *>> adjacency;
     std::map<PipePeerKey, SmallVector<Operation *>> keyedInits;
-
-    auto collectInit = [&](auto initOp) {
-      PipeInitInfo &info = initInfos.emplace_back();
-      info.op = initOp.getOperation();
-      info.funcOp = initOp->template getParentOfType<func::FuncOp>();
-      info.dirMask = initOp.getDirMask();
-      info.usage = classifyPipeUsage(getPipeResult(initOp));
-      info.explicitNoSplit = getNoSplitAttr(initOp);
-      adjacency[info.op];
-
-      auto recordAddr = [&](Value addr, int8_t effectiveDirMask) {
-        auto key = getPipePeerKey(addr, info.funcOp);
-        if (!key)
-          return;
-        key->dirMask = effectiveDirMask;
-        keyedInits[*key].push_back(info.op);
-      };
-
-      if (info.dirMask == kBidirectionalDirMask) {
-        recordAddr(getLocalAddrOperand(initOp), kC2VDirMask);
-        if (Value peerAddr = initOp.getPeerLocalAddr())
-          recordAddr(peerAddr, kV2CDirMask);
-        return;
-      }
-
-      recordAddr(getLocalAddrOperand(initOp), info.dirMask);
-    };
-
-    moduleOp.walk([&](InitializeL2LPipeOp initOp) { collectInit(initOp); });
-    moduleOp.walk([&](InitializeL2G2LPipeOp initOp) { collectInit(initOp); });
-
-    for (const auto &it : keyedInits) {
-      SmallVector<Operation *> uniqueOps;
-      for (Operation *op : it.second) {
-        if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end())
-          uniqueOps.push_back(op);
-      }
-      if (uniqueOps.size() < kMinPeerPipeInitCount)
-        continue;
-
-      for (size_t i = 0; i < uniqueOps.size(); ++i) {
-        for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
-          adjacency[uniqueOps[i]].push_back(uniqueOps[j]);
-          adjacency[uniqueOps[j]].push_back(uniqueOps[i]);
-        }
-      }
-    }
-
-    llvm::DenseMap<Operation *, PipeInitInfo *> infoByOp;
-    for (PipeInitInfo &info : initInfos)
-      infoByOp[info.op] = &info;
-
     OpBuilder builder(moduleOp.getContext());
-    llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
-    for (PipeInitInfo &rootInfo : initInfos) {
-      if (!visited.insert(rootInfo.op).second)
-        continue;
-
-      SmallVector<Operation *> stack{rootInfo.op};
-      SmallVector<PipeInitInfo *> component;
-      while (!stack.empty()) {
-        Operation *current = stack.pop_back_val();
-        component.push_back(infoByOp[current]);
-        for (Operation *neighbor : adjacency[current]) {
-          if (visited.insert(neighbor).second)
-            stack.push_back(neighbor);
-        }
-      }
-
-      if (failed(resolveNoSplitComponent(component, builder))) {
-        signalPassFailure();
-        return;
-      }
-    }
+    moduleOp.walk([&](InitializeL2LPipeOp initOp) {
+      collectPipeInitInfo(initOp, initInfos, adjacency, keyedInits);
+    });
+    moduleOp.walk([&](InitializeL2G2LPipeOp initOp) {
+      collectPipeInitInfo(initOp, initInfos, adjacency, keyedInits);
+    });
+    connectPeerInitOps(keyedInits, adjacency);
+    if (failed(resolveNoSplitForComponents(initInfos, adjacency, builder)))
+      signalPassFailure();
   }
 };
 

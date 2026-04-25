@@ -55,22 +55,30 @@ static void printPTOASVersion(llvm::raw_ostream &os) {
   os << "ptoas " << PTOAS_RELEASE_VERSION << "\n";
 }
 
-static LogicalResult reorderEmitCFunctions(ModuleOp module) {
+struct EmitCFunctionBuckets {
   SmallVector<emitc::FuncOp> declarations;
   SmallVector<emitc::FuncOp> definitions;
   llvm::DenseMap<StringAttr, emitc::FuncOp> definitionsByName;
+};
 
+static EmitCFunctionBuckets collectEmitCFunctions(ModuleOp module) {
+  EmitCFunctionBuckets buckets;
   for (auto func : module.getOps<emitc::FuncOp>()) {
     if (func.isDeclaration()) {
-      declarations.push_back(func);
+      buckets.declarations.push_back(func);
       continue;
     }
-    definitions.push_back(func);
-    definitionsByName[func.getSymNameAttr()] = func;
+    buckets.definitions.push_back(func);
+    buckets.definitionsByName[func.getSymNameAttr()] = func;
   }
+  return buckets;
+}
 
-  llvm::DenseMap<Operation *, unsigned> indegree;
-  llvm::DenseMap<Operation *, SmallVector<Operation *>> outgoing;
+static LogicalResult buildEmitCCallGraph(
+    ArrayRef<emitc::FuncOp> definitions,
+    const llvm::DenseMap<StringAttr, emitc::FuncOp> &definitionsByName,
+    llvm::DenseMap<Operation *, unsigned> &indegree,
+    llvm::DenseMap<Operation *, SmallVector<Operation *>> &outgoing) {
   for (auto func : definitions)
     indegree[func.getOperation()] = 0;
 
@@ -101,8 +109,22 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
                 "emission";
     }
   }
+  return success();
+}
 
+static FailureOr<SmallVector<emitc::FuncOp>>
+topologicallySortEmitCDefinitions(ArrayRef<emitc::FuncOp> definitions) {
   SmallVector<Operation *> ready;
+  llvm::DenseMap<Operation *, unsigned> indegree;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> outgoing;
+  llvm::DenseMap<StringAttr, emitc::FuncOp> definitionsByName;
+  for (auto func : definitions)
+    definitionsByName[func.getSymNameAttr()] = func;
+
+  if (failed(buildEmitCCallGraph(definitions, definitionsByName, indegree,
+                                 outgoing)))
+    return failure();
+
   for (auto func : definitions) {
     if (indegree[func.getOperation()] == 0)
       ready.push_back(func.getOperation());
@@ -122,27 +144,25 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   }
 
   if (sortedDefinitions.size() != definitions.size()) {
-    return module.emitError()
+    return definitions.front()->emitOpError()
            << "cyclic function call graph is not supported for EmitC C++ emission";
   }
 
-  if (declarations.empty() && definitions.size() <= 1)
-    return success();
+  return sortedDefinitions;
+}
 
-  SmallVector<emitc::FuncOp> desiredOrder;
-  desiredOrder.append(declarations.begin(), declarations.end());
-  desiredOrder.append(sortedDefinitions.begin(), sortedDefinitions.end());
-
-  Block &body = module.getBodyRegion().front();
-  Operation *anchor = nullptr;
+static Operation *findFirstEmitCFunction(Block &body) {
   for (Operation &op : body.getOperations()) {
-    if (isa<emitc::FuncOp>(op)) {
-      anchor = &op;
-      break;
-    }
+    if (isa<emitc::FuncOp>(op))
+      return &op;
   }
+  return nullptr;
+}
+
+static void moveEmitCFunctions(Block &body, ArrayRef<emitc::FuncOp> desiredOrder) {
+  Operation *anchor = findFirstEmitCFunction(body);
   if (!anchor)
-    return success();
+    return;
 
   auto advanceAnchor = [&]() {
     while (anchor) {
@@ -162,7 +182,22 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
     else
       func->moveBefore(&body, body.end());
   }
+}
 
+static LogicalResult reorderEmitCFunctions(ModuleOp module) {
+  EmitCFunctionBuckets buckets = collectEmitCFunctions(module);
+  if (buckets.declarations.empty() && buckets.definitions.size() <= 1)
+    return success();
+
+  auto sortedDefinitionsOr = topologicallySortEmitCDefinitions(buckets.definitions);
+  if (failed(sortedDefinitionsOr))
+    return failure();
+
+  SmallVector<emitc::FuncOp> desiredOrder;
+  desiredOrder.append(buckets.declarations.begin(), buckets.declarations.end());
+  desiredOrder.append(sortedDefinitionsOr->begin(), sortedDefinitionsOr->end());
+  Block &body = module.getBodyRegion().front();
+  moveEmitCFunctions(body, desiredOrder);
   return success();
 }
 
@@ -912,7 +947,7 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
 
-int main(int argc, char **argv) {
+static DialectRegistry createPTOASDialectRegistry() {
   DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect>();
   registry.insert<mlir::tensor::TensorDialect>();
@@ -922,25 +957,228 @@ int main(int argc, char **argv) {
   registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
-
   registry.insert<mlir::pto::PTODialect>();
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   tensor::registerBufferizableOpInterfaceExternalModels(registry);
   pto::registerBufferizableOpInterfaceExternalModels(registry);
-
   registry.insert<emitc::EmitCDialect>();
   registry.insert<mlir::LLVM::LLVMDialect>();
+  return registry;
+}
 
-  llvm::cl::SetVersionPrinter(printPTOASVersion);
-
-  bool cliArchSpecified = false;
+static bool hasCliArchOverride(int argc, char **argv) {
   for (int i = 1; i < argc; ++i) {
     llvm::StringRef arg(argv[i]);
-    if (arg == "--pto-arch" || arg.starts_with("--pto-arch=")) {
-      cliArchSpecified = true;
-      break;
-    }
+    if (arg == "--pto-arch" || arg.starts_with("--pto-arch="))
+      return true;
   }
+  return false;
+}
+
+static std::string normalizeArchString(llvm::StringRef archValue) {
+  std::string normalized = archValue.str();
+  for (char &c : normalized)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return normalized;
+}
+
+static std::optional<std::string> detectTextualModuleArch(llvm::StringRef text) {
+  llvm::SmallVector<llvm::StringRef, 4> matches;
+  llvm::Regex archRegex(
+      R"ptoarch("?(pto\.target_arch)"?[[:space:]]*=[[:space:]]*"([[:alpha:][:digit:]_]+)")ptoarch");
+  if (!archRegex.match(text, &matches) || matches.size() < 3)
+    return std::nullopt;
+  return normalizeArchString(matches[2]);
+}
+
+static void loadRequiredDialects(MLIRContext &context) {
+  context.getOrLoadDialect<emitc::EmitCDialect>();
+  context.getOrLoadDialect<mlir::pto::PTODialect>();
+  context.getOrLoadDialect<func::FuncDialect>();
+  context.getOrLoadDialect<arith::ArithDialect>();
+  context.getOrLoadDialect<memref::MemRefDialect>();
+  context.getOrLoadDialect<affine::AffineDialect>();
+  context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+}
+
+static LogicalResult loadInputModule(
+    MLIRContext &context, std::unique_ptr<llvm::MemoryBuffer> inputBuffer,
+    llvm::StringRef rawBuffer, llvm::StringRef arch, bool isPTOBC,
+    OwningOpRef<ModuleOp> &module) {
+  if (isPTOBC) {
+    llvm::ArrayRef<uint8_t> bytes(
+        reinterpret_cast<const uint8_t *>(rawBuffer.data()), rawBuffer.size());
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+    try {
+      module = ptobc::decodePTOBCToModule(bytes, context);
+    } catch (...) {
+      llvm::errs() << "Error: Failed to decode PTOBC.\n";
+      return failure();
+    }
+#else
+    module = ptobc::decodePTOBCToModule(bytes, context);
+#endif
+    if (!module) {
+      llvm::errs() << "Error: Failed to decode PTOBC.\n";
+      return failure();
+    }
+    return success();
+  }
+
+  llvm::SourceMgr sourceMgr;
+  sourceMgr.AddNewSourceBuffer(std::move(inputBuffer), llvm::SMLoc());
+  pto::ScopedPTOParserTargetArch scopedParserArch(
+      &context, arch == "a5" ? pto::PTOParserTargetArch::A5
+                             : pto::PTOParserTargetArch::A3);
+  module = parseSourceFile<ModuleOp>(sourceMgr, &context);
+  if (!module) {
+    llvm::errs() << "Error: Failed to parse MLIR.\n";
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult normalizeAutoSyncTailHints(ModuleOp module,
+                                                MLIRContext &context) {
+  bool invalidAutoSyncTailHint = false;
+  module.walk([&](mlir::func::FuncOp func) {
+    auto hintAttr =
+        func->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint");
+    if (!hintAttr)
+      return;
+
+    std::string normalizedHint;
+    if (!parseAutoSyncTailHint(hintAttr.getValue(), normalizedHint)) {
+      func.emitError("invalid pto.auto_sync_tail_hint '")
+          << hintAttr.getValue()
+          << "'. Expected 'barrier-all' (or 'default') or "
+             "'mte3-to-s-event0'.";
+      invalidAutoSyncTailHint = true;
+      return;
+    }
+    func->setAttr("pto.auto_sync_tail_hint",
+                  mlir::StringAttr::get(&context, normalizedHint));
+  });
+  return success(!invalidAutoSyncTailHint);
+}
+
+static LogicalResult validateModuleBuildConstraints(ModuleOp module,
+                                                    PTOBuildLevel effectiveLevel,
+                                                    bool enableInsertSync) {
+  bool hasTAssign = false;
+  module.walk([&](pto::TAssignOp) { hasTAssign = true; });
+
+  if (hasTAssign && effectiveLevel != PTOBuildLevel::Level3) {
+    llvm::errs() << "Error: pto.tassign is only supported when "
+                    "--pto-level=level3.\n";
+    return failure();
+  }
+
+  if (hasTAssign && enableInsertSync) {
+    llvm::errs() << "Error: pto.tassign requires --enable-insert-sync to be "
+                    "disabled.\n";
+    return failure();
+  }
+
+  if (effectiveLevel == PTOBuildLevel::Level3) {
+    bool missing = false;
+    module.walk([&](pto::AllocTileOp op) {
+      if (!op.getAddr()) {
+        op.emitError("requires 'addr' operand when --pto-level=level3");
+        missing = true;
+      }
+    });
+    return success(!missing);
+  }
+
+  bool hasAddr = false;
+  module.walk([&](pto::AllocTileOp op) {
+    if (op.getAddr()) {
+      op.emitError(
+          "unexpected 'addr' operand: only supported when --pto-level=level3");
+      hasAddr = true;
+    }
+  });
+  return success(!hasAddr);
+}
+
+static void buildLoweringPassPipeline(PassManager &pm,
+                                      PTOBuildLevel effectiveLevel,
+                                      bool disableInferLayout,
+                                      bool enableInsertSync) {
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOAssignDefaultFrontendPipeIdPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOLowerFrontendPipeOpsPass());
+  pm.addPass(pto::createPTOInferValidatePipeInitPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
+
+  if (!disableInferLayout)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
+  pm.addPass(pto::createPTOViewToMemrefPass());
+
+  if (effectiveLevel != PTOBuildLevel::Level3) {
+    PlanMemoryOptions planMemoryOption;
+    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
+    planMemoryOption.enableGlobalReuse = false;
+    planMemoryOption.enablePrintMemoryAllocatedSize = false;
+    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
+  }
+  pm.addPass(pto::createPTOResolveReservedBuffersPass());
+
+  if (enableInsertSync)
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+}
+
+static LogicalResult emitLoweredOutput(PassManager &pm, ModuleOp module,
+                                       llvm::raw_ostream &output,
+                                       llvm::StringRef arch, bool emitMlirIR,
+                                       bool emitAddPtrTrace) {
+  if (emitMlirIR) {
+    if (failed(pm.run(module)))
+      return failure();
+    module->print(output);
+    return success();
+  }
+
+  pm.addPass(createCSEPass());
+  pm.addPass(pto::createEmitPTOManualPass(arch == "a3" ? pto::PTOArch::A3
+                                                       : pto::PTOArch::A5));
+  pm.addPass(emitc::createFormExpressionsPass());
+  pm.addPass(mlir::createCSEPass());
+
+  if (failed(pm.run(module)))
+    return failure();
+
+  dropEmptyEmitCExpressions(module);
+  materializeControlFlowOperands(module);
+  if (failed(reorderEmitCFunctions(module)))
+    return failure();
+
+  std::string cppOutput;
+  llvm::raw_string_ostream cppOS(cppOutput);
+  bool declareVariablesAtTop = shouldDeclareVariablesAtTop(module);
+  if (failed(emitc::translateToCpp(module, cppOS,
+                                   /*declareVariablesAtTop=*/declareVariablesAtTop)))
+    return failure();
+  cppOS.flush();
+  rewriteTileGetSetValueMarkers(cppOutput);
+  rewriteAsyncEventMarkers(cppOutput);
+  rewritePtrScalarMarkers(cppOutput);
+  rewriteEventIdArrayMarkers(cppOutput);
+  rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
+  rewriteScalarConstantDecls(cppOutput);
+  rewriteHoistedGlobalTensorDecls(cppOutput);
+  output << cppOutput;
+  return success();
+}
+
+int main(int argc, char **argv) {
+  DialectRegistry registry = createPTOASDialectRegistry();
+
+  llvm::cl::SetVersionPrinter(printPTOASVersion);
+  bool cliArchSpecified = hasCliArchOverride(argc, argv);
 
   // Register all passes so that --mlir-print-ir-after/before can resolve
   // pass names like 'cse' at option-parse time.
@@ -960,37 +1198,13 @@ int main(int argc, char **argv) {
   }
 
   MLIRContext context(registry);
-  // Be tolerant: ptobc decode may materialize ops from dialects that aren't
-  // explicitly registered/loaded in this tool yet.
   context.allowUnregisteredDialects(true);
-
-  context.getOrLoadDialect<emitc::EmitCDialect>();
-  context.getOrLoadDialect<mlir::pto::PTODialect>();
-  context.getOrLoadDialect<func::FuncDialect>();
-  context.getOrLoadDialect<arith::ArithDialect>();
-  context.getOrLoadDialect<memref::MemRefDialect>();
-  context.getOrLoadDialect<affine::AffineDialect>();
-  context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+  loadRequiredDialects(context);
 
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
   const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
-  auto normalizeArch = [](llvm::StringRef archValue) {
-    std::string normalized = archValue.str();
-    for (char &c : normalized)
-      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return normalized;
-  };
-  auto detectTextualModuleArch = [&](llvm::StringRef text) -> std::optional<std::string> {
-    llvm::SmallVector<llvm::StringRef, 4> matches;
-    llvm::Regex archRegex(
-        R"ptoarch("?(pto\.target_arch)"?[[:space:]]*=[[:space:]]*"([[:alpha:][:digit:]_]+)")ptoarch");
-    if (!archRegex.match(text, &matches) || matches.size() < 3)
-      return std::nullopt;
-    return normalizeArch(matches[2]);
-  };
-
-  std::string arch = normalizeArch(ptoTargetArch);
+  std::string arch = normalizeArchString(ptoTargetArch);
   if (cliArchSpecified) {
     if (arch != "a3" && arch != "a5") {
       llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
@@ -1004,36 +1218,9 @@ int main(int argc, char **argv) {
   if (arch != "a3" && arch != "a5")
     arch = "a3";
 
-  if (isPTOBC) {
-    // Decode PTO bytecode directly into an MLIR module.
-    llvm::ArrayRef<uint8_t> bytes(reinterpret_cast<const uint8_t *>(buf.data()), buf.size());
-#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
-    try {
-      module = ptobc::decodePTOBCToModule(bytes, context);
-    } catch (...) {
-      llvm::errs() << "Error: Failed to decode PTOBC.\n";
-      return 1;
-    }
-#else
-    module = ptobc::decodePTOBCToModule(bytes, context);
-#endif
-    if (!module) {
-      llvm::errs() << "Error: Failed to decode PTOBC.\n";
-      return 1;
-    }
-  } else {
-    // Parse textual MLIR (.pto).
-    llvm::SourceMgr sourceMgr;
-    sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
-    pto::ScopedPTOParserTargetArch scopedParserArch(
-        &context, arch == "a5" ? pto::PTOParserTargetArch::A5
-                               : pto::PTOParserTargetArch::A3);
-    module = parseSourceFile<ModuleOp>(sourceMgr, &context);
-    if (!module) {
-      llvm::errs() << "Error: Failed to parse MLIR.\n";
-      return 1;
-    }
-  }
+  if (failed(loadInputModule(context, std::move(*fileOrErr), buf, arch, isPTOBC,
+                             module)))
+    return 1;
 
   // If the CLI explicitly requested an arch, it overrides the input module.
   // Otherwise, preserve the textual module's arch when present and only fall
@@ -1050,100 +1237,19 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  bool invalidAutoSyncTailHint = false;
-  module->walk([&](mlir::func::FuncOp func) {
-    auto hintAttr =
-        func->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint");
-    if (!hintAttr)
-      return;
-
-    std::string normalizedHint;
-    if (!parseAutoSyncTailHint(hintAttr.getValue(), normalizedHint)) {
-      func.emitError("invalid pto.auto_sync_tail_hint '")
-          << hintAttr.getValue()
-          << "'. Expected 'barrier-all' (or 'default') or "
-             "'mte3-to-s-event0'.";
-      invalidAutoSyncTailHint = true;
-      return;
-    }
-    func->setAttr("pto.auto_sync_tail_hint",
-                  mlir::StringAttr::get(&context, normalizedHint));
-  });
-  if (invalidAutoSyncTailHint)
-    return 1;
-
-  bool hasTAssign = false;
-  module->walk([&](pto::TAssignOp) { hasTAssign = true; });
-
-  if (hasTAssign && effectiveLevel != PTOBuildLevel::Level3) {
-    llvm::errs() << "Error: pto.tassign is only supported when "
-                    "--pto-level=level3.\n";
+  if (failed(normalizeAutoSyncTailHints(*module, context)) ||
+      failed(validateModuleBuildConstraints(*module, effectiveLevel,
+                                            enableInsertSync))) {
     return 1;
   }
 
-  if (hasTAssign && enableInsertSync) {
-    llvm::errs() << "Error: pto.tassign requires --enable-insert-sync to be "
-                    "disabled.\n";
-    return 1;
-  }
-
-  if (effectiveLevel == PTOBuildLevel::Level3) {
-    bool missing = false;
-    module->walk([&](pto::AllocTileOp op) {
-      if (!op.getAddr()) {
-        op.emitError("requires 'addr' operand when --pto-level=level3");
-        missing = true;
-      }
-    });
-    if (missing)
-      return 1;
-  } else {
-    bool hasAddr = false;
-    module->walk([&](pto::AllocTileOp op) {
-      if (op.getAddr()) {
-        op.emitError(
-            "unexpected 'addr' operand: only supported when --pto-level=level3");
-        hasAddr = true;
-      }
-    });
-    if (hasAddr)
-      return 1;
-  }
-
-  // Main PassManager
   PassManager pm(&context);
 
   if (failed(applyPassManagerCLOptions(pm)))
     return 1;
-  
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOAssignDefaultFrontendPipeIdPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOLowerFrontendPipeOpsPass());
-  //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
-  pm.addPass(pto::createPTOInferValidatePipeInitPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
-  
-  if (!disableInferLayout)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createInferPTOLayoutPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
-  pm.addPass(pto::createPTOViewToMemrefPass());
+  buildLoweringPassPipeline(pm, effectiveLevel, disableInferLayout,
+                            enableInsertSync);
 
-  if (effectiveLevel != PTOBuildLevel::Level3) {
-    PlanMemoryOptions planMemoryOption;
-    planMemoryOption.memMode = MemPlanMode::LOCAL_MEM_PLAN;
-    planMemoryOption.enableGlobalReuse = false;
-    planMemoryOption.enablePrintMemoryAllocatedSize = false;
-    pm.addPass(pto::createPlanMemoryPass(planMemoryOption));
-  }
-  pm.addPass(pto::createPTOResolveReservedBuffersPass());
-
-  // Conditionally add Sync pass based on flag.
-  if (enableInsertSync)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
-  
-
-  // [Fix] ToolOutputFile Usage
   std::error_code ec;
   llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
   if (ec) {
@@ -1151,60 +1257,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (emitMlirIR) {
-    if (failed(pm.run(*module))) {
-      llvm::errs() << "Error: Pass execution failed.\n";
-      return 1;
-    }
-    module->print(outputFile.os());
-    return 0;
-  }
-
-  pm.addPass(createCSEPass());
-  if (arch == "a3") {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
-  } else {
-    pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A5));
-  }
-  pm.addPass(emitc::createFormExpressionsPass());
-  pm.addPass(mlir::createCSEPass());
-
-  if (failed(pm.run(*module))) {
-    llvm::errs() << "Error: Pass execution failed.\n";
+  if (failed(emitLoweredOutput(pm, *module, outputFile.os(), arch, emitMlirIR,
+                               emitAddPtrTrace))) {
+    llvm::errs() << "Error: Pass execution or emission failed.\n";
     return 1;
   }
 
-  dropEmptyEmitCExpressions(module.get());
-  materializeControlFlowOperands(module.get());
-  if (failed(reorderEmitCFunctions(module.get()))) {
-    llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
-    return 1;
-  }
-
-  // Emit C++ to string, then post-process, then write to output file.
-  std::string cppOutput;
-  llvm::raw_string_ostream cppOS(cppOutput);
-  // CFG-style lowering (e.g. scf.while -> cf.br/cf.cond_br) may introduce
-  // multiple blocks, requiring variables to be declared at the top for valid
-  // C++ emission.
-  bool declareVariablesAtTop = shouldDeclareVariablesAtTop(*module);
-  if (failed(emitc::translateToCpp(*module, cppOS,
-                                  /*declareVariablesAtTop=*/declareVariablesAtTop))) {
-    llvm::errs() << "Error: Failed to emit C++.\n";
-    return 1;
-  }
-  cppOS.flush();
-  rewriteTileGetSetValueMarkers(cppOutput);
-  rewriteAsyncEventMarkers(cppOutput);
-  rewritePtrScalarMarkers(cppOutput);
-  rewriteEventIdArrayMarkers(cppOutput);
-  rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
-  rewriteScalarConstantDecls(cppOutput);
-  rewriteHoistedGlobalTensorDecls(cppOutput);
-  
-  outputFile.os() << cppOutput;
-
-  outputFile.keep(); // Success, keep the file
+  outputFile.keep();
 
   return 0;
 }
