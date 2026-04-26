@@ -32,6 +32,13 @@ struct SyncRecord {
 
   // Record the pairing status of set/wait within a syncIndex.
   llvm::DenseMap<int, bool> syncFinder;
+
+  // Marks syncFinder entries that came from a region that may not execute
+  // (for example, a zero-trip loop body or an if-without-else then branch).
+  // Such entries are still visible for outer set/wait pair discovery, but they
+  // must not transitively promote alreadySync: on the skipped path the wait did
+  // not run.
+  llvm::DenseMap<int, bool> syncFinderIsConditional;
 };
  
 using SyncRecordList = std::array<SyncRecord, MAX_MULTI_BUFFER_NUM>;
@@ -159,7 +166,7 @@ private:
                             const CompoundInstanceElement *frontCompound,
                             bool isBackwardDep) const;
  
-  /// 获取依赖对涉及的 Event ID 数量 (用于 Multi-Buffer 分析)
+  /// 获取依赖对憉及的 Event ID 数量 (用于 Multi-Buffer 分析)
   int GetEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec);
  
   /// 辅助函数：获取所有涉及的 Buffer (用于 LCA 计算，虽然现在简化了，保留接口)
