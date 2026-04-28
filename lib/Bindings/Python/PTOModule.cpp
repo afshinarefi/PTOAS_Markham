@@ -37,6 +37,26 @@ static std::vector<int64_t> toInt64Vector(const py::sequence &seq) {
   return out;
 }
 
+static std::vector<int64_t> toShapeVectorOrDynamicRank(py::object shapeOrRank) {
+  if (py::isinstance<py::int_>(shapeOrRank)) {
+    auto rank = shapeOrRank.cast<int64_t>();
+    if (rank < 0)
+      throw py::value_error("rank must be non-negative");
+    return std::vector<int64_t>(static_cast<size_t>(rank),
+                                mlir::ShapedType::kDynamic);
+  }
+  return toInt64Vector(shapeOrRank.cast<py::sequence>());
+}
+
+static MlirContext inferContextFromElementType(MlirContext context,
+                                               MlirType elementType) {
+  if (!mlirContextIsNull(context))
+    return context;
+  if (mlirTypeIsNull(elementType))
+    throw py::value_error("context is required when element_type is null");
+  return mlirTypeGetContext(elementType);
+}
+
 static py::list shapeToPyList(const int64_t *data, intptr_t n) {
   py::list lst;
   for (intptr_t i = 0; i < n; ++i)
