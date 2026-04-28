@@ -379,16 +379,18 @@ process_one_dir() {
     ptobc_file="${out_subdir}/${base}.ptobc"
     decoded_pto="${out_subdir}/${base}-roundtrip.pto"
     local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
-    # TODO(ptobc): alloc_tile addr operand is required by ptoas level3 for
-    # these A5 repro/control samples, but ptobc v0 currently rejects this
-    # form with "operand count mismatch for op: pto.alloc_tile".
+    # TODO(ptobc): ptobc v0 currently rejects the explicit alloc_tile addr form
+    # with "operand count mismatch for op: pto.alloc_tile". Keep these samples
+    # in python/pto/ptoas coverage, but bypass the bytecode roundtrip until the
+    # v0 encoder learns the expanded operand layout.
     #
     # tcvt.py intentionally exercises the new pto.tcvt(tmp, sat_mode) form for
     # sample/board coverage. ptobc v0 still assumes the legacy 2-operand shape
     # and currently fails with "operand count mismatch for op: pto.tcvt".
     # Keep the sample in runop coverage, but bypass the bytecode roundtrip until
     # ptobc learns the expanded operand layout.
-    if [[ "$base" == "test_tmov_col_major_16x1_align_a5" || \
+    if [[ "$base" == "alloc_tile_addr" || \
+          "$base" == "test_tmov_col_major_16x1_align_a5" || \
           "$base" == "test_tmov_row_major_1x16_control_a5" || \
           "$base" == "decode_projection_incore_0" || \
           "$base" == "rmsnorm_incore_0" || \
