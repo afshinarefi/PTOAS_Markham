@@ -1,0 +1,84 @@
+// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --pto-arch=a3 %s >/dev/null
+//
+// The small right tile is used again after the large-right stage, but that
+// later use starts with a full write. The old small value can be killed before
+// the large stage so both right buffers fit in the single 64KiB right space.
+
+module {
+  func.func @right_next_write_reuse(%a: !pto.ptr<f16>, %b: !pto.ptr<f16>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+
+    %a_view = pto.make_tensor_view %a, shape = [%c128, %c256],
+              strides = [%c256, %c1] : !pto.tensor_view<?x?xf16>
+    %b_view = pto.make_tensor_view %b, shape = [%c256, %c128],
+              strides = [%c128, %c1] : !pto.tensor_view<?x?xf16>
+    %a_part = pto.partition_view %a_view, offsets = [%c0, %c0],
+              sizes = [%c128, %c256] : !pto.tensor_view<?x?xf16>
+              -> !pto.partition_tensor_view<128x256xf16>
+    %b_small_part = pto.partition_view %b_view, offsets = [%c0, %c0],
+                    sizes = [%c128, %c128] : !pto.tensor_view<?x?xf16>
+                    -> !pto.partition_tensor_view<128x128xf16>
+    %b_large_part = pto.partition_view %b_view, offsets = [%c0, %c0],
+                    sizes = [%c256, %c128] : !pto.tensor_view<?x?xf16>
+                    -> !pto.partition_tensor_view<256x128xf16>
+
+    %left_mat = pto.alloc_tile
+        : !pto.tile_buf<mat, 128x256xf16, blayout=col_major, slayout=row_major>
+    %left = pto.alloc_tile
+        : !pto.tile_buf<left, 128x256xf16, slayout=row_major>
+    %small_mat = pto.alloc_tile
+        : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>
+    %large_mat = pto.alloc_tile
+        : !pto.tile_buf<mat, 256x128xf16, blayout=col_major, slayout=row_major>
+    %small_right = pto.alloc_tile
+        : !pto.tile_buf<right, 128x128xf16, slayout=col_major>
+    %large_right = pto.alloc_tile
+        : !pto.tile_buf<right, 256x128xf16, slayout=col_major>
+    %acc = pto.alloc_tile
+        : !pto.tile_buf<acc, 128x128xf32, blayout=col_major, slayout=row_major, fractal=1024>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<128x256xf16>)
+              outs(%left_mat : !pto.tile_buf<mat, 128x256xf16, blayout=col_major, slayout=row_major>)
+    pto.tmov ins(%left_mat : !pto.tile_buf<mat, 128x256xf16, blayout=col_major, slayout=row_major>)
+             outs(%left : !pto.tile_buf<left, 128x256xf16, slayout=row_major>)
+    %left_small = pto.subview %left[%c0, %c0] sizes [128, 128]
+        : !pto.tile_buf<left, 128x256xf16, slayout=row_major>
+        -> !pto.tile_buf<left, 128x128xf16, slayout=row_major>
+
+    scf.for %i = %c0 to %c2 step %c1 {
+      pto.tload ins(%b_small_part : !pto.partition_tensor_view<128x128xf16>)
+                outs(%small_mat : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>)
+      pto.tmov ins(%small_mat : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>)
+               outs(%small_right : !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+      pto.tmatmul ins(%left_small, %small_right : !pto.tile_buf<left, 128x128xf16, slayout=row_major>, !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+                  outs(%acc : !pto.tile_buf<acc, 128x128xf32, blayout=col_major, slayout=row_major, fractal=1024>)
+
+      scf.for %j = %c0 to %c2 step %c1 {
+        pto.tload ins(%b_large_part : !pto.partition_tensor_view<256x128xf16>)
+                  outs(%large_mat : !pto.tile_buf<mat, 256x128xf16, blayout=col_major, slayout=row_major>)
+        pto.tmov ins(%large_mat : !pto.tile_buf<mat, 256x128xf16, blayout=col_major, slayout=row_major>)
+                 outs(%large_right : !pto.tile_buf<right, 256x128xf16, slayout=col_major>)
+        pto.tmatmul ins(%left, %large_right : !pto.tile_buf<left, 128x256xf16, slayout=row_major>, !pto.tile_buf<right, 256x128xf16, slayout=col_major>)
+                    outs(%acc : !pto.tile_buf<acc, 128x128xf32, blayout=col_major, slayout=row_major, fractal=1024>)
+
+        pto.tload ins(%b_small_part : !pto.partition_tensor_view<128x128xf16>)
+                  outs(%small_mat : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>)
+        pto.tmov ins(%small_mat : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>)
+                 outs(%small_right : !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+        pto.tmatmul ins(%left_small, %small_right : !pto.tile_buf<left, 128x128xf16, slayout=row_major>, !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+                    outs(%acc : !pto.tile_buf<acc, 128x128xf32, blayout=col_major, slayout=row_major, fractal=1024>)
+      }
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: @right_next_write_reuse
+// CHECK-DAG: pto.pointer_cast(%c0_i64) {{.*}}memref<128x128xf16{{.*}}#pto.address_space<right>
+// CHECK-DAG: pto.pointer_cast(%c0_i64) {{.*}}memref<256x128xf16{{.*}}#pto.address_space<right>

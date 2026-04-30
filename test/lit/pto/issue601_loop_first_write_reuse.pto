@@ -1,0 +1,32 @@
+// RUN: ptoas --pto-arch=a3 %s >/dev/null
+//
+// The two vec buffers are allocated before the loop, but each iteration fully
+// overwrites one buffer before reading it. A3 vec local memory cannot hold both
+// 128x256xf32 buffers at once, so the two loop stages must reuse the same
+// storage interval.
+
+module {
+  func.func @loop_first_write_reuse(
+      %src: memref<128x256xf32, #pto.address_space<gm>>,
+      %dst: memref<128x256xf32, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+
+    %stage0 = memref.alloc() : memref<128x256xf32, #pto.address_space<vec>>
+    %stage1 = memref.alloc() : memref<128x256xf32, #pto.address_space<vec>>
+
+    scf.for %i = %c0 to %c2 step %c1 {
+      pto.tload ins(%src : memref<128x256xf32, #pto.address_space<gm>>)
+               outs(%stage0 : memref<128x256xf32, #pto.address_space<vec>>)
+      pto.tstore ins(%stage0 : memref<128x256xf32, #pto.address_space<vec>>)
+                outs(%dst : memref<128x256xf32, #pto.address_space<gm>>)
+
+      pto.tload ins(%src : memref<128x256xf32, #pto.address_space<gm>>)
+               outs(%stage1 : memref<128x256xf32, #pto.address_space<vec>>)
+      pto.tstore ins(%stage1 : memref<128x256xf32, #pto.address_space<vec>>)
+                outs(%dst : memref<128x256xf32, #pto.address_space<gm>>)
+    }
+    return
+  }
+}
