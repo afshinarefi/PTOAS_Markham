@@ -13,6 +13,7 @@
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
 #include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include <algorithm>
@@ -99,6 +100,118 @@ bool Solver::checkSkipParallelLoop(Occurrence *o1, Occurrence *o2) {
   if (!loopOcc)
     return false;
   return llvm::cast<Loop>(loopOcc->op)->isParallel;
+}
+
+// ---- multi-buffer event-id deduction (HIVM-style, intra-core only) --------
+
+namespace {
+// Find the nearest enclosing scf.for of an SSA value's defining op (or its
+// parent block when the value is a block argument).
+static scf::ForOp getEnclosingScfForGss(Value v) {
+  if (!v)
+    return nullptr;
+  Operation *op = v.getDefiningOp();
+  if (!op) {
+    if (Block *b = v.getParentBlock())
+      op = b->getParentOp();
+  }
+  while (op) {
+    if (auto forOp = dyn_cast<scf::ForOp>(op))
+      return forOp;
+    op = op->getParentOp();
+  }
+  return nullptr;
+}
+} // namespace
+
+scf::ForOp Solver::getMultiBufferLoop(RWOperation *rwOp1, RWOperation *rwOp2) {
+  // Mirrors HIVM `Solver::getMultiBufferLoop`: every dependency pair must
+  // share the *same* common scf.for (otherwise the iv-mod-N selector at
+  // codegen would key on the wrong loop). We use `baseBuffer` as the SSA
+  // anchor since `rootBuffer` for a pto.pointer_cast is the i64 base
+  // address at function top (see InsertSyncAnalysis::GetEventIdNum P0 fix).
+  scf::ForOp common;
+  auto pickLoop = [&](const llvm::SmallVector<const BaseMemInfo *> &as,
+                      const llvm::SmallVector<const BaseMemInfo *> &bs) -> bool {
+    for (auto *a : as) {
+      for (auto *b : bs) {
+        unsigned n = memAnalyzer_.getMultiBufferSlotCount(a, b);
+        if (n < 2)
+          continue;
+        auto la = getEnclosingScfForGss(a->baseBuffer);
+        auto lb = getEnclosingScfForGss(b->baseBuffer);
+        if (!la || la != lb)
+          return false;
+        if (!common)
+          common = la;
+        else if (common != la)
+          return false;
+      }
+    }
+    return true;
+  };
+  if (!pickLoop(rwOp1->readMemInfo, rwOp2->writeMemInfo))
+    return nullptr;
+  if (!pickLoop(rwOp1->writeMemInfo, rwOp2->readMemInfo))
+    return nullptr;
+  if (!pickLoop(rwOp1->writeMemInfo, rwOp2->writeMemInfo))
+    return nullptr;
+  return common;
+}
+
+EventIdInfo Solver::getMultiBufferEventIdInfo(RWOperation *rwOp1,
+                                              RWOperation *rwOp2) {
+  // Mirrors `checkMultiBufferEventIdInfo` + `getMultiBufferEventIdInfo`:
+  //   1. All conflict pairs must agree on slot count N >= 2.
+  //   2. All involved buffers must hang off the same scf.for.
+  //   3. N is the common slot count (small enough to fit MAX_MULTI_BUFFER_NUM).
+  // Returns single-buffer EventIdInfo() on any failure.
+  if (!rwOp1 || !rwOp2)
+    return {};
+
+  unsigned commonN = 0;
+  auto checkPair = [&](const llvm::SmallVector<const BaseMemInfo *> &as,
+                       const llvm::SmallVector<const BaseMemInfo *> &bs) -> bool {
+    for (auto *a : as) {
+      for (auto *b : bs) {
+        unsigned n = memAnalyzer_.getMultiBufferSlotCount(a, b);
+        if (n < 2)
+          continue;
+        if (commonN == 0)
+          commonN = n;
+        else if (commonN != n)
+          return false;
+      }
+    }
+    return true;
+  };
+  if (!checkPair(rwOp1->readMemInfo, rwOp2->writeMemInfo))
+    return {};
+  if (!checkPair(rwOp1->writeMemInfo, rwOp2->readMemInfo))
+    return {};
+  if (!checkPair(rwOp1->writeMemInfo, rwOp2->writeMemInfo))
+    return {};
+  if (commonN < 2 || commonN > MAX_MULTI_BUFFER_NUM)
+    return {};
+
+  scf::ForOp loop = getMultiBufferLoop(rwOp1, rwOp2);
+  if (!loop)
+    return {};
+  return EventIdInfo(static_cast<int64_t>(commonN), loop);
+}
+
+EventIdInfo Solver::getEventIdInfo(Occurrence *occ1, Occurrence *occ2,
+                                   RWOperation *rwOp1, RWOperation *rwOp2) {
+  // HIVM `Solver::getEventIdInfo`: backward-only gate, then MB deduction,
+  // default to single-buffer (eventIdNum = 1).
+  if (!occ1 || !occ2 || !rwOp1 || !rwOp2)
+    return EventIdInfo(1);
+  if (!isBackwardSync(occ1, occ2))
+    return EventIdInfo(1);
+  EventIdInfo info = getMultiBufferEventIdInfo(rwOp1, rwOp2);
+  if (info.isMultiBuffer())
+    return info;
+  return EventIdInfo(1);
 }
 
 bool Solver::isBackwardSync(Occurrence *o1, Occurrence *o2) {
@@ -230,7 +343,7 @@ void Solver::handleConflict(Occurrence *o1, Occurrence *o2, RWOperation *r1,
   if (src == dst)
     handleBarrierConflict(o1, o2, src, dst);
   else
-    handleSetWaitConflict(o1, o2, src, dst);
+    handleSetWaitConflict(o1, o2, src, dst, r1, r2);
 }
 
 bool Solver::checkGraphConflict(Occurrence *o1, Occurrence *o2,
@@ -315,7 +428,8 @@ void Solver::handleBarrierConflict(Occurrence *o1, Occurrence *o2,
 }
 
 void Solver::handleSetWaitConflict(Occurrence *o1, Occurrence *o2,
-                                   CorePipeInfo src, CorePipeInfo dst) {
+                                   CorePipeInfo src, CorePipeInfo dst,
+                                   RWOperation *rwOp1, RWOperation *rwOp2) {
   auto [setOcc, waitOcc] = getSetWaitOcc(o1, o2);
   assert(setOcc && waitOcc);
 
@@ -325,22 +439,48 @@ void Solver::handleSetWaitConflict(Occurrence *o1, Occurrence *o2,
       setOcc->op, waitOcc->op, setOcc, waitOcc, src, dst, setOcc->endIndex,
       waitOcc->startIndex);
 
+  // Multi-buffer event-id deduction (HIVM-style). For backward-edge deps that
+  // pass the per-slot overlap check, allocate N event ids so codegen can
+  // rotate through them with iv mod N. Falls back to single-buffer (N=1) on
+  // any failure.
+  EventIdInfo info = getEventIdInfo(o1, o2, rwOp1, rwOp2);
+  cp->eventIdInfo = info;
+  int64_t requestedN = info.eventIdNum;
+
   // Speculatively color: try inserting this candidate into the EventIdSolver
-  // and roll back if the graph would exceed the hardware budget.
+  // and roll back if the graph would exceed the hardware budget. For
+  // multi-buffer the node carries N colors; the existing Welsh-Powell path
+  // already handles eventIdNum > 1.
   auto *colorer = getEventIdSolver(src.pipe, dst.pipe);
   colorer->pushActionNone();
-  cp->eventIdNode = colorer->createNode(cp.get(), /*eventIdNum=*/1);
+  cp->eventIdNode = colorer->createNode(cp.get(), requestedN);
   std::vector<ConflictPair *> intersecting = getIntersectingConflictPairs(cp.get());
   colorer->addConflicts(cp.get(), intersecting);
 
   if (!colorer->isColorable()) {
-    // Fallback: this is the minimal port's "no multi-strategy retry" knob.
-    // Drop the speculative coloring and emit a single PIPE_ALL barrier.
+    // Multi-buffer fallback: try collapsing to a single event id before
+    // giving up to a PIPE_ALL barrier. Mirrors the conservative N -> 1
+    // degrade on the InsertSync path.
     colorer->undoActions();
-    insertBarrierAllBeforeOcc(waitOcc);
-    return;
+    if (requestedN > 1) {
+      colorer->pushActionNone();
+      cp->eventIdInfo = EventIdInfo(1);
+      cp->eventIdNode = colorer->createNode(cp.get(), /*eventIdNum=*/1);
+      auto retryIntersect = getIntersectingConflictPairs(cp.get());
+      colorer->addConflicts(cp.get(), retryIntersect);
+      if (!colorer->isColorable()) {
+        colorer->undoActions();
+        insertBarrierAllBeforeOcc(waitOcc);
+        return;
+      }
+      colorer->clearActionStack();
+    } else {
+      insertBarrierAllBeforeOcc(waitOcc);
+      return;
+    }
+  } else {
+    colorer->clearActionStack();
   }
-  colorer->clearActionStack();
 
   // Attach to LCA scope occurrences so future checkGraphConflict calls see it.
   auto [normSet, normWait] = OperationBase::getLCAPair(setOcc->op, waitOcc->op);

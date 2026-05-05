@@ -22,8 +22,12 @@
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseMap.h"
 #include <memory>
+#include <utility>
 
 namespace mlir {
 namespace pto {
@@ -58,6 +62,19 @@ private:
                       bool insertAfter);
   void insertBarrier(IRRewriter &rewriter, OperationBase *anchor, PIPE pipe,
                      bool insertAfter);
+
+  // Multi-buffer codegen helpers (HIVM-aligned).
+  // emitMultiBufferSetWait: for a ConflictPair with eventIdNum > 1 emits a
+  // dyn-event-id (`pto.set_flag_dyn` / `pto.wait_flag_dyn`) pair driven by an
+  // `iv mod N` selector + arith.select chain over the assigned event ids.
+  void emitMultiBufferSetWait(IRRewriter &rewriter, ConflictPair *cp);
+
+  // Reuse the same `iv mod N` counter across multiple ConflictPairs that
+  // share a (loop, N) tuple (mirrors PTOEnableMultiBuffer's loop2BufferCounter
+  // and the InsertSync SyncCodegen cache).
+  Value getOrCreateLoopCounter(IRRewriter &rewriter, scf::ForOp forOp,
+                               int64_t n, Location loc);
+  llvm::DenseMap<std::pair<scf::ForOp, int64_t>, Value> loop2BufferCounter_;
 };
 
 } // namespace syncsolver

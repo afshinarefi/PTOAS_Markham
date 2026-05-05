@@ -26,6 +26,8 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/SmallVector.h"
 #include <climits>
@@ -100,6 +102,25 @@ struct SyncSolverOptions {
 struct EventIdNode;
 struct ConflictPair;
 
+// Per-conflict outcome of multi-buffer event-id deduction. Mirrors HIVM's
+// `EventIdInfo` (intra-core fields only - cross-core unroll/preload are out
+// of scope for the PTOAS port).
+struct EventIdInfo {
+  // Number of distinct event ids needed per back-edge sync. 1 means "single
+  // buffer" and the existing single-id coloring path is used.
+  int64_t eventIdNum{1};
+  // Loop whose induction variable drives the `iv mod N` slot selector at
+  // codegen. Null when `eventIdNum == 1`.
+  scf::ForOp multibufferLoop{nullptr};
+
+  EventIdInfo() = default;
+  explicit EventIdInfo(int64_t n) : eventIdNum(n) {}
+  EventIdInfo(int64_t n, scf::ForOp loop)
+      : eventIdNum(n), multibufferLoop(loop) {}
+
+  bool isMultiBuffer() const { return eventIdNum > 1 && multibufferLoop; }
+};
+
 // One DFS appearance of an OperationBase in the syncIr stream.
 struct Occurrence {
   OperationBase *op{nullptr};
@@ -172,7 +193,15 @@ struct ConflictPair {
   bool isBarrierAll{false}; // fallback marker: emit pto.barrier <PIPE_ALL>
 
   EventIdNode *eventIdNode{nullptr};
+  // Snapshot of event ids assigned to this pair, taken when CodeGenerator is
+  // constructed (after which eventIdNode is no longer safe to read because
+  // EventIdSolver may have torn down its nodes). Upstream fix for the GSS
+  // event-id-lifetime bug.
   llvm::SmallVector<int64_t> eventIds;
+  // Multi-buffer geometry chosen for this candidate (default = single buffer).
+  // When `eventIdInfo.isMultiBuffer()`, codegen emits dyn flag ops with an
+  // `iv mod N` arith.select chain over the assigned event ids.
+  EventIdInfo eventIdInfo;
 
   ConflictPair(RWOperation *op1, RWOperation *op2, OperationBase *setOp,
                OperationBase *waitOp, Occurrence *setOcc, Occurrence *waitOcc,

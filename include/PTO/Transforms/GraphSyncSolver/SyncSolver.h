@@ -85,7 +85,21 @@ private:
   void handleBarrierConflict(Occurrence *occ1, Occurrence *occ2,
                              CorePipeInfo src, CorePipeInfo dst);
   void handleSetWaitConflict(Occurrence *occ1, Occurrence *occ2,
-                             CorePipeInfo src, CorePipeInfo dst);
+                             CorePipeInfo src, CorePipeInfo dst,
+                             RWOperation *rwOp1 = nullptr,
+                             RWOperation *rwOp2 = nullptr);
+
+  // Multi-buffer event-id deduction (HIVM-style, intra-core only):
+  //   - getMultiBufferLoop:        find the common scf.for whose iv the slot
+  //                                rotation will key on.
+  //   - getMultiBufferEventIdInfo: per-pair MB eligibility check + N derivation
+  //                                via `getMultiBufferSlotCount`.
+  //   - getEventIdInfo:            top-level wrapper. Backward-only gate, then
+  //                                MB check, default to single-buffer (N=1).
+  scf::ForOp getMultiBufferLoop(RWOperation *rwOp1, RWOperation *rwOp2);
+  EventIdInfo getMultiBufferEventIdInfo(RWOperation *rwOp1, RWOperation *rwOp2);
+  EventIdInfo getEventIdInfo(Occurrence *occ1, Occurrence *occ2,
+                             RWOperation *rwOp1, RWOperation *rwOp2);
 
   // Conservative memory dependence between two RWOperation; produces
   // (setCorePipeInfo, waitCorePipeInfo) tuples for each detected conflict.

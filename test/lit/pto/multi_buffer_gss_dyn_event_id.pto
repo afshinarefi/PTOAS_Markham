@@ -1,0 +1,56 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --enable-graph-sync-solver --enable-multi-buffer-lowering --mlir-print-ir-after=pto-graph-sync-solver %s 2>&1 1>/dev/null | FileCheck %s
+
+// End-to-end regression for the GraphSyncSolver multi-buffer event-id pipeline.
+// Mirrors the InsertSync `multi_buffer_insert_sync_dyn_event_id.pto` test but
+// drives the alternative `--enable-graph-sync-solver` path:
+//
+//   PlanMemory  -> N=2-address pto.pointer_cast on `pto.multi_buffer = 2`.
+//   GSS Solver  -> per-pair `getMultiBufferSlotCount` >= 2 + shared scf.for
+//                  trigger `getEventIdInfo`, allocate 2 event ids in the
+//                  EventIdSolver coloring graph (createNode with N=2).
+//   GSS Codegen -> emitMultiBufferSetWait emits N=2 pre-loop set_flag,
+//                  iv-mod-N counter + N-way arith.select, dyn set/wait inside
+//                  the loop body, and N=2 post-loop wait_flag drains.
+
+module {
+  func.func @gss_double_buffer_dyn_event(
+      %arg0: memref<16x16x16xf16, #pto.address_space<gm>>,
+      %arg1: memref<16x16x16xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %a = memref.alloc() {pto.multi_buffer = 2 : i32}
+          : memref<16x16x16xf16, #pto.address_space<vec>>
+      pto.tload ins(%arg0 : memref<16x16x16xf16, #pto.address_space<gm>>)
+               outs(%a : memref<16x16x16xf16, #pto.address_space<vec>>)
+      pto.tstore ins(%a : memref<16x16x16xf16, #pto.address_space<vec>>)
+                outs(%arg1 : memref<16x16x16xf16, #pto.address_space<gm>>)
+    }
+    return
+  }
+}
+
+// CHECK: IR Dump After PTOGraphSyncSolver
+// CHECK: func.func @gss_double_buffer_dyn_event
+// Two distinct event ids primed pre-loop for the N=2 backward sync.
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
+// Inside the loop: iv mod 2 + arith.select chain selecting between event ids.
+// CHECK: scf.for %[[IV:.*]] =
+// CHECK: arith.remui %[[IV]], %{{.*}} : index
+// CHECK: arith.select
+// Dynamic-event-id wait/set ops drive the multi-buffer backward sync.
+// CHECK: pto.wait_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>, %{{.*}}]
+// CHECK: pto.set_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>, %{{.*}}]
+// Post-loop drains both event ids.
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]

@@ -11,11 +11,14 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "llvm/Support/Casting.h"
 #include <cassert>
+#include <utility>
 
 #define DEBUG_TYPE "pto-graph-sync-solver-codegen"
 
@@ -123,6 +126,88 @@ void CodeGenerator::insertBarrier(IRRewriter &rewriter, OperationBase *anchor,
   rewriter.create<pto::BarrierOp>(loc, pipeAttr);
 }
 
+Value CodeGenerator::getOrCreateLoopCounter(IRRewriter &rewriter,
+                                            scf::ForOp forOp, int64_t n,
+                                            Location loc) {
+  auto key = std::make_pair(forOp, n);
+  auto it = loop2BufferCounter_.find(key);
+  if (it != loop2BufferCounter_.end())
+    return it->second;
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value iv = forOp.getInductionVar();
+  Value cN = rewriter.create<arith::ConstantIndexOp>(loc, n);
+  Value rem = rewriter.create<arith::RemUIOp>(loc, iv, cN);
+  loop2BufferCounter_[key] = rem;
+  return rem;
+}
+
+void CodeGenerator::emitMultiBufferSetWait(IRRewriter &rewriter,
+                                           ConflictPair *cp) {
+  // Multi-buffer codegen mirrors the InsertSync output:
+  //   pre-loop:   N pto.set_flag (queue prime, one per event id)
+  //   in-loop:    pto.wait_flag_dyn(idx) at body start,
+  //               pto.set_flag_dyn(idx)  at body end (before yield)
+  //   post-loop:  N pto.wait_flag (queue drain)
+  // The dyn set/wait MUST live inside the loop body so they share the
+  // `iv mod N` selector's dominance. GSS's default backward-sync anchors
+  // (set after loop / wait before loop) only work for single-buffer where
+  // there is no per-iteration selector.
+  assert(cp);
+  const auto &eids = cp->eventIds;
+  int64_t n = cp->eventIdInfo.eventIdNum;
+  assert((int64_t)eids.size() >= n && n >= 2);
+  if ((int64_t)eids.size() < n || n < 2)
+    return;
+  scf::ForOp loop = cp->eventIdInfo.multibufferLoop;
+  assert(loop && "multi-buffer codegen needs a non-null rotation loop");
+  if (!loop)
+    return;
+  PIPE setPipe = cp->setCorePipeInfo.pipe;
+  PIPE waitPipe = cp->waitCorePipeInfo.pipe;
+  Location loc = loop.getLoc();
+  auto srcAttr = makePipe(rewriter.getContext(), setPipe);
+  auto dstAttr = makePipe(rewriter.getContext(), waitPipe);
+
+  // 1. Pre-loop: queue-prime with N concrete event ids.
+  rewriter.setInsertionPoint(loop);
+  for (int64_t i = 0; i < n; ++i) {
+    auto eidAttr = makeEvent(rewriter.getContext(), eids[i]);
+    rewriter.create<pto::SetFlagOp>(loc, srcAttr, dstAttr, eidAttr);
+  }
+
+  // 2. In-loop: build (or reuse) the `iv mod N` counter at the start of the
+  // body, then a select chain over the assigned event ids.
+  Value rem = getOrCreateLoopCounter(rewriter, loop, n, loc);
+  rewriter.setInsertionPointAfter(rem.getDefiningOp());
+  Value selected =
+      rewriter.create<arith::ConstantIndexOp>(loc, eids[0]);
+  for (int64_t i = 1; i < n; ++i) {
+    Value ci = rewriter.create<arith::ConstantIndexOp>(loc, i);
+    Value eq = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                              rem, ci);
+    Value idv = rewriter.create<arith::ConstantIndexOp>(loc, eids[i]);
+    selected = rewriter.create<arith::SelectOp>(loc, eq, idv, selected);
+  }
+
+  // wait_flag_dyn goes at the start of the body (just after the selector),
+  // set_flag_dyn goes right before the terminator (yield) of the body.
+  rewriter.setInsertionPointAfter(selected.getDefiningOp());
+  rewriter.create<pto::WaitFlagDynOp>(loc, srcAttr, dstAttr, selected);
+
+  Operation *terminator = loop.getBody()->getTerminator();
+  if (!terminator)
+    return;
+  rewriter.setInsertionPoint(terminator);
+  rewriter.create<pto::SetFlagDynOp>(loc, srcAttr, dstAttr, selected);
+
+  // 3. Post-loop: drain by waiting on each prime.
+  rewriter.setInsertionPointAfter(loop);
+  for (int64_t i = 0; i < n; ++i) {
+    auto eidAttr = makeEvent(rewriter.getContext(), eids[i]);
+    rewriter.create<pto::WaitFlagOp>(loc, srcAttr, dstAttr, eidAttr);
+  }
+}
+
 void CodeGenerator::emitOne(IRRewriter &rewriter, ConflictPair *cp) {
   if (cp->isBarrierAll) {
     // Single PIPE_ALL barrier inserted just before the wait anchor.
@@ -135,7 +220,12 @@ void CodeGenerator::emitOne(IRRewriter &rewriter, ConflictPair *cp) {
                   /*insertAfter=*/false);
     return;
   }
-  // Normal set/wait pair. Single event id in the minimal port.
+  // Multi-buffer path: dyn set/wait + iv mod N selector.
+  if (cp->eventIdInfo.isMultiBuffer()) {
+    emitMultiBufferSetWait(rewriter, cp);
+    return;
+  }
+  // Single-buffer path: classic static set/wait pair.
   const auto &eids = cp->eventIds;
   assert(!eids.empty());
   if (eids.empty())
