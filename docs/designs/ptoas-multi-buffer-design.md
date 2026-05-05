@@ -2,25 +2,14 @@
 
 ## 1. 文档范围
 
-本文描述 PR615 中 PTOAS multi-buffer 的设计与当前实现状态，参考 AscendNPU-IR 的 MultiBuffer 设计文档，但以 PTOAS PR615 的代码和测试为准。
+本文描述 PR615 中 PTOAS multi-buffer 的设计与当前实现状态。
 
-参考文档目录：
-
-- `C:\Users\rdp\Documents\npuir\AscendNPU-IR\docs\source\zh_cn\developer_guide\features\MultiBuffer`
-
-PR615 覆盖的是 PTOAS local memory multi-buffer 主链路：
+PTOAS local memory multi-buffer 主链路：
 
 - `memref.alloc {pto.multi_buffer = N}` 作为入口语义。
 - `PTOPlanMemory` 为一个逻辑 buffer 规划 N 份物理 local address。
 - `PTOInsertSync` 或 `PTOGraphSyncSolver` 从多地址推导多 event id，并生成动态 event-id 同步。
 - `PTOEnableMultiBuffer` 在同步之后把多地址 `pto.pointer_cast` 降成按 loop iteration 选择的单地址 buffer。
-
-PR615 当前不覆盖以下 AscendNPU-IR 完整链路能力：
-
-- 自动 `MarkMultiBuffer` 标记 pass。
-- workspace / CV pipelining / preload 的 multi-buffer 路径。
-- cross-core CV unroll/preload event-id 推导。
-- GM 或动态地址场景的 multi-buffer 数据选择。
 
 ## 2. 设计目标
 
@@ -40,16 +29,6 @@ flowchart LR
 
 核心约束是同步 pass 必须先看到完整的多地址 `pto.pointer_cast`，因此 `PTOEnableMultiBuffer` 必须排在同步之后。
 
-## 3. 与 AscendNPU-IR 设计的对应关系
-
-| 阶段 | AscendNPU-IR / HIVM | PTOAS PR615 |
-|---|---|---|
-| 入口标记 | `annotation.mark {hivm.multi_buffer = N}` | `memref.alloc {pto.multi_buffer = N}` |
-| 标记生成 | `MarkMultiBuffer` 自动标记 local/workspace/scope | 当前不提供自动标记，依赖前端或测试显式写 attr |
-| 物理地址规划 | `PlanMemory` 扩展 `StorageEntry` 并写回多 offset | `PTOPlanMemory` 扩展 `relationOtherBuffers` 并写回多地址 `pto.pointer_cast` |
-| 同步分析 | `InjectSync` / `GraphSyncSolver` 读取多地址，推导多 event id | `PTOInsertSync` / `PTOGraphSyncSolver` 读取 `BaseMemInfo.baseAddresses` 推导 N |
-| 数据选择 | `EnableMultiBuffer` 用 loop counter 选择物理 buffer | `PTOEnableMultiBuffer` 用 `iv mod N` + `arith.select` 替换多地址 cast |
-| workspace/CV/preload | 已设计为完整链路 | PR615 不覆盖，后续扩展 |
 
 ## 4. 用户可见接口
 
