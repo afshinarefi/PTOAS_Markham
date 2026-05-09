@@ -273,6 +273,34 @@ def BindTileOp : PTO_Op<"bind_tile", [
   }];
 }
 
+def MaterializeTileOp : PTO_Op<"materialize_tile", [
+    Pure,
+    AttrSizedOperandSegments
+  ]> {
+  let summary = "Materializes a tile buffer handle from a planned memref";
+  let description = [{
+    Bridges the memref-based memory-planning/sync IR back into tile-buffer
+    handle IR immediately before EmitC. The source remains the planned memref
+    address, while the result carries the tile type, valid dims, and config
+    expected by tile operations and C++ tile codegen.
+  }];
+
+  let arguments = (ins
+    AnyMemRef:$source,
+    Optional<Index>:$valid_row,
+    Optional<Index>:$valid_col,
+    TileBufConfigAttr:$config
+  );
+
+  let results = (outs TileBufType:$result);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
+  }];
+}
+
 def SubViewOp : PTO_Op<"subview", [
     Pure,
     ViewLikeOpInterface,
@@ -4524,6 +4552,80 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TPartArgMaxOp: PTO_TOp<"tpartargmax", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise max with value and index tiles.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$src0Idx,
+    PTODpsType:$src1Idx,
+    PTODpsType:$dst,
+    PTODpsType:$dstIdx
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `,` $src0Idx `,` $src1Idx `:`
+      qualified(type($src0)) `,` qualified(type($src1)) `,`
+      qualified(type($src0Idx)) `,` qualified(type($src1Idx)) `)`
+    `outs` `(` $dst `,` $dstIdx `:`
+      qualified(type($dst)) `,` qualified(type($dstIdx)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 4, 2);
+    }
+  }];
+}
+
+def TPartArgMinOp: PTO_TOp<"tpartargmin", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise min with value and index tiles.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$src0Idx,
+    PTODpsType:$src1Idx,
+    PTODpsType:$dst,
+    PTODpsType:$dstIdx
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `,` $src0Idx `,` $src1Idx `:`
+      qualified(type($src0)) `,` qualified(type($src1)) `,`
+      qualified(type($src0Idx)) `,` qualified(type($src1Idx)) `)`
+    `outs` `(` $dst `,` $dstIdx `:`
+      qualified(type($dst)) `,` qualified(type($dstIdx)) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 4, 2);
+    }
   }];
 }
 //===----------------------------------------------------------------------===//

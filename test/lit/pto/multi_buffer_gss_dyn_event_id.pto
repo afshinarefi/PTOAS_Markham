@@ -6,19 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: ptoas --enable-graph-sync-solver --enable-multi-buffer-lowering --mlir-print-ir-after=pto-graph-sync-solver %s 2>&1 1>/dev/null | FileCheck %s
-
-// End-to-end regression for the GraphSyncSolver multi-buffer event-id pipeline.
-// Mirrors the InsertSync `multi_buffer_insert_sync_dyn_event_id.pto` test but
-// drives the alternative `--enable-graph-sync-solver` path:
-//
-//   PlanMemory  -> N=2-address pto.pointer_cast on `pto.multi_buffer = 2`.
-//   GSS Solver  -> per-pair `getMultiBufferSlotCount` >= 2 + shared scf.for
-//                  trigger `getEventIdInfo`, allocate 2 event ids in the
-//                  EventIdSolver coloring graph (createNode with N=2).
-//   GSS Codegen -> emitMultiBufferSetWait emits N=2 pre-loop set_flag,
-//                  iv-mod-N counter + N-way arith.select, dyn set/wait inside
-//                  the loop body, and N=2 post-loop wait_flag drains.
+// RUN: ptoas --pto-level=level3 --pto-arch=a3 --enable-graph-sync-solver --emit-pto-ir --mlir-print-ir-after=pto-graph-sync-solver %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
   func.func @gss_double_buffer_dyn_event(
@@ -27,8 +15,10 @@ module {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c8192_i64 = arith.constant 8192 : i64
     scf.for %i = %c0 to %c4 step %c1 {
-      %a = memref.alloc() {pto.multi_buffer = 2 : i32}
+      %a = pto.pointer_cast(%c0_i64, %c8192_i64)
           : memref<16x16x16xf16, #pto.address_space<vec>>
       pto.tload ins(%arg0 : memref<16x16x16xf16, #pto.address_space<gm>>)
                outs(%a : memref<16x16x16xf16, #pto.address_space<vec>>)
@@ -40,17 +30,15 @@ module {
 }
 
 // CHECK: IR Dump After PTOGraphSyncSolver
-// CHECK: func.func @gss_double_buffer_dyn_event
-// Two distinct event ids primed pre-loop for the N=2 backward sync.
-// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
-// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
-// Inside the loop: iv mod 2 + arith.select chain selecting between event ids.
+// CHECK-LABEL: func.func @gss_double_buffer_dyn_event
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID[[E0:[0-9]+]]>]
+// CHECK-NEXT: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID[[E1:[0-9]+]]>]
 // CHECK: scf.for %[[IV:.*]] =
 // CHECK: arith.remui %[[IV]], %{{.*}} : index
 // CHECK: arith.select
-// Dynamic-event-id wait/set ops drive the multi-buffer backward sync.
 // CHECK: pto.wait_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>, %{{.*}}]
+// CHECK: pto.tload
+// CHECK: pto.tstore
 // CHECK: pto.set_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>, %{{.*}}]
-// Post-loop drains both event ids.
-// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
-// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID[[E0]]>]
+// CHECK-NEXT: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID[[E1]]>]

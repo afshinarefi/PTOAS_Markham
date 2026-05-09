@@ -340,7 +340,7 @@ static void collectAffineAddTerms(AffineExpr root,
   SmallVector<AffineExpr, 4> pending{root};
   while (!pending.empty()) {
     AffineExpr current = pending.pop_back_val();
-    auto addExpr = current.dyn_cast<AffineBinaryOpExpr>();
+    auto addExpr = llvm::dyn_cast<AffineBinaryOpExpr>(current);
     if (!addExpr || addExpr.getKind() != AffineExprKind::Add) {
       terms.push_back(current);
       continue;
@@ -352,19 +352,19 @@ static void collectAffineAddTerms(AffineExpr root,
 
 static bool tryAssignAffineStride(AffineExpr expr,
                                   MutableArrayRef<int64_t> strides) {
-  if (auto dim = expr.dyn_cast<AffineDimExpr>()) {
+  if (auto dim = llvm::dyn_cast<AffineDimExpr>(expr)) {
     strides[dim.getPosition()] = 1;
     return true;
   }
 
-  auto mulExpr = expr.dyn_cast<AffineBinaryOpExpr>();
+  auto mulExpr = llvm::dyn_cast<AffineBinaryOpExpr>(expr);
   if (!mulExpr || mulExpr.getKind() != AffineExprKind::Mul)
     return false;
 
   auto assignStride = [&](AffineExpr dimExpr,
                           AffineExpr constantExpr) -> bool {
-    auto dim = dimExpr.dyn_cast<AffineDimExpr>();
-    auto constant = constantExpr.dyn_cast<AffineConstantExpr>();
+    auto dim = llvm::dyn_cast<AffineDimExpr>(dimExpr);
+    auto constant = llvm::dyn_cast<AffineConstantExpr>(constantExpr);
     if (!dim || !constant)
       return false;
     strides[dim.getPosition()] = constant.getValue();
@@ -374,7 +374,7 @@ static bool tryAssignAffineStride(AffineExpr expr,
          assignStride(mulExpr.getRHS(), mulExpr.getLHS());
 }
 
-static void decomposeStridedLayout(AffineMap map,
+[[maybe_unused]] static void decomposeStridedLayout(AffineMap map,
                                    SmallVectorImpl<int64_t> &strides) {
   strides.assign(map.getNumDims(), 0);
   if (map.getNumResults() != 1)
@@ -494,7 +494,7 @@ static Value clampSubViewValidDim(IRRewriter &rewriter, Location loc,
   return rewriter.create<arith::SelectOp>(loc, lt, v, sizeVal);
 }
 
-static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
+[[maybe_unused]] static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
   OpPrintingFlags flags;
   flags.useLocalScope();            
   AsmState state(op, flags);
@@ -586,6 +586,46 @@ static LogicalResult reconcileSCFIfResultTypes(func::FuncOp func) {
   return success();
 }
 
+static LogicalResult reconcileSCFForResultTypes(func::FuncOp func) {
+  SmallVector<scf::ForOp, 8> forOps;
+  func.walk([&](scf::ForOp forOp) { forOps.push_back(forOp); });
+
+  for (scf::ForOp forOp : forOps) {
+    if (forOp.getNumResults() == 0)
+      continue;
+
+    auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    if (!yield) {
+      forOp.emitError("result-bearing scf.for must end with scf.yield");
+      return failure();
+    }
+
+    if (yield.getNumOperands() != forOp.getNumResults() ||
+        forOp.getInitArgs().size() != forOp.getNumResults()) {
+      forOp.emitError("scf.for result count does not match iter/yield values");
+      return failure();
+    }
+
+    for (unsigned i = 0; i < forOp.getNumResults(); ++i) {
+      Type initTy = forOp.getInitArgs()[i].getType();
+      Type yieldTy = yield.getOperand(i).getType();
+      if (initTy != yieldTy) {
+        forOp.emitError() << "scf.for init/yield type mismatch at result #" << i
+                          << ": init=" << initTy << ", yield=" << yieldTy;
+        return failure();
+      }
+
+      BlockArgument iterArg = forOp.getRegionIterArg(i);
+      if (iterArg.getType() != initTy)
+        iterArg.setType(initTy);
+      if (forOp.getResult(i).getType() != initTy)
+        forOp.getResult(i).setType(initTy);
+    }
+  }
+
+  return success();
+}
+
 static LogicalResult markLoweredSetValidShapeOps(func::FuncOp func,
                                                  MLIRContext *ctx) {
   WalkResult result = func.walk([&](mlir::pto::SetValidShapeOp op) {
@@ -614,7 +654,7 @@ static void markForceDynamicValidShape(Operation *op, bool force,
   op->removeAttr(kForceDynamicValidShapeAttrName);
 }
 
-static void rewriteFunctionSignature(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static void rewriteFunctionSignature(func::FuncOp func, MLIRContext *ctx) {
   Block &entry = func.front();
   auto fnTy = func.getFunctionType();
 
@@ -633,7 +673,7 @@ static void rewriteFunctionSignature(func::FuncOp func, MLIRContext *ctx) {
   func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
 }
 
-static LogicalResult lowerAllocTileOps(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult lowerAllocTileOps(func::FuncOp func, MLIRContext *ctx) {
   SmallVector<mlir::pto::AllocTileOp, 8> allocTiles;
   func.walk([&](mlir::pto::AllocTileOp op) { allocTiles.push_back(op); });
 
@@ -690,7 +730,7 @@ static LogicalResult lowerAllocTileOps(func::FuncOp func, MLIRContext *ctx) {
   return success();
 }
 
-static LogicalResult lowerDeclareTileOps(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult lowerDeclareTileOps(func::FuncOp func, MLIRContext *ctx) {
   SmallVector<mlir::pto::DeclareTileOp, 8> declaredTiles;
   func.walk([&](mlir::pto::DeclareTileOp op) { declaredTiles.push_back(op); });
 
@@ -730,7 +770,7 @@ static LogicalResult lowerDeclareTileOps(func::FuncOp func, MLIRContext *ctx) {
   return success();
 }
 
-static LogicalResult lowerMakeTensorViewOps(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult lowerMakeTensorViewOps(func::FuncOp func, MLIRContext *ctx) {
   SmallVector<mlir::pto::MakeTensorViewOp, 8> makeViews;
   func.walk([&](mlir::pto::MakeTensorViewOp op) { makeViews.push_back(op); });
 
@@ -791,7 +831,7 @@ static LogicalResult lowerMakeTensorViewOps(func::FuncOp func, MLIRContext *ctx)
   return success();
 }
 
-static LogicalResult lowerTensorViewDimOps(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult lowerTensorViewDimOps(func::FuncOp func, MLIRContext *ctx) {
   SmallVector<mlir::pto::GetTensorViewDimOp, 8> tvDims;
   func.walk([&](mlir::pto::GetTensorViewDimOp op) { tvDims.push_back(op); });
 
@@ -808,7 +848,7 @@ static LogicalResult lowerTensorViewDimOps(func::FuncOp func, MLIRContext *ctx) 
   return success();
 }
 
-static LogicalResult foldAddPtrIntoScalarOps(func::FuncOp func, MLIRContext *ctx) {
+[[maybe_unused]] static LogicalResult foldAddPtrIntoScalarOps(func::FuncOp func, MLIRContext *ctx) {
   SmallVector<mlir::pto::LoadScalarOp, 8> loadScalars;
   func.walk([&](mlir::pto::LoadScalarOp op) { loadScalars.push_back(op); });
   for (auto op : loadScalars) {
@@ -1687,9 +1727,6 @@ struct PTOViewToMemrefPass
           IRRewriter rewriter(ctx);
           rewriter.setInsertionPoint(op);
           
-          Value src0 = op->getOperand(0);
-          auto config = lookupConfig(src0);
-          
           rewriter.replaceOpWithNewOp<pto::TAddOp>(
               op, TypeRange{}, 
               op->getOperand(0), op->getOperand(1), op->getOperand(2));
@@ -1704,8 +1741,6 @@ struct PTOViewToMemrefPass
         Value lhs = op->getOperand(0);
         Value rhs = op->getOperand(1);
         Value dst = op->getOperand(2);
-
-        auto config = lookupConfig(lhs);
 
         rewriter.replaceOpWithNewOp<pto::TMatmulOp>(op, TypeRange{}, lhs, rhs, dst);
       }
@@ -1775,8 +1810,6 @@ struct PTOViewToMemrefPass
         Value lhs = op->getOperand(0);
         Value rhs = op->getOperand(1);
         Value dst = op->getOperand(2);
-
-        auto config = lookupConfig(lhs);
 
         rewriter.replaceOpWithNewOp<pto::TGemvOp>(
           op, TypeRange{}, lhs, rhs, dst);
@@ -3355,6 +3388,10 @@ struct PTOViewToMemrefPass
       // Stage 4: Reconcile control-flow result types
       // ------------------------------------------------------------------
       if (failed(reconcileSCFIfResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+      if (failed(reconcileSCFForResultTypes(func))) {
         signalPassFailure();
         return;
       }

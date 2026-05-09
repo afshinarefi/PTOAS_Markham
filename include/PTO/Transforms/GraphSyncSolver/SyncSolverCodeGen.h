@@ -6,79 +6,69 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-//===- SyncSolverCodeGen.h - Emit pto sync ops ------------------*- C++ -*-===//
-//
-// Walks the chosen ConflictPairs and writes back `pto.set_flag`,
-// `pto.wait_flag`, and `pto.barrier` ops at the right insertion points
-// (PlaceHolders and direct ops). The emission supports a single event id per
-// ConflictPair (no multi-buffer logic).
-//
+//===---------- SyncSolverCodeGen.h ---- Graph Sync Solver ----------------===//
 //===----------------------------------------------------------------------===//
-
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_GRAPHSYNCSOLVER_SYNCSOLVERCODEGEN_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_GRAPHSYNCSOLVER_SYNCSOLVERCODEGEN_H
 
 #include "PTO/Transforms/GraphSyncSolver/SyncSolver.h"
 #include "PTO/Transforms/GraphSyncSolver/SyncSolverIR.h"
 #include "PTO/Transforms/GraphSyncSolver/Utility.h"
+
+#include "PTO/IR/PTO.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
-#include "llvm/ADT/DenseMap.h"
+#include <map>
 #include <memory>
-#include <utility>
+#include <vector>
 
-namespace mlir {
-namespace pto {
-namespace syncsolver {
+namespace mlir::pto::syncsolver {
 
 class CodeGenerator {
 public:
-  SyncSolverOptions options;
+  const SyncSolverOptions options;
   func::FuncOp funcOp;
   std::unique_ptr<OperationBase> funcIr;
-  std::vector<std::unique_ptr<ConflictPair>> chosenConflictedPairs;
 
-  explicit CodeGenerator(std::unique_ptr<Solver> solver);
+private:
+  SyncMap syncMapBefore, syncMapAfter;
 
-  // Emit the sync ops into the underlying MLIR func::FuncOp.
+public:
+  CodeGenerator() = delete;
+
+  explicit CodeGenerator(std::unique_ptr<Solver> solver)
+      : options(solver->options) {
+    auto [syncBefore, syncAfter] = solver->getBeforeAfterSyncMaps();
+    syncMapBefore = std::move(syncBefore);
+    syncMapAfter = std::move(syncAfter);
+    funcOp = solver->funcOp;
+    funcIr = std::move(solver->funcIr);
+  }
+
   void generateResultOps();
 
 private:
-  void emitOne(IRRewriter &rewriter, ConflictPair *cp);
-
-  // Resolve the actual MLIR Operation* and a Location for an OperationBase,
-  // accounting for PlaceHolders that point at a parent scope op.
-  Operation *resolveSyncAnchor(OperationBase *opBase, bool insertAfter);
+  Operation *resolveSyncAnchor(OperationBase *opBase);
   Location resolveSyncLoc(OperationBase *opBase);
+  void setInsertionPoint(IRRewriter &rewriter, OperationBase *opBase,
+                         bool insertAfter);
+  void emitSyncOp(IRRewriter &rewriter, SyncOp *syncOp);
+  bool emitMultiBufferSetWaitOp(IRRewriter &rewriter, SetWaitOp *setWait);
+  void emitSyncMap(IRRewriter &rewriter, SyncMap &syncMap, bool insertAfter);
 
-  // Insert a single set/wait/barrier op at the given anchor.
-  void insertSetFlag(IRRewriter &rewriter, OperationBase *anchor,
-                     PIPE setPipe, PIPE waitPipe, int64_t eventId,
-                     bool insertAfter);
-  void insertWaitFlag(IRRewriter &rewriter, OperationBase *anchor,
-                      PIPE setPipe, PIPE waitPipe, int64_t eventId,
-                      bool insertAfter);
-  void insertBarrier(IRRewriter &rewriter, OperationBase *anchor, PIPE pipe,
-                     bool insertAfter);
-
-  // Multi-buffer codegen helpers (HIVM-aligned).
-  // emitMultiBufferSetWait: for a ConflictPair with eventIdNum > 1 emits a
-  // dyn-event-id (`pto.set_flag_dyn` / `pto.wait_flag_dyn`) pair driven by an
-  // `iv mod N` selector + arith.select chain over the assigned event ids.
-  void emitMultiBufferSetWait(IRRewriter &rewriter, ConflictPair *cp);
-
-  // Reuse the same `iv mod N` counter across multiple ConflictPairs that
-  // share a (loop, N) tuple (mirrors PTOEnableMultiBuffer's loop2BufferCounter
-  // and the InsertSync SyncCodegen cache).
   Value getOrCreateLoopCounter(IRRewriter &rewriter, scf::ForOp forOp,
-                               int64_t n, Location loc);
-  llvm::DenseMap<std::pair<scf::ForOp, int64_t>, Value> loop2BufferCounter_;
+                               int64_t eventIdNum, Location loc);
+  Value getOrCreateEventSelector(IRRewriter &rewriter, scf::ForOp forOp,
+                                 const llvm::SmallVector<int64_t> &eventIds,
+                                 Location loc);
+
+  std::map<std::pair<Operation *, int64_t>, Value> loopCounterCache_;
+  std::map<std::pair<Operation *, std::vector<int64_t>>, Value>
+      loopEventSelectCache_;
 };
 
-} // namespace syncsolver
-} // namespace pto
-} // namespace mlir
+} // namespace mlir::pto::syncsolver
 
 #endif // MLIR_DIALECT_PTO_TRANSFORMS_GRAPHSYNCSOLVER_SYNCSOLVERCODEGEN_H
