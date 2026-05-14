@@ -630,6 +630,7 @@ bool Solver::checkGraphConflict(
     Occurrence *occ1, Occurrence *occ2, CorePipeInfo corePipeSrc,
     CorePipeInfo corePipeDst, EventIdInfo eventIdInfo,
     mlir::Value conflictBuffer,
+    OperationBase *candOp1, OperationBase *candOp2,
     std::optional<int> startIndex, std::optional<int> endIndex,
     const llvm::SmallVector<ConflictPair *> &extraConflictPairs,
     const llvm::SmallVector<ConflictPair *> &ignoreConflictPairs) {
@@ -642,11 +643,14 @@ bool Solver::checkGraphConflict(
   }
   // In buf-id mode, transitive coverage through existing pairs is only valid
   // when those pairs operate on the SAME underlying buffer as the candidate
-  // (each buf-id is an independent scoreboard counter, so a same-pipe pair
-  // on a different buffer does not transitively sync the candidate's
-  // counter). Filter out cross-buffer existing pairs from the graph when
-  // both sides carry buffer info.
+  // AND are not in a mutually exclusive scf.if branch. Each buf-id is an
+  // independent scoreboard counter, so a same-pipe pair on a different
+  // buffer does not transitively sync the candidate's counter. And pairs
+  // in a disjoint branch are on a different runtime path entirely — they
+  // never execute together so cannot sync each other.
   const bool bufferAware = options.isBufIdEmit() && conflictBuffer != nullptr;
+  const bool mutexAware =
+      options.isBufIdEmit() && candOp1 != nullptr && candOp2 != nullptr;
   GraphSolver graphSolver(options);
   llvm::DenseSet<ConflictPair *> visited;
   auto handleConflictPair = [&](ConflictPair *conflictPair) {
@@ -672,6 +676,14 @@ bool Solver::checkGraphConflict(
         conflictPair->conflictBuffer != conflictBuffer) {
       // Different-buffer existing pair: cannot transitively cover the
       // candidate in buf-id semantics.
+      return;
+    }
+    if (mutexAware &&
+        opsMutuallyExclusive(candOp1, candOp2, conflictPair->op1,
+                             conflictPair->op2)) {
+      // Existing pair lives in a disjoint scf.if branch from the candidate.
+      // They never execute together, so the existing pair's sync cannot
+      // transitively cover the candidate.
       return;
     }
     auto [it, isInserted] = visited.insert(conflictPair);
@@ -761,8 +773,10 @@ bool Solver::checkSyncOpsConflicts(ConflictPair *conflictPair1,
     result = result ||
              checkGraphConflict(occ1, occ2, corePipeSrc, corePipeDst,
                                 conflictPair1->eventIdInfo,
-                                /*conflictBuffer=*/nullptr, startIndex,
-                                endIndex, {conflictPair1}, {conflictPair2});
+                                /*conflictBuffer=*/nullptr,
+                                /*candOp1=*/nullptr, /*candOp2=*/nullptr,
+                                startIndex, endIndex, {conflictPair1},
+                                {conflictPair2});
     conflictPair1->startIndex -= 1;
   }
   if (conflictPair1->waitCorePipeInfo != conflictPair2->waitCorePipeInfo) {
@@ -777,8 +791,10 @@ bool Solver::checkSyncOpsConflicts(ConflictPair *conflictPair1,
     result = result ||
              checkGraphConflict(occ1, occ2, corePipeSrc, corePipeDst,
                                 conflictPair1->eventIdInfo,
-                                /*conflictBuffer=*/nullptr, startIndex,
-                                endIndex, {conflictPair1}, {conflictPair2});
+                                /*conflictBuffer=*/nullptr,
+                                /*candOp1=*/nullptr, /*candOp2=*/nullptr,
+                                startIndex, endIndex, {conflictPair1},
+                                {conflictPair2});
     conflictPair2->endIndex += 1;
   }
   DEBUG_WITH_TYPE("gss-check-sync-ops-conflicts", {
@@ -789,6 +805,63 @@ bool Solver::checkSyncOpsConflicts(ConflictPair *conflictPair1,
     }
   });
   return result;
+}
+
+// Helper: returns true when the two pairs anchored at (aOp1, aOp2) vs
+// (bOp1, bOp2) live in mutually exclusive scf.if branches of some common
+// Condition ancestor. Reused by checkIntersect (coloring conflict graph)
+// and checkGraphConflict (transitive-coverage graph) under buf-id mode.
+bool Solver::opsMutuallyExclusive(OperationBase *aOp1, OperationBase *aOp2,
+                                  OperationBase *bOp1, OperationBase *bOp2) {
+  auto branchUnder = [](OperationBase *op, Condition *condition) -> Scope * {
+    if (op == nullptr || condition == nullptr)
+      return nullptr;
+    auto *trueScope = condition->getTrueScope();
+    if (trueScope == op || trueScope->isProperAncestor(op))
+      return trueScope;
+    if (condition->hasFalseScope()) {
+      auto *falseScope = condition->getFalseScope();
+      if (falseScope == op || falseScope->isProperAncestor(op))
+        return falseScope;
+    }
+    return nullptr;
+  };
+  auto requiredBranch = [&](OperationBase *op1, OperationBase *op2,
+                            Condition *condition) -> Scope * {
+    Scope *required = nullptr;
+    for (auto *op : {op1, op2}) {
+      auto *branch = branchUnder(op, condition);
+      if (branch == nullptr)
+        continue;
+      if (required != nullptr && required != branch)
+        return nullptr;
+      required = branch;
+    }
+    return required;
+  };
+  auto collectParentConditions =
+      [](OperationBase *op, llvm::SmallVectorImpl<Condition *> &conditions) {
+        for (auto *parent = op ? op->parentOp : nullptr; parent != nullptr;
+             parent = parent->parentOp) {
+          if (auto *condition = dyn_cast<Condition>(parent))
+            conditions.push_back(condition);
+        }
+      };
+  llvm::SmallVector<Condition *> conditions;
+  collectParentConditions(aOp1, conditions);
+  collectParentConditions(aOp2, conditions);
+  collectParentConditions(bOp1, conditions);
+  collectParentConditions(bOp2, conditions);
+  llvm::sort(conditions);
+  conditions.erase(std::unique(conditions.begin(), conditions.end()),
+                   conditions.end());
+  for (auto *condition : conditions) {
+    auto *branchA = requiredBranch(aOp1, aOp2, condition);
+    auto *branchB = requiredBranch(bOp1, bOp2, condition);
+    if (branchA != nullptr && branchB != nullptr && branchA != branchB)
+      return true;
+  }
+  return false;
 }
 
 // Check whether two ConflictPair entries conflict in pipe and time ranges.
@@ -809,60 +882,8 @@ bool Solver::checkIntersect(ConflictPair *conflictPair1,
     return checkSyncOpsConflicts(conflictPair1, conflictPair2);
   }
   if (options.isBufIdEmit()) {
-    auto branchUnder = [](OperationBase *op,
-                          Condition *condition) -> Scope * {
-      if (op == nullptr || condition == nullptr)
-        return nullptr;
-      auto *trueScope = condition->getTrueScope();
-      if (trueScope == op || trueScope->isProperAncestor(op))
-        return trueScope;
-      if (condition->hasFalseScope()) {
-        auto *falseScope = condition->getFalseScope();
-        if (falseScope == op || falseScope->isProperAncestor(op))
-          return falseScope;
-      }
-      return nullptr;
-    };
-    auto requiredBranch = [&](ConflictPair *cp,
-                              Condition *condition) -> Scope * {
-      Scope *required = nullptr;
-      for (auto *op : {static_cast<OperationBase *>(cp->op1),
-                       static_cast<OperationBase *>(cp->op2)}) {
-        auto *branch = branchUnder(op, condition);
-        if (branch == nullptr)
-          continue;
-        if (required != nullptr && required != branch)
-          return nullptr;
-        required = branch;
-      }
-      return required;
-    };
-    auto collectParentConditions =
-        [](OperationBase *op, llvm::SmallVectorImpl<Condition *> &conditions) {
-          for (auto *parent = op ? op->parentOp : nullptr; parent != nullptr;
-               parent = parent->parentOp) {
-            if (auto *condition = dyn_cast<Condition>(parent))
-              conditions.push_back(condition);
-          }
-        };
-    auto mutuallyExclusive = [&]() {
-      llvm::SmallVector<Condition *> conditions;
-      collectParentConditions(conflictPair1->op1, conditions);
-      collectParentConditions(conflictPair1->op2, conditions);
-      collectParentConditions(conflictPair2->op1, conditions);
-      collectParentConditions(conflictPair2->op2, conditions);
-      llvm::sort(conditions);
-      conditions.erase(std::unique(conditions.begin(), conditions.end()),
-                       conditions.end());
-      for (auto *condition : conditions) {
-        auto *branch1 = requiredBranch(conflictPair1, condition);
-        auto *branch2 = requiredBranch(conflictPair2, condition);
-        if (branch1 != nullptr && branch2 != nullptr && branch1 != branch2)
-          return true;
-      }
-      return false;
-    };
-    if (mutuallyExclusive())
+    if (opsMutuallyExclusive(conflictPair1->op1, conflictPair1->op2,
+                             conflictPair2->op1, conflictPair2->op2))
       return false;
 
     // Two buf-id brackets must use different ids whenever they share any
@@ -2012,7 +2033,7 @@ void Solver::handleConflict(Occurrence *occ1, Occurrence *occ2,
                             EventIdInfo eventIdInfo, bool isUseless,
                             mlir::Value conflictBuffer) {
   if (!checkGraphConflict(occ1, occ2, corePipeSrc, corePipeDst, eventIdInfo,
-                          conflictBuffer)) {
+                          conflictBuffer, rwOp1, rwOp2)) {
     return;
   }
   LLVM_DEBUG({

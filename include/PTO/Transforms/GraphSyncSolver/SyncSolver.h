@@ -224,12 +224,17 @@ protected:
   // `conflictBuffer` identifies the underlying memory the new pair would
   // synchronize on; in buf-id mode it is used to filter out existing pairs
   // operating on a different buffer (same-pipe transitive coverage via
-  // those pairs does not hold for independent buf-id counters). nullptr
-  // disables the filter (preserves the legacy set/wait behavior).
+  // those pairs does not hold for independent buf-id counters). `candOp1`
+  // and `candOp2` are the candidate pair's anchor ops, used to drop
+  // existing pairs that live in a mutually exclusive scf.if branch
+  // (different runtime path → cannot transitively cover). nullptr/null
+  // disables the corresponding filter (preserves the legacy set/wait
+  // behavior).
   bool checkGraphConflict(
       Occurrence *occ1, Occurrence *occ2, CorePipeInfo corePipeSrc,
       CorePipeInfo corePipeDst, EventIdInfo eventIdInfo,
       mlir::Value conflictBuffer = nullptr,
+      OperationBase *candOp1 = nullptr, OperationBase *candOp2 = nullptr,
       std::optional<int> startIndex = {}, std::optional<int> endIndex = {},
       const llvm::SmallVector<ConflictPair *> &extraConflictPairs = {},
       const llvm::SmallVector<ConflictPair *> &ignoreConflictPairs = {});
@@ -282,6 +287,15 @@ protected:
   // Check whether two ConflictPair ranges/event mapping intersect (same
   // pipes/events).
   bool checkIntersect(ConflictPair *conflictPair1, ConflictPair *conflictPair2);
+
+  // Returns true when two pairs of (op-anchor) endpoints sit in *mutually
+  // exclusive* branches of any common scf.if ancestor. Mutex pairs cannot
+  // execute together at runtime, so they don't conflict in coloring (can
+  // share an id) and they cannot transitively cover each other in
+  // checkGraphConflict (different runtime paths). `aOp1`/`aOp2` describe
+  // one pair's endpoints, `bOp1`/`bOp2` the other's.
+  bool opsMutuallyExclusive(OperationBase *aOp1, OperationBase *aOp2,
+                            OperationBase *bOp1, OperationBase *bOp2);
 
   // Event-id allocation and reuse helpers.
   std::vector<ConflictPair *>
