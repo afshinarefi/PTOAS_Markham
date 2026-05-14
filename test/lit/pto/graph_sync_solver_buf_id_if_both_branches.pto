@@ -1,0 +1,92 @@
+// RUN: ptoas --pto-level=level3 --pto-arch a5 --enable-graph-sync-solver --graph-sync-solver-sync-style=buf-id --graph-sync-solver-event-id-max=1 --emit-pto-ir %s | FileCheck %s
+
+// Regression for a bug where the else-branch of an scf.if had its internal
+// buf-id brackets dropped. Root cause was twofold:
+//   1. The solver hoisted setOp/waitOp to the LCA scope for set/wait-style
+//      pairing, so even when buf-id brackets WERE emitted they could land
+//      outside the branch.
+//   2. The buffer-aware id grouping needed to recognize that two pairs in
+//      mutually exclusive branches do not execute together.
+// Both branches must independently bracket their tload -> tmuls dependency,
+// even though the producer ops in then/else may anchor on the same
+// PIPE_MTE2 / PIPE_V positions structurally.
+
+module {
+
+// CHECK-LABEL: func.func @if_both_branches
+// CHECK: scf.if
+// then-branch: full bracket pair on its own tile.
+// CHECK-NEXT: pto.get_buf[#pto.pipe_event_type<TLOAD>
+// CHECK-NEXT: pto.tload {{.*}} outs([[T:%[0-9]+]] : memref<256x16xf32
+// CHECK-NEXT: pto.rls_buf[#pto.pipe_event_type<TLOAD>
+// CHECK-NEXT: pto.get_buf[#pto.pipe_event_type<TVEC>
+// CHECK-NEXT: pto.tmuls ins([[T]],
+// CHECK-NEXT: pto.rls_buf[#pto.pipe_event_type<TVEC>
+//
+// else-branch: full bracket pair on the OTHER tile. MUST also exist.
+// CHECK: } else {
+// CHECK-NEXT: pto.get_buf[#pto.pipe_event_type<TLOAD>
+// CHECK-NEXT: pto.tload {{.*}} outs([[T2:%[0-9]+]] : memref<256x16xf32
+// CHECK-NEXT: pto.rls_buf[#pto.pipe_event_type<TLOAD>
+// CHECK-NEXT: pto.get_buf[#pto.pipe_event_type<TVEC>
+// CHECK-NEXT: pto.tmuls ins([[T2]],
+// CHECK-NEXT: pto.rls_buf[#pto.pipe_event_type<TVEC>
+// CHECK-NEXT: }
+//
+// CHECK-NOT: pto.set_flag
+// CHECK-NOT: pto.wait_flag
+// CHECK-NOT: pto.barrier
+
+  func.func @if_both_branches(%arg0: !pto.ptr<f32>, %cond: i1,
+                               %arg2: index, %arg3: index, %arg4: index,
+                               %arg5: index, %arg6: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c1024 = arith.constant 1024 : index
+    %c1048576 = arith.constant 1048576 : index
+    %c0_i64 = arith.constant 0 : i64
+    %c100_i64 = arith.constant 100 : i64
+    %cst = arith.constant 2.000000e+00 : f32
+
+    %src_view = pto.make_tensor_view %arg0,
+            shape = [%c1, %c1, %c16, %c1024, %c1024],
+            strides = [%c1048576, %c1048576, %c1048576, %c1024, %c1]
+            : !pto.tensor_view<1x1x16x1024x1024xf32>
+    %src_part = pto.partition_view %src_view,
+            offsets = [%c0, %c0, %c0, %c0, %c0],
+            sizes = [%arg2, %arg3, %arg4, %arg5, %arg6]
+            : !pto.tensor_view<1x1x16x1024x1024xf32>
+              -> !pto.partition_tensor_view<?x?x?x?x?xf32>
+
+    %tmp0 = arith.muli %arg2, %arg3 : index
+    %tmp1 = arith.muli %tmp0, %arg4 : index
+    %tmp2 = arith.muli %tmp1, %arg5 : index
+
+    %tile_a = pto.alloc_tile addr = %c0_i64 valid_row = %tmp2 valid_col = %arg6
+            : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tile_b = pto.alloc_tile addr = %c100_i64 valid_row = %tmp2 valid_col = %arg6
+            : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    // Mimic gemm's pattern: each branch uses its OWN mat tile (a or b)
+    // but writes to a SHARED scratch tile_s. Cross-branch WAW on tile_s
+    // exists at the memory level even though the branches are mutually
+    // exclusive at runtime.
+    scf.if %cond {
+      pto.tload ins(%src_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
+              outs(%tile_a : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      pto.tmuls ins(%tile_a, %cst : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32)
+              outs(%tile_a : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    } else {
+      // Else uses tile_b, but otherwise structurally identical.
+      pto.tload ins(%src_part : !pto.partition_tensor_view<?x?x?x?x?xf32>)
+              outs(%tile_b : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      pto.tmuls ins(%tile_b, %cst : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32)
+              outs(%tile_b : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    }
+    // After the if, consume whichever tile was filled.
+    pto.tmuls ins(%tile_a, %cst : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, f32)
+            outs(%tile_a : !pto.tile_buf<loc=vec, dtype=f32, rows=256, cols=16, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}

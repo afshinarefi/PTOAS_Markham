@@ -778,6 +778,62 @@ bool Solver::checkIntersect(ConflictPair *conflictPair1,
     return checkSyncOpsConflicts(conflictPair1, conflictPair2);
   }
   if (options.isBufIdEmit()) {
+    auto branchUnder = [](OperationBase *op,
+                          Condition *condition) -> Scope * {
+      if (op == nullptr || condition == nullptr)
+        return nullptr;
+      auto *trueScope = condition->getTrueScope();
+      if (trueScope == op || trueScope->isProperAncestor(op))
+        return trueScope;
+      if (condition->hasFalseScope()) {
+        auto *falseScope = condition->getFalseScope();
+        if (falseScope == op || falseScope->isProperAncestor(op))
+          return falseScope;
+      }
+      return nullptr;
+    };
+    auto requiredBranch = [&](ConflictPair *cp,
+                              Condition *condition) -> Scope * {
+      Scope *required = nullptr;
+      for (auto *op : {static_cast<OperationBase *>(cp->op1),
+                       static_cast<OperationBase *>(cp->op2)}) {
+        auto *branch = branchUnder(op, condition);
+        if (branch == nullptr)
+          continue;
+        if (required != nullptr && required != branch)
+          return nullptr;
+        required = branch;
+      }
+      return required;
+    };
+    auto collectParentConditions =
+        [](OperationBase *op, llvm::SmallVectorImpl<Condition *> &conditions) {
+          for (auto *parent = op ? op->parentOp : nullptr; parent != nullptr;
+               parent = parent->parentOp) {
+            if (auto *condition = dyn_cast<Condition>(parent))
+              conditions.push_back(condition);
+          }
+        };
+    auto mutuallyExclusive = [&]() {
+      llvm::SmallVector<Condition *> conditions;
+      collectParentConditions(conflictPair1->op1, conditions);
+      collectParentConditions(conflictPair1->op2, conditions);
+      collectParentConditions(conflictPair2->op1, conditions);
+      collectParentConditions(conflictPair2->op2, conditions);
+      llvm::sort(conditions);
+      conditions.erase(std::unique(conditions.begin(), conditions.end()),
+                       conditions.end());
+      for (auto *condition : conditions) {
+        auto *branch1 = requiredBranch(conflictPair1, condition);
+        auto *branch2 = requiredBranch(conflictPair2, condition);
+        if (branch1 != nullptr && branch2 != nullptr && branch1 != branch2)
+          return true;
+      }
+      return false;
+    };
+    if (mutuallyExclusive())
+      return false;
+
     // Two buf-id brackets must use different ids whenever they share any
     // pipe — same-id same-pipe re-entry is illegal per the buf-id spec
     // constraint 1 ("两次连续 get(P,#id) 非法"). Unlike set-wait, having
