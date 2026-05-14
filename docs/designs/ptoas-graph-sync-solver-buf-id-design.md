@@ -149,7 +149,7 @@ for i = 0:N
   get_buf(V,    #id); Vector(); rls_buf(V,    #id) // consumer 自然 bracket
 ```
 
-**结论：buf-id 模式下 backward ConflictPair 不需要单独发 bracket，但 backward 分析本身不能省**——它要用来决定 forward pair 之间是否要**复用同一个 id**。
+**结论：buf-id 模式下 backward ConflictPair 不需要单独发 bracket**——一旦同一 SSA tile buffer 上所有 forward pair 都共享同一个 buf id，硬件 scoreboard 的计数器单调性已经把跨迭代依赖一并串起。
 
 #### 单 buffer vs 多 buffer 的 id 分配
 
@@ -177,26 +177,43 @@ for i = 0:N
 
 **判别准则**：两条 forward F1、F2 是否在同一 buffer chain 上？
 
-理论上需要 plumbing buffer 信息到 ConflictPair。但有个等价代理：
+实现里直接把"是否同 buffer"作为一等公民：在 `checkMemoryConflicts` 里把
+触发冲突的 SSA `mlir::Value` 透传到 `ConflictPair::conflictBuffer`（每个
+mem-info 对独立一个 ConflictPair），后续所有 buf-id 相关的着色 / 裁剪决
+策都按 `conflictBuffer` 来判别。判定退化成：
 
-> F1 和 F2 共享一个 anchor `(op, pipe)`，且存在 backward ConflictPair B 把 F1 的"非共享"端点和 F2 的"非共享"端点连起来 → F1、F2 必在同 buffer chain 上。
+> `conflictPair1->conflictBuffer == conflictPair2->conflictBuffer` ⇒ 同 buffer chain。
 
-理由：solver 的 backward 边正是 iter i 的某端读 / iter i+1 的某端写在同一 buffer 上产生的。如果两条 forward 链穿过同一 buffer，就一定有这种 backward 桥；如果是两条独立 buffer 的链，桥就找不到。
-
-所以：**backward 分析依旧需要做**，但产物不是 bracket，而是 id 合并提示。
+历史上文档里提到过的"backward 边作 buffer 桥"代理仍保留作为兜底
+（`getBeforeAfterSyncMaps` 里的 union-find pre-pass，专门处理无 conflictBuffer
+的特殊形态），但默认路径走 `conflictBuffer` 直接比较。
 
 #### 落实
 
 1. `tryMovingOutBackwardSyncPairsToOuterLoops`、`considerOuterBackwardSyncPairs`、
    `mergeBackwardSyncPairs` 这些 set/wait 的 backward 外提路径在 buf-id 模式下**直接关掉**。
 2. `backwardSyncEvents` / `backwardSyncEventsAfterMerge` 不会被填充。
-3. 在 `getBeforeAfterSyncMaps` emit 时，对所有 forward ConflictPair 做一个 **buffer-aware union-find 预处理**：
-   - 用 backward 边作为"同 buffer 桥"。
-   - 同一连通分量的 forward pair 共享一个 buf id（取分量内最小的 id 作代表）。
-   - 每个 `(anchor_op, pipe, id)` 三元组只发一对 bracket（dedup）——多个 ConflictPair 落到同一 (op, pipe, id) 上时合并。
-4. `conflictPair->isInnerBackward` 为 true 的 pair 不发 bracket（只参与 step 3 的 union-find 桥）。
+3. `ConflictPair` 携带 `conflictBuffer` 字段（[SyncSolverIR.h](../../include/PTO/Transforms/GraphSyncSolver/SyncSolverIR.h)）；`checkMemoryConflicts`
+   返回 `SmallVector<tuple<CorePipeInfo, CorePipeInfo, Value>>`，每一项独立一个 ConflictPair。
+4. **着色阶段**（`checkIntersect`）：同 `conflictBuffer` 的两 pair 不算冲突，落入
+   同一 color → 同一 buf id；同时 emit-side 用 `(anchor_op, pipe, bufId)` 三元
+   组 dedup，把跨 pair 落在同一锚点同一 pipe 同一 id 的 bracket 合成一对。
+   这条规则同时覆盖 RAW + WAR + WAW（所有 same-buffer 依赖都搭同一条 ratchet 链）。
+5. **裁剪阶段**（`checkGraphConflict`）：
+   - 不同 `conflictBuffer` 的现有 pair 不能传递覆盖候选（独立 scoreboard）；
+   - 互斥 scf.if 分支的现有 pair 不能传递覆盖候选（运行时根本不同路径）；
+   - 同 pipe-pair 不同 consumer 的现有 pair：若候选 consumer 写了与现有
+     consumer 不同的目标 buffer，则现有 pair 不能传递覆盖（独立 destination
+     需要独立 bracket）；若目标 buffer 相同，则 WAW 链已经把候选串进
+     ratchet，候选可被裁剪。
+6. `conflictPair->isInnerBackward` 为 true 的 pair 不发 bracket（计数器
+   ratchet 已经把它的语义吸收掉）；同时 mirror-image dedup（前向与反向无
+   序锚点集合相同的 pair）会更早一步把反向 pair 标记为 redundant。
+7. **跨迭代 ping-pong 优化**：互斥 scf.if 分支位于同一循环、且写不同 SSA
+   buffer 时，强制冲突（用不同 id）以让两分支跨迭代并行起来（见 §3.8.2
+   规则 1 的 ping-pong 例外）。
 
-具体落实见 3.6 节。
+具体落实见 3.6 / 3.8 节。
 
 ### 2.5 不在本期范围
 
@@ -314,6 +331,14 @@ if (emitStyle == SyncEmitStyle::BUF_ID) {
 - `reuseSyncPairToSaveEventIds`（在 set-wait 下默认开，buf-id 下默认关——
   约束 4 的"不同 pipe 对不建议共享 id"）。
 
+**buf-id 模式新增的字段 / 行为**：
+- `ConflictPair::conflictBuffer`（`mlir::Value`）：记录触发依赖的 SSA tile
+  buffer，由 `checkMemoryConflicts` 一并返回、经 `processConflict` /
+  `handleConflict` 透传。这是 §2.4 / §3.8 所有 buf-id 决策的
+  核心信息载体。同一个 (rwOp1, rwOp2) 的多个 mem-info 对，会分裂成多个独立
+  的 ConflictPair（每个携带不同的 `conflictBuffer`），方便后续 buffer-aware
+  着色与裁剪。
+
 **buf-id 模式下关掉的部分**：
 - 同 pipe barrier 整体跳过（A5 硬件保序，见 1.4 节）。
   `handleBarrierConflict` 入口直接 return；`pickAndInsertABarrierAll` 不
@@ -333,7 +358,7 @@ if (emitStyle == SyncEmitStyle::BUF_ID) {
 具体实现方式见 3.6 节末尾。
 
 **理由**：求解器输出的 `ConflictPair` 已经包含全部 emit 所需的信息：
-`(setOp, waitOp, setCorePipeInfo, waitCorePipeInfo, eventIdNode->getEventIds())`。
+`(setOp, waitOp, setCorePipeInfo, waitCorePipeInfo, eventIdNode->getEventIds(), conflictBuffer)`。
 buf-id 与 set-wait 的差异只是这套信息**怎么落成 IR**——外提优化是 set/wait
 强配对的副产物，buf-id 不需要。
 
@@ -383,51 +408,59 @@ class RlsBufOp : public BufOp { /* OpType::RLS_BUF_OP */ };
 
 ### 3.6 `getBeforeAfterSyncMaps` 分支
 
-[SyncSolver.cpp:2216-2270](../../lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp)
-在每个非 barrier / 非 unitFlag 的 ConflictPair 处理段加分支：
+[SyncSolver.cpp::getBeforeAfterSyncMaps](../../lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp)
+在每个非 barrier / 非 unitFlag 的 ConflictPair 处理段加分支。整体流程：
+
+1. **Mirror-image dedup**（§3.9）：以无序 anchor 集合
+   `{(setOp, setPipe), (waitOp, waitPipe)}` 为 key 把"forward + backward
+   同形"的 pair 标记 redundant（保留 id 最小者）。
+2. **Forward / backward 拆分**：以 `isInnerBackward` 划分，backward pair 后
+   续只用作 union-find 桥（兜底）。
+3. **Anchor 解析**：buf-id 模式下 bracket 直接锚在 `cp->op1` / `cp->op2`
+   的 RWOperation 上（不外提到 setOp / waitOp 的 PlaceHolder LCA），见
+   `anchorsOf`。理由：hoist 到外层 scope 会让 ratchet 在 if-then 路径未
+   走时也推进，破坏 `(get_cnt, rel_cnt)` 与真实 pipe 活动的对应关系。
+4. **Buffer-aware 共享 id**（实际实现）：因为 §3.8.2 规则 2 已经在
+   `checkIntersect` 阶段把同 `conflictBuffer` 的 pair 染成同色，emit 阶段
+   只需用 `(anchor_op, pipe, bufId)` 三元组对 bracket 做集合去重即可。
+   保留的 union-find 预处理（backward-edge 桥）继续作为对 conflictBuffer
+   为 null 情况下的兜底。
+5. **发射**：对每个 forward pair 取 `eventIdNode->getEventIds().front()`
+   作 bufId，调用 `emitBracket(anchor, bufId)`：
+
+   ```cpp
+   auto emitBracket = [&](AnchorEnd anchor, int64_t bufId, ConflictPair *dbg) {
+     auto key = std::make_pair(anchor, bufId);
+     if (emittedBefore.insert(key).second)
+       syncMapBefore[anchor.first].push_back(
+           std::make_unique<GetBufOp>(anchor.first->op, anchor.first->parentOp,
+                                      anchor.second, bufId));
+     if (emittedAfter.insert(key).second)
+       syncMapAfter[anchor.first].push_back(
+           std::make_unique<RlsBufOp>(anchor.first->op, anchor.first->parentOp,
+                                      anchor.second, bufId));
+   };
+   ```
+
+   `(anchor, bufId)` 集合 dedup 保证同 anchor / 同 pipe / 同 id 只发一对
+   bracket——这对维持约束 1（同 pipe 同 id 不重入）至关重要：
+   - 多条 forward pair 在同一锚点用同一 id（同 buffer chain 多次穿过同一
+     op）→ dedup 合成一对；
+   - 多 buffer 的 pair 在同一锚点用不同 id → 发多对 bracket，互不冲突。
+
+**Barrier 处理**：
 
 ```cpp
 if (conflictPair->isBarrier()) {
-  if (options.emitStyle == SyncEmitStyle::BUF_ID) {
-    // A5 同 pipe 硬件保序，不发射任何 barrier。
+  if (options.isBufIdEmit()) {
+    // A5 同 pipe 硬件保序，不发射任何 barrier
     continue;
   }
   // 现有 BarrierOp 路径，不变
-} else if (options.emitStyle == SyncEmitStyle::SET_WAIT) {
-  // 现有 SetFlagOp / WaitFlagOp 路径，不变
-  // syncMapAfter[conflictPair->setOp].push_back(setOp);
-  // syncMapBefore[conflictPair->waitOp].push_front(waitOp);
-} else {
-  // BUF_ID 路径
-  auto setPipe = conflictPair->setCorePipeInfo.pipe;
-  auto waitPipe = conflictPair->waitCorePipeInfo.pipe;
-  for (int64_t bufId : conflictPair->eventIdNode->getEventIds()) {
-    // producer 端 bracket（src pipe）
-    syncMapBefore[conflictPair->setOp].push_back(
-        make_unique<GetBufOp>(conflictPair->setOp->op,
-                              conflictPair->setOp->parentOp, setPipe, bufId));
-    syncMapAfter[conflictPair->setOp].push_back(
-        make_unique<RlsBufOp>(conflictPair->setOp->op,
-                              conflictPair->setOp->parentOp, setPipe, bufId));
-    // consumer 端 bracket（dst pipe）
-    syncMapBefore[conflictPair->waitOp].push_back(
-        make_unique<GetBufOp>(conflictPair->waitOp->op,
-                              conflictPair->waitOp->parentOp, waitPipe, bufId));
-    syncMapAfter[conflictPair->waitOp].push_back(
-        make_unique<RlsBufOp>(conflictPair->waitOp->op,
-                              conflictPair->waitOp->parentOp, waitPipe, bufId));
-  }
 }
 ```
 
-**约束 1/2 的天然满足**：bracket 形式下，`syncMapBefore[X]` 里某个 `get_buf(P, id)`
-与 `syncMapAfter[X]` 里对应的 `rls_buf(P, id)` 之间隔着的只有 anchor op `X` 本身。
-codegen 按 "before 顺序 push → 原 op → after 顺序 push" 的固定模式落盘，不会有
-其他 (pipe, id) 的 bracket 插入到中间。
-
-**backward ConflictPair 处理**：
-
-在 `getBeforeAfterSyncMaps` 主循环的 `continue` 守卫加一条：
+**Backward ConflictPair 处理**：
 
 ```cpp
 if (options.isBufIdEmit() && conflictPair->isInnerBackward) {
@@ -435,9 +468,11 @@ if (options.isBufIdEmit() && conflictPair->isInnerBackward) {
 }
 ```
 
-这样 backward ConflictPair 的 bracket 完全不发；其语义由 forward ConflictPair 的 bracket 通过计数器单调性间接覆盖。
-
-注意：此 backward 仍然会被 solver 计数和分配 id（因为 EventIdSolver 早就跑完了），分配掉的 id 实际未使用——是浪费但不影响正确性。后续如果 id 池紧张，可以把这个过滤前移到 `processConflict`/`handleSetWaitConflict`，从源头就不创建 backward pair。
+backward pair 不发 bracket；语义由 forward pair 通过同 buffer 共享 id 的
+ratchet 链 + mirror-image dedup 一并吸收。backward 仍会被 solver 计数和
+分配 id（因为 `EventIdSolver` 早就跑完了），分配掉的 id 实际未使用——是
+浪费但不影响正确性。后续若 id 池紧张，可前移到
+`processConflict`/`handleSetWaitConflict` 从源头不创建。
 
 **backward-sync 路径处理**：
 
@@ -499,80 +534,136 @@ void CodeGenerator::emitSyncOp(IRRewriter &rewriter, SyncOp *syncOp) {
 `setInsertionPoint` 已经支持 placeholder（loop 边界 / scope 起止）锚点，
 buf-id 不需要新的锚点类型。
 
-### 3.8 跨 pipe-pair 共享 id 必须分配冲突边（**正确性必须**）
+### 3.8 `checkIntersect` 与 `checkGraphConflict` 的 buf-id 规则集
 
-> 这一节最初被列为"如果需要"的精化，实际上是 buf-id 的**硬正确性约束**。
+求解器的两条决策线分别决定 **着色**（哪些 pair 必须用不同 id）与 **裁剪**
+（哪些 pair 不需要单独 emit）。buf-id 模式下两者都按 `conflictBuffer` /
+mutex-branch / pipe-pair 做了多层细化。下文给出当前实现的完整规则。
 
-set-wait 模式下，求解器按 (pipeSrc, pipeDst) 独立维护 `EventIdSolver` 实例
-（[SyncSolver.cpp::getEventIdSolverRef](../../lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp)），
-不同 pipe 对各自从 id=0 开始着色。这对 set/wait 是正确的——
-`set_flag[MTE2,V,#0]` 和 `set_flag[V,MTE3,#0]` 落到两个不同的硬件 flag
-寄存器（pipe 对组合是 hw 寻址的一部分），物理上隔离。
+#### 3.8.1 共用前提
 
-**buf-id 不行**。`get_buf[V,#0]` 不带"对方 pipe"参数，所以 `(MTE2→V)` 的
-#0 和 `(V→MTE3)` 的 #0 在 hw 上是**同一个 scoreboard**。考虑下面 IR：
+- `EventIdSolver` 实例：buf-id 模式跟 cross-core 模式一样在
+  `getEventIdSolverRef` 里把 key 折成 `(PIPE_UNASSIGNED, PIPE_UNASSIGNED)`，
+  让**所有** pipe 对共享同一个着色图；否则不同 pipe 对会各自从 id=0 起
+  发牌，产生跨 pipe-pair 撞 id 的隐患。
+- `reuseSyncPairToSaveEventIds` 在 buf-id 下默认关掉（约束 4 的软性提示）。
+- 同 pipe barrier 整体跳过（§1.4 / §3.4）。
 
+#### 3.8.2 `checkIntersect`：着色冲突边规则（buf-id 路径）
+
+依次判定，命中即返回：
+
+1. **互斥 scf.if 分支** → **默认无冲突**（可共享 id，因为运行时只走一条
+   分支）。
+
+   **例外（loop ping-pong）**：两 pair 同时满足
+   - 都有 `conflictBuffer`，且**不同**；
+   - 共享一个 Loop 祖先
+
+   时，强制冲突。意图：跨迭代轮流执行 if / else 分支的 ping-pong 形态，
+   同 id 会让 iter k+1 的分支等 iter k 的分支 ratchet 完才能起步，浪费
+   独立 memory 上的并行机会。
+
+   典型例子（gemm.pto）：
+   ```text
+   for v55 {
+     if (v56 % 2 == 0) {
+       tload(v30); tload(v34); ...   # mat tiles at addr 0 / 262144
+     } else {
+       tload(v32); tload(v36); ...   # mat tiles at addr 196608 / 65536
+     }
+   }
+   ```
+   if 的 v30 与 else 的 v32 是不同 SSA `alloc_tile`，二者各拿一组独立
+   id，iter k+1 的 else 分支 tload 可以在 iter k 的 if 分支 textract / matmul
+   还在跑时就在 MTE2 上发出。
+
+2. **同 `conflictBuffer`** → 无冲突（可共享同一 buf id）。
+
+   理由：硬件 `(get_cnt, rel_cnt)` ratchet 链顺着同 id 串起 RAW + WAR + WAW
+   三类同 buffer 依赖；emit-side 的 `(anchor_op, pipe, id)` 三元组 dedup
+   会把同锚点重复 bracket 合并成一对，自然满足约束 1（连续两次同 pipe
+   同 id `get_buf` 非法）。
+
+3. **共享任一 pipe** → 冲突（约束 1）。
+
+   即使 `(setPipe, waitPipe)` 二元组不完全相同，只要两 pair 出现了同一
+   个 pipe，bracket 锚在 RWOperation 上时就可能落在同一个 op 上引发
+   "连续两次同 pipe 同 id `get_buf`"。比 set-wait 的范围 overlap 检查更
+   保守，但实测对 8-id 默认池影响不大。
+
+4. 否则不冲突。
+
+#### 3.8.3 `checkGraphConflict`：传递覆盖裁剪规则（buf-id 路径）
+
+候选 pair 由 `handleConflict` 抛入 `checkGraphConflict` 之前，遍历所有
+已选 / 持久化 pair，三层过滤决定哪些 pair 进入 Dijkstra 图：
+
+1. **不同 `conflictBuffer` 的现有 pair**：buf-id 是 per-id 独立 scoreboard，
+   不同 buffer 之间没有计数器关系 → 不能传递覆盖 → 丢弃。
+
+2. **互斥 scf.if 分支的现有 pair**：候选与现有运行时不在同一路径 → 不能
+   传递覆盖 → 丢弃。
+
+3. **同 pipe-pair 但不同 consumer 的现有 pair**（candidate 在 RAW 方向：
+   `candOp2` 读 `conflictBuffer`）：
+   - 若候选 consumer 与现有 consumer 写**相同**目标 buffer：现有
+     consumer → 它下游的 RAW peer → 候选（通过共享 id 的 WAW 链）已经
+     形成 ratchet 闭环，候选可被覆盖 → 保留现有 pair 进入图。
+   - 若目标 buffer 不同：没有 WAW 链 → 现有 pair 不能传递覆盖候选 → 丢弃。
+
+   注意此规则只在候选确实读 `conflictBuffer` 时（RAW 方向）触发；对 WAR /
+   WAW 方向的候选不生效，由"同 buffer 共享 id"在 checkIntersect 那一层
+   通过 ratchet 链自动覆盖。
+
+4. 其余 pair 走原有 Dijkstra 覆盖逻辑。
+
+#### 3.8.4 例子
+
+**例子 1：linear chain（doc §1.2 Case 1）**
 ```text
-tload   # PIPE_MTE2，pair1 setOp
-tmuls   # PIPE_V，pair1 waitOp + pair2 setOp
-tstore  # PIPE_MTE3，pair2 waitOp
+tload  # MTE2 -> %tile
+tmuls  # V    -> %tile
+tstore # MTE3 -> %tile
 ```
+- 两 forward pair 都在 `%tile` 上：checkIntersect §3.8.2 第 2 条触发，
+  共享同一 buf id。
+- emit：`get_buf(MTE2, X) tload rls_buf(MTE2, X); get_buf(V, X) tmuls
+  rls_buf(V, X); get_buf(MTE3, X) tstore rls_buf(MTE3, X)`。tmuls 上 V
+  端被同 (anchor, X) dedup 成一对 bracket，串起整条 ratchet。
 
-按 set-wait 着色逻辑会给两个 pair 都分配 id=0。展开成 buf-id 形态：
-
+**例子 2：one producer, multiple consumers（gemm.pto 内层）**
 ```text
-get_buf(MTE2, #0); tload; rls_buf(MTE2, #0)
-get_buf(V,    #0);                              # pair1 consumer on tmuls
-get_buf(V,    #0);                              # pair2 producer on tmuls (illegal!)
-tmuls
-rls_buf(V,    #0)
-rls_buf(V,    #0)
-get_buf(MTE3, #0); tstore; rls_buf(MTE3, #0)
+tload v30 -> MTE1
+textract v38 := f(v30, ...) # 1st write of v38
+textract v40 := g(v30, ...) # 1st write of v40
+textract v38 := h(v30, ...) # 2nd write of v38
+textract v40 := i(v30, ...) # 2nd write of v40
 ```
+- 全部 4 个 RAW pair 都在 `v30` 上 → checkIntersect 同 buffer 共享 id。
+- 候选 `(tload, textract v38 2nd)` 在 checkGraphConflict 里：现有
+  `(tload, textract v38 1st)` 写同样的 destination `v38` → 命中 §3.8.3
+  第 3 条第一种情况 → 现有 pair 保留 → Dijkstra 找到覆盖 → 候选被裁剪。
+- 候选 `(tload, textract v40 1st)`：现有 `(tload, textract v38 1st)` 写
+  `v38` ≠ candidate 写 `v40` → 命中 §3.8.3 第 3 条第二种情况 → 现有
+  pair 丢弃 → 候选自己 emit bracket。
+- 结果：1st 与 2nd 写 v38 / v40 各保留 tload-sync bracket，后续覆盖写
+  靠 WAW ratchet 链继承。
 
-`get_buf(V,#0)` 连续出现两次 → 违反 doc §1.4 约束 1（"连续两次 get 同 id
-不合法"，会让 hw 计数器混乱）。
-
-#### 修复方案
-
-两处改动：
-
-1. **`getEventIdSolverRef`**：buf-id 模式跟 cross-core 模式一样把 key 折成
-   `(PIPE_UNASSIGNED, PIPE_UNASSIGNED)`，让**所有** pipe 对共享同一个
-   `EventIdSolver`。所有 ConflictPair 都进入同一个染色图，避免不同 pipe
-   对从同一 id pool 起点重复发牌。
-
-2. **`checkIntersect`**：buf-id 模式下，两个 ConflictPair 只要共享**任一**
-   pipe 就视为冲突（加冲突边），不再要求 (setPipe, waitPipe) 二元组
-   完全相同。原因：buf-id bracket 锚在 RWOperation 上而不是 `(setOp, waitOp)`
-   范围内的中间索引，两个 pair 各自在共享的 pipe 上的锚点可能落在同一个
-   op 上，进而产生连续 get 违法形态。
-
-完整代码改动见 [SyncSolver.cpp::getEventIdSolverRef](../../lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp)
-和 [SyncSolver.cpp::checkIntersect](../../lib/PTO/Transforms/GraphSyncSolver/SyncSolver.cpp)。
-
-#### 修复后实际输出（与文档前文 §2.3 的形态表对齐）
-
+**例子 3：mutex branches in loop（gemm.pto 外层 if/else）**
 ```text
-get_buf(TLOAD, #1); tload; rls_buf(TLOAD, #1)        # pair1, id=1
-get_buf(TVEC,  #1);                                  # pair1 consumer on tmuls
-get_buf(TVEC,  #0);                                  # pair2 producer on tmuls (different id)
-tmuls
-rls_buf(TVEC,  #1)
-rls_buf(TVEC,  #0)
-get_buf(TSTORE_VEC, #0); tstore; rls_buf(TSTORE_VEC, #0)
+for v55 {
+  if {
+    tload(v30); tload(v34); ...
+  } else {
+    tload(v32); tload(v36); ...
+  }
+}
 ```
-
-- 约束 1（同 pipe 同 id 不能重入）：TVEC 上 id=0 一对 + id=1 一对，**不同 id**，合法。
-- 约束 2（不同 pipe 同 id 各自连续）：id=1 跨 TLOAD/TVEC，TLOAD 那对内部无其他 pipe 的 id=1；TVEC 那对内部只有 id=0 的 get/rel（不是 id=1），合法。
-
-#### 保守度
-
-`checkIntersect` 在 buf-id 下采用"共享任一 pipe → 冲突"的最保守判据，**忽略**
-IR 范围 overlap。这会偶尔产出更密的冲突图，把不必要的 ConflictPair 染成不同
-id，浪费 buf-id 池。在 8-id 默认池场景下实测影响不大；若后续在大型 kernel 上
-出现 id 池耗尽问题，可以细化为"共享 pipe 上的锚点 RWOperation 重合"——这个
-判据严格等价于真实硬件冲突，但实现更繁琐。阶段一保守为主。
+- `(tload, ...)` 在 if 分支与 `(tload, ...)` 在 else 分支：互斥 + 共享
+  Loop + 不同 conflictBuffer → §3.8.2 第 1 条 ping-pong 例外触发，强制
+  冲突，分得不同 id。
+- iter k 用 if 的 id 组，iter k+1 用 else 的 id 组，互不阻塞。
 
 ### 3.9 Mirror-image ConflictPair 去重
 
@@ -631,7 +722,7 @@ for i = 0:100
 | --- | --- |
 | ODS (`include/PTO/IR/*.td`) | `get_buf`/`rls_buf` 已存在，可选加 verifier |
 | C++ IR & verifiers (`lib/PTO/IR`) | 同上 |
-| 求解器内核 (`lib/PTO/Transforms/GraphSyncSolver/`) | `SyncSolverIR.h` 加 `BufOp`/`GetBufOp`/`RlsBufOp`；`SyncSolver.cpp::getBeforeAfterSyncMaps` 加分支；`SyncSolverCodeGen.cpp::emitSyncOp` 加分支；`Utility.h::SyncSolverOptions` 加 `emitStyle` |
+| 求解器内核 (`lib/PTO/Transforms/GraphSyncSolver/`) | `SyncSolverIR.h` 加 `BufOp`/`GetBufOp`/`RlsBufOp` + `ConflictPair::conflictBuffer`；`SyncSolver.cpp::checkMemoryConflicts` 返回 `(srcInfo, dstInfo, Value)` 三元组；`SyncSolver.cpp::checkIntersect` / `checkGraphConflict` 加 buf-id 路径（§3.8）；`SyncSolver.cpp::getBeforeAfterSyncMaps` 加分支；`SyncSolverCodeGen.cpp::emitSyncOp` 加分支；`Utility.h::SyncSolverOptions` 加 `emitStyle` |
 | Pass 入口 (`PTOGraphSyncSolver.cpp`) | 解析新选项 + arch 校验 |
 | Passes.td | 增加 `sync-style` option |
 | CLI (`tools/ptoas/ptoas.cpp`) | 新 flag `--graph-sync-solver-sync-style` 透传 |
@@ -647,16 +738,27 @@ for i = 0:100
 
 参考 `test/lit/pto/` 现有 `*_gss.pto` 体例（如
 [graph_sync_solver_basic.pto](../../test/lit/pto/graph_sync_solver_basic.pto)），
-新增：
+当前已落地的测试集（[test/lit/pto/graph_sync_solver_buf_id_*.pto](../../test/lit/pto/)）：
 
 | 测试 | 目的 | 关键 FileCheck |
 | --- | --- | --- |
-| `graph_sync_solver_buf_id_basic.pto` | A5 双 pipe forward dep 最小用例 | 出现 `pto.get_buf`/`pto.rls_buf`，不出现 `pto.set_flag` / `pto.wait_flag` |
-| `graph_sync_solver_buf_id_multibuf.pto` | multibuffer 流水，N>1 个 id | 同一 anchor 上有 N 对 bracket，bufId 互不相同 |
-| `graph_sync_solver_buf_id_no_barrier.pto` | 同 pipe 真依赖 | **不出现** `pto.barrier`、也不出现 buf-id 指令（A5 硬件保序） |
-| `graph_sync_solver_buf_id_backward.pto` | 循环间依赖（backward sync） | producer/consumer 在原位 bracket，无形态二外提；不出现 `if isFirstIter` 守卫 |
+| `graph_sync_solver_buf_id_basic.pto` | 双 pipe forward dep + 同 pipe 真依赖共两个 case | 出现 `pto.get_buf`/`pto.rls_buf`；同 pipe case 不出现 `pto.barrier`；linear chain 上 anchor 共享 id（emit-side dedup） |
+| `graph_sync_solver_buf_id_canonical_loop.pto` | doc §1.2 canonical 循环（单 buffer F+B 镜像） | 单一 id 覆盖 forward 与 backward；无 backward 外提；无 `scf.if` 守卫 |
+| `graph_sync_solver_buf_id_two_buffer_loop.pto` | doc §1.2 双 buffer 循环（两条独立 buffer chain） | 两条 chain 分得不同 id；vadd 在 V 上有两对 bracket（构成跨 chain 衔接） |
+| `graph_sync_solver_buf_id_cross_loop.pto` | 跨 ConflictPair 通过同 buffer 形成传递覆盖 | 后续消费者继承前序 ratchet，不重复 emit |
+| `graph_sync_solver_buf_id_backward.pto` | backward ConflictPair 不发射 | 不出现 backward-only bracket；forward ratchet 自然吸收 |
+| `graph_sync_solver_buf_id_if_branch.pto` | producer 位于 scf.if 单分支 | bracket 紧贴 RWOp，不外提到 LCA |
+| `graph_sync_solver_buf_id_if_branch_consumer.pto` | consumer 位于 scf.if 单分支 | 同上方向对称 |
+| `graph_sync_solver_buf_id_if_both_branches.pto` | mutex 分支共享 id（非循环 case） | if / else 走 §3.8.2 规则 1 共享 id（不触发 ping-pong 例外） |
 | `graph_sync_solver_buf_id_arch_guard.pto` | A3 + buf-id 触发报错 | 显式 emitError |
-| `graph_sync_solver_buf_id_parity.pto` | 同输入分别跑 set-wait / buf-id，编号对齐 | bufId 集合 == eventId 集合，bracket 数 == set+wait 数 |
+
+后续可补：
+- `graph_sync_solver_buf_id_ping_pong.pto`：覆盖 §3.8.2 规则 1 的 ping-pong
+  例外路径（互斥分支 + 同循环 + 不同 buffer → 不同 id）。
+- `graph_sync_solver_buf_id_parity.pto`：同输入分别跑 set-wait / buf-id，
+  bufId 集合 == eventId 集合，bracket 数 == set+wait 数。
+- `graph_sync_solver_buf_id_multibuf.pto`：multibuffer 流水（`eventIdRepeatNum > 1`），
+  同一 anchor 上有 N 对 bracket。
 
 `runop.sh`（[test/samples/runop.sh](../../test/samples/runop.sh)）的对应行加 buf-id
 模式补充。
@@ -679,14 +781,18 @@ EmitC 落到 C++ 后通过 board validation（[test/samples/MatMul/](../../test/
 
 ## 6. 实施步骤
 
-| 步骤 | 内容 | 风险 |
+| 步骤 | 内容 | 状态 |
 | --- | --- | --- |
-| S1 | `SyncSolverOptions::emitStyle` 枚举 + Passes.td option + CLI flag + Pass 入口校验 | 不改语义；纯透传，几乎无风险 |
-| S2 | `SyncSolverIR.h` 增加 `BufOp`/`GetBufOp`/`RlsBufOp` + OpType；不影响现有 `SetFlagOp`/`WaitFlagOp` | 编译期/链接期 |
-| S3 | `getBeforeAfterSyncMaps` 分支 + `pipeToPipeEventTypeAttr` helper + `emitSyncOp` 分支 | 主要风险点，要保证 set-wait 路径完全等价 |
-| S4 | lit 测试 5 个 + 一份端到端 sample | 校准 FileCheck pattern |
-| S5 | 更新 `PTO_IR_manual.md` / `ptoas-auto-sync-design.md` | 文档而已 |
-| 阶段二（可选） | 约束 4 的强 / 弱模式切换；hw 团队明确后再决定是否在 `EventIdSolver` 层按 pipe-pair 打散 | 独立 PR，不阻塞阶段一 |
+| S1 | `SyncSolverOptions::emitStyle` 枚举 + Passes.td option + CLI flag + Pass 入口校验 | ✅ 已落地（PR #665 初版） |
+| S2 | `SyncSolverIR.h` 增加 `BufOp`/`GetBufOp`/`RlsBufOp` + OpType；不影响现有 `SetFlagOp`/`WaitFlagOp` | ✅ 已落地（PR #665 初版） |
+| S3 | `getBeforeAfterSyncMaps` 分支 + `pipeToPipeEventTypeAttr` helper + `emitSyncOp` 分支 | ✅ 已落地（PR #665 初版） |
+| S4 | lit 测试 9 个 + 一份端到端 sample | ✅ 已落地（`graph_sync_solver_buf_id_*.pto`） |
+| S5 | `ConflictPair::conflictBuffer` 字段 + `checkMemoryConflicts` 返回 `(srcInfo, dstInfo, Value)` 三元组 + 透传 | ✅ 已落地（PR #665 fix commit `829945ff`） |
+| S6 | `checkGraphConflict` buffer-aware / mutex-aware 裁剪 | ✅ 已落地（commits `829945ff` + `448f34e9`） |
+| S7 | `checkIntersect` 同 buffer 共享 id 规则 + `checkGraphConflict` 同 pipe-pair 不同 consumer 的 WAW-chain 判据 | ✅ 已落地（commit `c3cc9b8d`） |
+| S8 | `checkIntersect` 跨迭代 ping-pong 例外（同循环 + 不同 buffer + 互斥分支 → 强制冲突） | ✅ 已落地（commit `ce764e3d`） |
+| S9 | 更新 `PTO_IR_manual.md` / `ptoas-auto-sync-design.md` | TODO |
+| 阶段二（可选） | alias-aware WAW-chain（§7-7）、ping-pong 跨嵌套循环（§7-8）、`mode != 0` 支持（§7-2） | 独立 PR，不阻塞阶段一 |
 
 ---
 
@@ -697,15 +803,34 @@ EmitC 落到 C++ 后通过 board validation（[test/samples/MatMul/](../../test/
    需要把 `eventIdNumMax` 拆成两个独立选项。
 2. **`mode` 字段**：`pto.get_buf` / `pto.rls_buf` 有 `I32Attr:$mode` 默认 0。
    当前文档未提非 0 模式语义，全部填 0。需 hw 团队进一步明确。
-3. **约束 4（不同 pipe 对共享 id）**：早期版本把这归为"软提示"。实际验证发现
-   ConflictPair 共享 pipe 时跨 pair 共享 id 会违反约束 1（连续 get 非法），
-   所以阶段一已经在 `getEventIdSolverRef` + `checkIntersect` 里强制隔离，
-   见 3.8。
+3. ~~**约束 4（不同 pipe 对共享 id）**~~ **（已解决）**：
+
+   早期版本把这归为"软提示"。实际验证发现 ConflictPair 共享 pipe 时
+   跨 pair 共享 id 会违反约束 1（连续 get 非法）。落地方案见 §3.8：
+   - `getEventIdSolverRef`：buf-id 模式所有 pipe 对共享同一 `EventIdSolver`。
+   - `checkIntersect`：按 §3.8.2 的四层规则（互斥分支 / 同 buffer /
+     共享 pipe / 默认）决定冲突，避免共享 pipe 上同 id 重入；同时允许
+     同 SSA buffer 跨 pipe-pair 共享 id（emit-side anchor dedup 保证约束 1）。
+
+   `reuseSyncPairToSaveEventIds` 在 buf-id 下默认仍关，以契合约束 4 的
+   "不同 pipe 对不建议共享 id" 软性提示——但允许"同 buffer 跨 pipe-pair
+   共享 id"是性能必要的反例。
 4. **A2 / A3 行为**：阶段一在 `!isA5 && BUF_ID` 时直接报错。如未来低世代芯片
    也支持 buf-id，需放开 arch 校验。
 5. **与 `PTOInsertSync` 的关系**：本设计只覆盖 `PTOGraphSyncSolver`。
    `PTOInsertSync` 是独立 pipeline，是否需要同步加 buf-id 形态另外评估
    （三个自动同步选项当前互斥，[ptoas.cpp:1094](../../tools/ptoas/ptoas.cpp)）。
-6. **backward-sync**：见 2.4 节，buf-id 模型本身已是顺序模型，**不需要**
-   set/wait 那套形态二外提。阶段一直接在 producer / consumer 原位 bracket
-   即可。求解器里现有的若干 `*backwardSync*` 优化在 buf-id 模式下全部短路。
+6. ~~**backward-sync**~~ **（已解决）**：buf-id 模型本身已是顺序模型，
+   **不需要** set/wait 那套形态二外提。求解器里现有的若干 `*backwardSync*`
+   优化在 buf-id 模式下全部短路；backward ConflictPair 不发 bracket，其
+   语义由 forward pair 通过同 buffer 共享 id 的 ratchet 链 + mirror-image
+   dedup 一并吸收。见 §2.4 / §3.6 / §3.9。
+7. **`checkGraphConflict` 同 pipe-pair 不同 consumer 的 WAW-chain 判据
+   保守度**：当前实现要求候选与现有 consumer 写"同一 SSA Value"才能利用
+   WAW 链覆盖。若两条 forward 通过 alias / view 写同一物理 tile 但 SSA
+   Value 不同（例如经 `partition_view` / `bind_tile` 后），会被判为不同
+   destination，候选保留独立 bracket。功能正确，仅可能多出冗余 bracket；
+   后续若 alias 分析可靠，可放宽判据至"指向同一 tile 物理地址"。
+8. **ping-pong 触发条件保守度**：当前 §3.8.2 规则 1 例外只在两 pair 的
+   `op1` 共享一个 **直接** Loop 祖先时触发。嵌套循环或同分支跨多层
+   循环的 ping-pong 场景需要进一步分析（罕见，阶段一不处理）。
