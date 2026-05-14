@@ -921,8 +921,31 @@ bool Solver::checkIntersect(ConflictPair *conflictPair1,
   }
   if (options.isBufIdEmit()) {
     if (opsMutuallyExclusive(conflictPair1->op1, conflictPair1->op2,
-                             conflictPair2->op1, conflictPair2->op2))
-      return false;
+                             conflictPair2->op1, conflictPair2->op2)) {
+      // Mutex-branch sharing is normally safe: only one branch runs per
+      // iteration so the counter never sees concurrent claims. BUT when
+      // both pairs sit inside a common loop AND write distinct SSA
+      // buffers (the classic alternating-branch ping-pong pattern, e.g.
+      // even iters tload v30 / odd iters tload v32 in disjoint scf.if
+      // branches), sharing one id forces iter k+1's branch to wait for
+      // iter k's branch counter to drain, even though they touch
+      // independent memory. Bumping these to different ids unlocks
+      // cross-iter parallelism: iter k+1's MTE2 tload can issue while
+      // iter k's downstream consumers are still running. Skip the
+      // mutex-share return in that case so coloring assigns distinct
+      // colors via the pipe-overlap conflict below.
+      bool loopPingPong = false;
+      if (conflictPair1->conflictBuffer != nullptr &&
+          conflictPair2->conflictBuffer != nullptr &&
+          conflictPair1->conflictBuffer != conflictPair2->conflictBuffer) {
+        auto *loop1 = conflictPair1->op1->getParentOfType<Loop>();
+        auto *loop2 = conflictPair2->op1->getParentOfType<Loop>();
+        if (loop1 != nullptr && loop1 == loop2)
+          loopPingPong = true;
+      }
+      if (!loopPingPong)
+        return false;
+    }
 
     // Same SSA buffer => the pairs share the buf-id chain. Letting them
     // share a color means each anchor along the chain gets a single
