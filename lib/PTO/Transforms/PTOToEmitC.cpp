@@ -117,9 +117,9 @@ static const char *addrSpaceQualifier(pto::AddressSpace as) {
   return "__gm__";
 }
 
-static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
+[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
     "__pto.lowered_set_validshape";
-static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
+[[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
     "__pto.lowered_set_validshape_config";
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
@@ -479,8 +479,8 @@ public:
     // ---------------------------------------------------------
     // 2. PTO 特殊类型 (透传或转换)
     // ---------------------------------------------------------
-    addConversion([Ctx](emitc::OpaqueType type) { return type; });
-    addConversion([Ctx](emitc::PointerType type) { return type; });
+    addConversion([](emitc::OpaqueType type) { return type; });
+    addConversion([](emitc::PointerType type) { return type; });
 
     // ---------------------------------------------------------
     // 2.5 PtrType 转换 (指针类型)
@@ -3124,7 +3124,8 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
           }
         }
 
-        auto typedPtrTy = emitc::OpaqueType::get(ctx, qualifier + " " + castElemTypeStr + "*");
+        auto typedPtrTy = emitc::PointerType::get(
+            emitc::OpaqueType::get(ctx, qualifier + " " + castElemTypeStr));
         Value typedSourcePtr = rewriter.create<emitc::CastOp>(loc, typedPtrTy, sourcePtr);
         newPtr = rewriter.create<emitc::AddOp>(loc, typedPtrTy, typedSourcePtr, totalOffset);
       } else {
@@ -3659,7 +3660,8 @@ static Value maybeWrapGlobalMemrefAsGlobalTensor(
 static Value castToGMBytePointer(ConversionPatternRewriter &rewriter,
                                  Location loc, Value value) {
   auto *ctx = rewriter.getContext();
-  auto targetTy = emitc::OpaqueType::get(ctx, "__gm__ uint8_t*");
+  auto targetTy =
+      emitc::PointerType::get(emitc::OpaqueType::get(ctx, "__gm__ uint8_t"));
   if (value.getType() == targetTy)
     return value;
 
@@ -4379,9 +4381,9 @@ static ArrayAttr buildAccPhaseTemplateArgs(ConversionPatternRewriter &rewriter,
   case pto::AccPhase::Final:
     tmpl = "AccPhase::Final";
     break;
-  default:
-    llvm_unreachable("unknown AccPhase");
   }
+  if (tmpl.empty())
+    return ArrayAttr{};
   return rewriter.getArrayAttr(
       {emitc::OpaqueAttr::get(rewriter.getContext(), tmpl)});
 }
@@ -4806,7 +4808,7 @@ static LogicalResult extractSyncTripletTokens(Operation *op,
 static inline std::string pipeTokFromPipeEnum(mlir::pto::PIPE p) {
   return mlir::pto::stringifyPIPE(p).str();
 }
-static inline std::string evtTokFromEventEnum(mlir::pto::EVENT e) {
+[[maybe_unused]] static inline std::string evtTokFromEventEnum(mlir::pto::EVENT e) {
   return mlir::pto::stringifyEVENT(e).str();
 }
 static inline std::string pipeTokFromPipeAttr(mlir::pto::PipeAttr a) {
@@ -5719,7 +5721,8 @@ struct PTOInitializeL2LPipeToEmitC
     auto emitPipeTy =
         cast<Type>(getTypeConverter()->convertType(op.getPipe().getType()));
 
-    auto gmPtrTy = emitc::OpaqueType::get(ctx, "__gm__ void *");
+    auto gmPtrTy =
+        emitc::PointerType::get(emitc::OpaqueType::get(ctx, "__gm__ void"));
     Value nullGm =
         makeEmitCOpaqueConstant(rewriter, op.getLoc(), gmPtrTy, "nullptr");
     auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
@@ -7646,7 +7649,7 @@ static std::string saturationModeTok(mlir::pto::SaturationModeAttr attr) {
   case SM::ON:  return "SaturationMode::ON";
   case SM::OFF: return "SaturationMode::OFF";
   }
-  return "SaturationMode::ON";
+  return "SaturationMode::OFF";
 }
 struct PTOCvtToEmitC : public OpConversionPattern<pto::TCvtOp> {
   using OpConversionPattern<pto::TCvtOp>::OpConversionPattern;
@@ -7658,7 +7661,6 @@ struct PTOCvtToEmitC : public OpConversionPattern<pto::TCvtOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
-    Value tmp = adaptor.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value{};
 
     pto::RoundModeAttr rmAttr = op.getRmodeAttr();
     std::string rmTok = rmAttr ? roundModeTok(rmAttr)
@@ -7667,17 +7669,14 @@ struct PTOCvtToEmitC : public OpConversionPattern<pto::TCvtOp> {
     Value rmodeVal = rewriter.create<emitc::ConstantOp>(
         loc, rmodeTy, emitc::OpaqueAttr::get(ctx, rmTok));
 
-    SmallVector<Value, 5> operands{dst, src};
-    if (tmp)
-      operands.push_back(tmp);
-    operands.push_back(rmodeVal);
+    auto satModeTy = emitc::OpaqueType::get(ctx, "SaturationMode");
+    auto satAttr = op.getSatModeAttr();
+    std::string satTok = satAttr ? saturationModeTok(satAttr)
+                                 : std::string("SaturationMode::OFF");
+    Value satModeVal = rewriter.create<emitc::ConstantOp>(
+        loc, satModeTy, emitc::OpaqueAttr::get(ctx, satTok));
 
-    if (auto satAttr = op.getSatModeAttr()) {
-      auto satModeTy = emitc::OpaqueType::get(ctx, "SaturationMode");
-      Value satModeVal = rewriter.create<emitc::ConstantOp>(
-          loc, satModeTy, emitc::OpaqueAttr::get(ctx, saturationModeTok(satAttr)));
-      operands.push_back(satModeVal);
-    }
+    SmallVector<Value, 4> operands{dst, src, rmodeVal, satModeVal};
 
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TCVT",
@@ -9672,16 +9671,32 @@ struct PTOScatterToEmitC : public OpConversionPattern<pto::TScatterOp> {
   LogicalResult matchAndRewrite(pto::TScatterOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    const bool hasMaskPattern = static_cast<bool>(op.getMaskPatternAttr());
+    const bool hasIndexes = static_cast<bool>(op.getIndexes());
+    if (hasMaskPattern == hasIndexes) {
+      return rewriter.notifyMatchFailure(
+          op, "expected exactly one of indexes operand or maskPattern attribute");
+    }
 
     Value src = peelUnrealized(adaptor.getSrc());
-    Value idx = peelUnrealized(adaptor.getIndexes());
     Value dst = peelUnrealized(adaptor.getDst());
 
-    SmallVector<Value, 3> operands{dst, src, idx};
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TSCATTER",
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/operands);
+    if (auto mp = op.getMaskPatternAttr()) {
+      auto *ctx = rewriter.getContext();
+      auto targs = rewriter.getArrayAttr({
+          emitc::OpaqueAttr::get(ctx, maskPatternTok(mp)),
+      });
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TSCATTER",
+          /*args=*/ArrayAttr{}, /*templateArgs=*/targs,
+          /*operands=*/ValueRange{dst, src});
+    } else {
+      Value idx = peelUnrealized(adaptor.getIndexes());
+      rewriter.create<emitc::CallOpaqueOp>(
+          loc, TypeRange{}, "TSCATTER",
+          /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
+          /*operands=*/ValueRange{dst, src, idx});
+    }
 
     rewriter.eraseOp(op);
     return success();
@@ -11065,7 +11080,7 @@ public:
 
     // 将 arith.cmpi 转换为 emitc.cmp
     // 映射 Predicate: eq -> equal, slt -> less, etc.
-    emitc::CmpPredicate emitcPred;
+    emitc::CmpPredicate emitcPred = emitc::CmpPredicate::eq;
     const bool isUnsignedPred =
         op.getPredicate() == arith::CmpIPredicate::ult ||
         op.getPredicate() == arith::CmpIPredicate::ule ||
@@ -11083,7 +11098,6 @@ public:
       case arith::CmpIPredicate::ule: emitcPred = emitc::CmpPredicate::le; break;
       case arith::CmpIPredicate::ugt: emitcPred = emitc::CmpPredicate::gt; break;
       case arith::CmpIPredicate::uge: emitcPred = emitc::CmpPredicate::ge; break;
-      default: return failure();
     }
 
     Type resTy = getTypeConverter()->convertType(op.getType());
