@@ -120,20 +120,11 @@ static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name,
 static LogicalResult verifyTileBufSameElemType(Operation *op, Type lhs, Type rhs,
                                                StringRef lhsName,
                                                StringRef rhsName);
+static LogicalResult verifyTileBufSameLogicalExtent(Operation *op, Type lhs,
+                                                    Type rhs, StringRef lhsName,
+                                                    StringRef rhsName,
+                                                    bool compareValidShape);
 
-namespace {
-struct HiF8MemRefElementTypeModel
-    : public MemRefElementTypeInterface::ExternalModel<
-          HiF8MemRefElementTypeModel, HiF8Type> {};
-
-struct F4E1M2x2MemRefElementTypeModel
-    : public MemRefElementTypeInterface::ExternalModel<
-          F4E1M2x2MemRefElementTypeModel, F4E1M2x2Type> {};
-
-struct F4E2M1x2MemRefElementTypeModel
-    : public MemRefElementTypeInterface::ExternalModel<
-          F4E2M1x2MemRefElementTypeModel, F4E2M1x2Type> {};
-} // namespace
 static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type rhs,
                                                  StringRef lhsName, StringRef rhsName);
 static LogicalResult verifyVecTileCommon(Operation *op, Type ty, StringRef name);
@@ -2122,12 +2113,6 @@ void PTODialect::initialize() {
 #include "PTO/IR/PTOTypeDefs.cpp.inc"
       >();
 
-  HiF8Type::attachInterface<HiF8MemRefElementTypeModel>(*getContext());
-  F4E1M2x2Type::attachInterface<F4E1M2x2MemRefElementTypeModel>(
-      *getContext());
-  F4E2M1x2Type::attachInterface<F4E2M1x2MemRefElementTypeModel>(
-      *getContext());
-
   addOperations<
 #define GET_OP_LIST
 #include "PTO/IR/PTOOps.cpp.inc"
@@ -2549,7 +2534,13 @@ LogicalResult TPrefetchOp::verify() {
   auto verifyA5 = [&]() -> LogicalResult {
     return verifyImpl(/*allowLowPrecision=*/true);
   };
-  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+  switch (getVerifierTargetArch(getOperation())) {
+  case VerifierTargetArch::A2A3:
+    return verifyA2A3();
+  case VerifierTargetArch::A5:
+    return verifyA5();
+  }
+  return failure();
 }
 
 LogicalResult MakePrefetchAsyncContextOp::verify() {
@@ -3017,6 +3008,36 @@ static SmallVector<int64_t, 4> getValidShapeVec(Type ty) {
   if (auto tb = dyn_cast<pto::TileBufType>(ty))
     return SmallVector<int64_t, 4>(tb.getValidShape().begin(), tb.getValidShape().end());
   return getShapeVec(ty);
+}
+
+static int64_t getLogicalTileDim(int64_t rawDim, Type elemTy,
+                                 std::optional<pto::BLayout> blayout,
+                                 unsigned dimIdx) {
+  if (rawDim == ShapedType::kDynamic || !isPTOFloat4PackedType(elemTy))
+    return rawDim;
+  pto::BLayout layout = blayout.value_or(pto::BLayout::RowMajor);
+  unsigned packedDim = layout == pto::BLayout::ColMajor ? 0 : 1;
+  return dimIdx == packedDim ? rawDim * 2 : rawDim;
+}
+
+static std::optional<pto::BLayout> getTileBufBLayout(Type ty) {
+  if (auto tb = dyn_cast<pto::TileBufType>(ty))
+    return static_cast<pto::BLayout>(tb.getBLayoutValueI32());
+  return std::nullopt;
+}
+
+static SmallVector<int64_t, 4> getLogicalTileExtentVec(Type ty,
+                                                       bool useValidShape) {
+  SmallVector<int64_t, 4> dims =
+      useValidShape ? getValidShapeVec(ty) : getShapeVec(ty);
+  if (!isTileLikeType(ty) || dims.size() != 2)
+    return dims;
+
+  Type elemTy = getElemTy(ty);
+  auto blayout = getTileBufBLayout(ty);
+  for (unsigned i = 0; i < dims.size(); ++i)
+    dims[i] = getLogicalTileDim(dims[i], elemTy, blayout, i);
+  return dims;
 }
 
 static int64_t getConstantIndexOrDynamic(Value value) {
@@ -3531,6 +3552,33 @@ static LogicalResult verifyTileBufSameValidShape(Operation *op, Type lhs, Type r
   if (lhsValid.size() != rhsValid.size())
     return op->emitOpError() << "expects " << lhsName << " and " << rhsName
                              << " to have the same valid_shape";
+  return success();
+}
+
+static LogicalResult verifyTileBufSameLogicalExtent(Operation *op, Type lhs,
+                                                    Type rhs, StringRef lhsName,
+                                                    StringRef rhsName,
+                                                    bool compareValidShape) {
+  if (!isTileLikeType(lhs) || !isTileLikeType(rhs))
+    return success();
+
+  auto lhsExtent = getLogicalTileExtentVec(lhs, compareValidShape);
+  auto rhsExtent = getLogicalTileExtentVec(rhs, compareValidShape);
+  auto emitMismatch = [&]() -> LogicalResult {
+    if (compareValidShape)
+      return op->emitOpError() << "expects " << lhsName << " and " << rhsName
+                               << " to have the same valid_shape";
+    return op->emitOpError() << "expects " << lhsName << " and " << rhsName
+                             << " to have compatible shapes";
+  };
+  if (lhsExtent.size() != rhsExtent.size())
+    return emitMismatch();
+
+  for (size_t i = 0, e = lhsExtent.size(); i < e; ++i) {
+    if (lhsExtent[i] != ShapedType::kDynamic &&
+        rhsExtent[i] != ShapedType::kDynamic && lhsExtent[i] != rhsExtent[i])
+      return emitMismatch();
+  }
   return success();
 }
 
@@ -5077,9 +5125,11 @@ llvm::LogicalResult mlir::pto::TCvtOp::verify() {
   if (failed(verifyTileBufCommon(*this, srcTy, "src", /*allowLowPrecision=*/true)) ||
       failed(verifyTileBufCommon(*this, dstTy, "dst", /*allowLowPrecision=*/true)))
     return failure();
-  if (getShapeVec(srcTy) != getShapeVec(dstTy))
-    return emitOpError("expects src and dst to have compatible shapes");
-  if (failed(verifyTileBufSameValidShape(*this, srcTy, dstTy, "src", "dst")))
+  if (failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
+                                            /*compareValidShape=*/false)))
+    return failure();
+  if (failed(verifyTileBufSameLogicalExtent(*this, srcTy, dstTy, "src", "dst",
+                                            /*compareValidShape=*/true)))
     return failure();
   Type srcElem = getElemTy(srcTy);
   Type dstElem = getElemTy(dstTy);
