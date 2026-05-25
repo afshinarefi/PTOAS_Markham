@@ -615,6 +615,124 @@ static void rewritePtrScalarMarkers(std::string &cpp) {
   rewriteMarkerCallsToSubscripts(cpp, kPtrMarkerRewrites);
 }
 
+static std::string getLineIndent(llvm::StringRef line) {
+  size_t firstNonSpace = line.find_first_not_of(" \t");
+  if (firstNonSpace == llvm::StringRef::npos)
+    return line.str();
+  return line.take_front(firstNonSpace).str();
+}
+
+static void addUniqueFlushPtr(llvm::SmallVectorImpl<std::string> &ptrs,
+                              llvm::StringRef ptr) {
+  std::string trimmed = ptr.trim().str();
+  if (trimmed.empty())
+    return;
+  for (const std::string &seen : ptrs) {
+    if (seen == trimmed)
+      return;
+  }
+  ptrs.push_back(std::move(trimmed));
+}
+
+static bool isScalarGMFlushInsertionPoint(llvm::StringRef trimmed) {
+  return trimmed.starts_with("#endif // __DAV_") ||
+         trimmed.starts_with("ptoas_auto_sync_tail(") ||
+         trimmed.starts_with("return");
+}
+
+static void appendScalarGMFlush(std::string &out, llvm::StringRef indent,
+                                llvm::ArrayRef<std::string> ptrs) {
+  if (ptrs.empty())
+    return;
+  out.append(indent.str());
+  out.append("pipe_barrier(PIPE_ALL);\n");
+  for (const std::string &ptr : ptrs) {
+    out.append(indent.str());
+    out.append("dcci(");
+    out.append(ptr);
+    out.append(", ENTIRE_DATA_CACHE, CACHELINE_OUT);\n");
+  }
+  out.append(indent.str());
+  out.append("dsb((mem_dsb_t)0);\n");
+}
+
+static bool stripScalarGMFlushMarkersFromLine(
+    std::string &line, llvm::SmallVectorImpl<std::string> &ptrs) {
+  static constexpr llvm::StringLiteral kMarker =
+      "PTOAS__SCALAR_GM_STORE_FLUSH";
+
+  bool changed = false;
+  size_t searchPos = 0;
+  while (true) {
+    auto call = findNextMarkerCall(line, kMarker, searchPos);
+    if (!call)
+      break;
+    if (call->rparenPos == std::string::npos) {
+      searchPos = call->markerPos + kMarker.size();
+      continue;
+    }
+    if (call->args.size() == 1)
+      addUniqueFlushPtr(ptrs, call->args.front());
+
+    size_t eraseBegin = call->markerPos;
+    while (eraseBegin > 0 &&
+           (line[eraseBegin - 1] == ' ' || line[eraseBegin - 1] == '\t'))
+      --eraseBegin;
+
+    size_t eraseEnd = call->rparenPos + 1;
+    while (eraseEnd < line.size() &&
+           (line[eraseEnd] == ' ' || line[eraseEnd] == '\t'))
+      ++eraseEnd;
+    if (eraseEnd < line.size() && line[eraseEnd] == ';')
+      ++eraseEnd;
+    while (eraseEnd < line.size() &&
+           (line[eraseEnd] == ' ' || line[eraseEnd] == '\t'))
+      ++eraseEnd;
+
+    line.erase(eraseBegin, eraseEnd - eraseBegin);
+    changed = true;
+    searchPos = eraseBegin;
+  }
+  return changed;
+}
+
+static void rewriteScalarGMStoreFlushMarkers(std::string &cpp) {
+  std::string out;
+  out.reserve(cpp.size() + kRewriteOutputReserveExtra);
+
+  llvm::SmallVector<std::string, 4> pendingPtrs;
+  llvm::StringRef ref(cpp);
+  while (!ref.empty()) {
+    auto split = ref.split('\n');
+    std::string line = split.first.str();
+    bool hadNewline = !split.second.empty();
+    ref = split.second;
+
+    bool hadMarker = stripScalarGMFlushMarkersFromLine(line, pendingPtrs);
+    if (hadMarker && llvm::StringRef(line).trim().empty()) {
+      if (!hadNewline && ref.empty())
+        break;
+      continue;
+    }
+
+    llvm::StringRef lineRef(line);
+    llvm::StringRef trimmed = lineRef.trim();
+    if (!pendingPtrs.empty() && isScalarGMFlushInsertionPoint(trimmed)) {
+      appendScalarGMFlush(out, getLineIndent(lineRef), pendingPtrs);
+      pendingPtrs.clear();
+    }
+
+    out.append(line);
+    if (hadNewline)
+      out.push_back('\n');
+  }
+
+  if (!pendingPtrs.empty())
+    appendScalarGMFlush(out, "  ", pendingPtrs);
+
+  cpp.swap(out);
+}
+
 static void rewriteEventIdArrayMarkers(std::string &cpp) {
   static const MarkerSubscriptRewriteSpec kEventIdMarkerRewrites[] = {
       {"PTOAS__EVENTID_ARRAY_LOAD", 2, false},
@@ -1283,6 +1401,7 @@ int main(int argc, char **argv) {
   rewriteTileGetSetValueMarkers(cppOutput);
   rewriteAsyncEventMarkers(cppOutput);
   rewritePtrScalarMarkers(cppOutput);
+  rewriteScalarGMStoreFlushMarkers(cppOutput);
   rewriteEventIdArrayMarkers(cppOutput);
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteScalarConstantDecls(cppOutput);
