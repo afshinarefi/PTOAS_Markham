@@ -115,6 +115,9 @@ struct OperandTypeInfo {
   // --- Vector-only (builtin VectorType) ---
   SmallVector<int64_t> vectorShape;
 
+  // --- Scalar-only ---
+  std::optional<int64_t> scalarValue;
+
   /// Equality for SpecKey caching — only compares fields relevant to each kind.
   bool operator==(const OperandTypeInfo &rhs) const {
     if (kind != rhs.kind || dtype != rhs.dtype)
@@ -127,7 +130,9 @@ struct OperandTypeInfo {
              fractal == rhs.fractal && pad == rhs.pad;
     if (kind == OperandKind::Vector)
       return vectorShape == rhs.vectorShape;
-    // View and Scalar: dtype alone is sufficient for template caching.
+    if (kind == OperandKind::Scalar)
+      return scalarValue == rhs.scalarValue;
+    // View: dtype alone is sufficient for template caching.
     return true;
   }
 };
@@ -147,8 +152,38 @@ struct SpecKey {
   }
 };
 
-// ============================================================================
-// Helpers
+struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
+  static inline SpecKey getEmptyKey() { return {"", "", {}}; }
+  static inline SpecKey getTombstoneKey() { return {"__tombstone__", "", {}}; }
+  static unsigned getHashValue(const SpecKey &key) {
+    unsigned h = llvm::hash_combine(key.opName, key.targetArch);
+    for (const auto &op : key.operands) {
+      h = llvm::hash_combine(h, static_cast<int>(op.kind), op.dtype);
+      if (op.kind == OperandKind::Tile) {
+        h = llvm::hash_combine(h, op.tileMemorySpace, op.blayout,
+                               op.slayout, op.fractal, op.pad);
+        for (int64_t d : op.tileShape)
+          h = llvm::hash_combine(h, d);
+        for (int64_t d : op.tileValidShape)
+          h = llvm::hash_combine(h, d);
+      } else if (op.kind == OperandKind::Vector) {
+        for (int64_t d : op.vectorShape)
+          h = llvm::hash_combine(h, d);
+      } else if (op.kind == OperandKind::Scalar) {
+        h = llvm::hash_combine(h, op.scalarValue.has_value());
+        if (op.scalarValue)
+          h = llvm::hash_combine(h, *op.scalarValue);
+      }
+      // View: only kind + dtype contribute to hash.
+    }
+    for (const auto &[attrName, attrValue] : key.contextAttrs)
+      h = llvm::hash_combine(h, attrName, attrValue);
+    return h;
+  }
+  static bool isEqual(const SpecKey &lhs, const SpecKey &rhs) {
+    return lhs == rhs;
+  }
+};
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -567,6 +602,9 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   info.dtype = getDtypeString(ty);
   if (info.dtype.empty())
     return std::nullopt;
+  int64_t scalarValue = 0;
+  if (getStaticIntFromValue(value, scalarValue))
+    info.scalarValue = scalarValue;
   return info;
 }
 
@@ -700,7 +738,12 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
     }
 
     // Scalar
-    json += "{\"kind\":\"scalar\",\"dtype\":\"" + op.dtype + "\"}";
+    json += "{\"kind\":\"scalar\",\"dtype\":\"" + op.dtype + "\"";
+    if (op.scalarValue) {
+      json += ",\"value\":";
+      json += std::to_string(*op.scalarValue);
+    }
+    json += "}";
   }
   json += "]";
   return json;
@@ -1062,6 +1105,8 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     } else if (op.kind == OperandKind::Vector) {
       for (int64_t d : op.vectorShape)
         uniqueName += "_" + std::to_string(d);
+    } else if (op.kind == OperandKind::Scalar && op.scalarValue) {
+      uniqueName += "_sv" + std::to_string(*op.scalarValue);
     }
   }
   for (const auto &[attrName, attrValue] : key.contextAttrs)

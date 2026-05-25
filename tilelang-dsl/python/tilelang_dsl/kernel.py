@@ -855,6 +855,12 @@ class _ConstraintValue:
     def __rfloordiv__(self, other: Any) -> "_ConstraintValue":
         return _ConstraintValue(self._coerce_other(other)).__floordiv__(self)
 
+    def __mod__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs % rhs)
+
+    def __rmod__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__mod__(self)
+
     def __eq__(self, other: Any) -> bool:  # type: ignore[override]
         return self._compare(other, lambda lhs, rhs: lhs == rhs)
 
@@ -940,6 +946,10 @@ class _ConstraintParamView:
     @property
     def dtype(self) -> Any:
         return self._attrs.get("dtype")
+
+    @property
+    def value(self) -> _ConstraintValue:
+        return _ConstraintValue(self._attrs.get("value"))
 
     @property
     def memory_space(self) -> Any:
@@ -1288,6 +1298,7 @@ class VKernelDescriptor:
             set_sequence_attr("strides")
             set_scalar_attr("dtype")
             set_scalar_attr("rank")
+            set_scalar_attr("value")
             set_scalar_attr("memory_space")
             set_scalar_attr("config")
 

@@ -175,6 +175,7 @@ def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 Constraint callables bind by parameter name.
 
 - Kernel parameter names such as `src`, `dst`, `a`, `b` receive lightweight proxy objects, so constraints can use direct expressions like `src.shape[0] <= dst.shape[0]`.
+- Scalar kernel parameters receive a lightweight proxy as well; use `indexCol.value` to read a compile-time constant when the caller passed a static integer or index operand.
 - Extra `context_attrs` passed to `pto.select_kernel(...)` bind by key name, for example `batch`, `enabled`, or `expected_rows`.
 
 ##### Parameter Proxy Objects
@@ -183,6 +184,7 @@ When a constraint argument name matches a kernel parameter name, the callable re
 
 - For `TensorView` parameters, the proxy exposes `rank`, `shape`, `strides`, `dtype`, and `memory_space`.
 - For `Tile` parameters, the proxy exposes `rank`, `shape`, `valid_shape`, `dtype`, `memory_space`, and `config`.
+- For scalar parameters, the proxy exposes `dtype` and `value`. `value` is "unknown" when the operand is not a compile-time constant.
 - `shape`, `strides`, and `valid_shape` support index access such as `src.shape[0]` or `dst.valid_shape[1]`.
 - Missing or not-yet-known metadata evaluates as "unknown", so comparisons conservatively pass rather than failing early.
 
