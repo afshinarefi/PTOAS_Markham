@@ -193,21 +193,22 @@ IRTranslator::getPipeInterfaceOp(pto::OpPipeInterface op,
 }
 
 template <typename OP>
-std::unique_ptr<OperationBase>
-IRTranslator::getP2PCommOp(OP commOp, OperationBase *parentOp) {
-  llvm::SmallVector<Value> readVals{commOp.getSrc(), commOp.getPing()};
-  llvm::SmallVector<Value> writeVals{commOp.getDst(), commOp.getPing()};
-  if (Value pong = commOp.getPong()) {
-    readVals.push_back(pong);
-    writeVals.push_back(pong);
-  }
-  auto reads = getMemoryOps(readVals);
-  auto writes = getMemoryOps(writeVals);
+void IRTranslator::appendP2PCommOps(OP commOp, Scope *parentOp) {
+  llvm::SmallVector<Value> scratch{commOp.getPing()};
+  if (Value pong = commOp.getPong())
+    scratch.push_back(pong);
 
   // Synchronous TPUT/TGET hide MTE2 staging and MTE3 commit inside one call.
-  return std::make_unique<RWOperation>(
+  // Keep the phases separate so scratch writes are attributed to MTE2 and
+  // scratch reads are attributed to MTE3.
+  parentOp->body.push_back(std::make_unique<RWOperation>(
       commOp.getOperation(), parentOp, TCoreType::CUBE_OR_VECTOR,
-      pto::PIPE::PIPE_MTE2, pto::PIPE::PIPE_MTE3, reads, writes);
+      pto::PIPE::PIPE_MTE2, pto::PIPE::PIPE_MTE2,
+      getMemoryOps({commOp.getSrc()}), getMemoryOps(scratch)));
+  parentOp->body.push_back(std::make_unique<RWOperation>(
+      commOp.getOperation(), parentOp, TCoreType::CUBE_OR_VECTOR,
+      pto::PIPE::PIPE_MTE3, pto::PIPE::PIPE_MTE3, getMemoryOps(scratch),
+      getMemoryOps({commOp.getDst()})));
 }
 
 std::unique_ptr<OperationBase>
@@ -328,11 +329,9 @@ std::unique_ptr<Scope> IRTranslator::funcIrBuilder(Region &region,
       }
 
       if (auto tputOp = dyn_cast<pto::TPutOp>(op)) {
-        if (auto rw = getP2PCommOp(tputOp, parScope))
-          parScope->body.push_back(std::move(rw));
+        appendP2PCommOps(tputOp, parScope);
       } else if (auto tgetOp = dyn_cast<pto::TGetOp>(op)) {
-        if (auto rw = getP2PCommOp(tgetOp, parScope))
-          parScope->body.push_back(std::move(rw));
+        appendP2PCommOps(tgetOp, parScope);
       } else if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
         if (auto rw = getPipeInterfaceOp(pipeOp, parScope))
           parScope->body.push_back(std::move(rw));

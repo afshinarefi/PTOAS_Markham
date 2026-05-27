@@ -2322,6 +2322,12 @@ void Solver::processConflict(Occurrence *occ1, Occurrence *occ2,
   }
 }
 
+static bool isInternalP2PCommPhasePair(RWOperation *rwOp1,
+                                       RWOperation *rwOp2) {
+  return rwOp1 != rwOp2 && rwOp1->op && rwOp1->op == rwOp2->op &&
+         isa<pto::TPutOp, pto::TGetOp>(rwOp1->op);
+}
+
 // Main processing loop that iterates processingOrders and attempts to
 // discover and record conflicts.
 void Solver::processOrders() {
@@ -2334,6 +2340,7 @@ void Solver::processOrders() {
     }
     if (checkImpossibleOccPair(occ1, occ2) || checkAlreadySynced(occ1, occ2) ||
         skipMMad1DecomposedLoopOpt(occ1, occ2) ||
+        isInternalP2PCommPhasePair(rwOp1, rwOp2) ||
         checkSkipParallelLoop(occ1, occ2) ||
         checkSkipCrossCorePair(occ1, occ2)) {
       continue;

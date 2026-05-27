@@ -107,6 +107,51 @@ module attributes {pto.target_arch = "a2a3"} {
                outs(%sink_part : !pto.partition_tensor_view<64xf32>)
     return
   }
+
+  func.func @issue706_tput_stage_reuse_waits_on_mte2(
+      %local_src: !pto.ptr<f32>, %remote_dst: !pto.ptr<f32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+
+    %src_view = pto.make_tensor_view %local_src, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+    %dst_view = pto.make_tensor_view %remote_dst, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+
+    %src_part = pto.partition_view %src_view, offsets = [%c0],
+                sizes = [%c64]
+              : !pto.tensor_view<64xf32>
+                -> !pto.partition_tensor_view<64xf32>
+    %dst_part = pto.partition_view %dst_view, offsets = [%c0],
+                sizes = [%c64]
+              : !pto.tensor_view<64xf32>
+                -> !pto.partition_tensor_view<64xf32>
+
+    %stage = pto.alloc_tile addr = %c0_i64
+           : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tmp = pto.alloc_tile addr = %c4096_i64
+         : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %out = pto.alloc_tile addr = %c8192_i64
+         : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tadd ins(%stage, %tmp
+                 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+                   !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%out : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.comm.tput(%dst_part, %src_part, buf(%stage)
+                  : !pto.partition_tensor_view<64xf32>,
+                    !pto.partition_tensor_view<64xf32>,
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        {atomicType = #pto<atomic_type atomic_none>}
+    return
+  }
 }
 
 // CHECK-LABEL: AICORE void issue706_tput_waits_for_prior_tstore(
@@ -120,3 +165,9 @@ module attributes {pto.target_arch = "a2a3"} {
 // CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TGET_ID:[0-9]+]]);
 // CHECK-NEXT: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TGET_ID]]);
 // CHECK-NEXT: TLOAD(
+
+// CHECK-LABEL: AICORE void issue706_tput_stage_reuse_waits_on_mte2(
+// CHECK: TADD(
+// CHECK-NEXT: set_flag(PIPE_V, PIPE_MTE2, EVENT_ID[[STAGE_ID:[0-9]+]]);
+// CHECK-NEXT: wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID[[STAGE_ID]]);
+// CHECK-NEXT: pto::comm::TPUT(
