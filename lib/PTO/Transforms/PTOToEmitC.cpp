@@ -6387,6 +6387,15 @@ static std::string notifyOpTok(pto::NotifyOp op) {
   return "pto::comm::NotifyOp::Set";
 }
 
+static void emitPipeBarrierAll(ConversionPatternRewriter &rewriter,
+                               Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args =
+      rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "PIPE_ALL")});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "pipe_barrier", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
 static std::string waitCmpTok(pto::WaitCmp cmp) {
   switch (cmp) {
   case pto::WaitCmp::EQ:
@@ -6641,6 +6650,8 @@ struct PTOSignalCommToEmitC : public OpConversionPattern<SignalOp> {
           rewriter, op.getLoc(), notifyTy, notifyOpTok(op.getNotifyOp()));
       SmallVector<Value> operands{*signalGT, peelUnrealized(adaptor.getValue()),
                                   notifyOp};
+      // TNOTIFY writes the signal on the scalar pipe; drain prior MTE work first.
+      emitPipeBarrierAll(rewriter, op.getLoc());
       rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, callee,
                                            ArrayAttr{}, ArrayAttr{}, operands);
       rewriter.eraseOp(op);

@@ -9370,6 +9370,7 @@ pto.comm.tget(%dst, %src, buf(%ping, %pong) : !pto.partition_tensor_view<128xf32
 
 - `signal` must be a GM-shaped value with element type `i32`.
 - `value` / `cmpValue` must be signless integer scalars.
+- `pto.comm.tnotify` lowering emits `pipe_barrier(PIPE_ALL)` before `pto::comm::TNOTIFY(...)` so prior MTE-side loads and stores are drained before the signal write.
 
 **Examples:**
 
