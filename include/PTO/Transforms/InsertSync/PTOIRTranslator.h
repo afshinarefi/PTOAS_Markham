@@ -88,6 +88,13 @@ private:
  
   // --- 核心：处理计算/搬运指令 (生成 Compound 节点) ---
   void UpdatePTOOpInfo(Operation *op);
+  void UpdateP2PCommOpInfo(pto::TPutOp op);
+  void UpdateP2PCommOpInfo(pto::TGetOp op);
+  void AddPTOOpInfo(Operation *op, PipelineType pipe, ValueRange defs,
+                    ValueRange uses);
+  void AddCompoundOpInfo(Operation *op, PipelineType pipe,
+                         SmallVector<const BaseMemInfo *> defVec,
+                         SmallVector<const BaseMemInfo *> useVec);
  
   // --- 辅助函数 ---
   

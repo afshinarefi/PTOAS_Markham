@@ -360,6 +360,10 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       return WalkResult::skip();
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
       UpdateYieldOpInfo(yieldOp);
+    } else if (auto tputOp = dyn_cast<pto::TPutOp>(op)) {
+      UpdateP2PCommOpInfo(tputOp);
+    } else if (auto tgetOp = dyn_cast<pto::TGetOp>(op)) {
+      UpdateP2PCommOpInfo(tgetOp);
     } else if (isa<pto::OpPipeInterface>(op)) {
       // --- Case D: 带有 OpPipeInterface 的计算/搬运指令 ---
       UpdatePTOOpInfo(op);
@@ -555,17 +559,59 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
                             << " has Pipe but no MemoryEffects interface.\n");
   }
 
-  // 3. 构建 Compound Node
+  AddCompoundOpInfo(op, pipe, std::move(defVec), std::move(useVec));
+}
+
+// ============================================================================
+// 6. Model compound p2p communication ops
+// ============================================================================
+// TPUT/TGET hide a TLOAD-to-staging and TSTORE-from-staging sequence inside the
+// PTO-ISA helper. Model those pipe effects at the call boundary for auto-sync.
+void PTOIRTranslator::UpdateP2PCommOpInfo(pto::TPutOp op) {
+  SmallVector<Value, 2> scratch{op.getPing()};
+  if (Value pong = op.getPong())
+    scratch.push_back(pong);
+
+  AddPTOOpInfo(op.getOperation(), PipelineType::PIPE_MTE2, scratch,
+               ValueRange{op.getSrc()});
+  AddPTOOpInfo(op.getOperation(), PipelineType::PIPE_MTE3,
+               ValueRange{op.getDst()}, scratch);
+}
+
+void PTOIRTranslator::UpdateP2PCommOpInfo(pto::TGetOp op) {
+  SmallVector<Value, 2> scratch{op.getPing()};
+  if (Value pong = op.getPong())
+    scratch.push_back(pong);
+
+  AddPTOOpInfo(op.getOperation(), PipelineType::PIPE_MTE2, scratch,
+               ValueRange{op.getSrc()});
+  AddPTOOpInfo(op.getOperation(), PipelineType::PIPE_MTE3,
+               ValueRange{op.getDst()}, scratch);
+}
+
+void PTOIRTranslator::AddPTOOpInfo(Operation *op, PipelineType pipe,
+                                   ValueRange defs, ValueRange uses) {
+  if (pipe == pto::PipelineType::PIPE_UNASSIGNED)
+    return;
+
+  SmallVector<const BaseMemInfo *> defVec;
+  SmallVector<const BaseMemInfo *> useVec;
+  UpdateDefUseVec(defs, defVec);
+  UpdateDefUseVec(uses, useVec);
+  AddCompoundOpInfo(op, pipe, std::move(defVec), std::move(useVec));
+}
+
+void PTOIRTranslator::AddCompoundOpInfo(
+    Operation *op, PipelineType pipe, SmallVector<const BaseMemInfo *> defVec,
+    SmallVector<const BaseMemInfo *> useVec) {
   auto compoundElement = std::make_unique<CompoundInstanceElement>(
-      index, defVec, useVec, pipe, op->getName());
+      index, std::move(defVec), std::move(useVec), pipe, op->getName());
   compoundElement->elementOp = op;
 
-  // 4. 设置 Core Type (用于区分 Cube/Vector 资源)
-  // Matmul (M) 和 L1->L0 搬运 (MTE1) 通常涉及 Cube 资源
-  if (pipe == pto::PipelineType::PIPE_M || pipe == pto::PipelineType::PIPE_MTE1) {
+  if (pipe == pto::PipelineType::PIPE_M ||
+      pipe == pto::PipelineType::PIPE_MTE1) {
     compoundElement->compoundCoreType = pto::TCoreType::CUBE;
   } else {
-    // MTE2, MTE3, Vector 归类为 Vector Core (或者对应 MTE 资源)
     compoundElement->compoundCoreType = pto::TCoreType::VECTOR;
   }
 
@@ -574,7 +620,7 @@ void PTOIRTranslator::UpdatePTOOpInfo(Operation *op) {
 }
 
 // ============================================================================
-// 6. [P0 修改] 获取 Op 的 Pipeline 类型
+// 7. [P0 修改] 获取 Op 的 Pipeline 类型
 // ============================================================================
 pto::PipelineType PTOIRTranslator::getOpPipeline(Operation *op) {
   // 1. 优先尝试通过接口获取
@@ -589,7 +635,7 @@ pto::PipelineType PTOIRTranslator::getOpPipeline(Operation *op) {
 }
 
 // ============================================================================
-// 7. 控制流处理 (SCF Support)
+// 8. 控制流处理 (SCF Support)
 // ============================================================================
 
 void PTOIRTranslator::UpdateForOpInfo(scf::ForOp forOp) {
@@ -719,7 +765,7 @@ void PTOIRTranslator::UpdateYieldOpInfo(scf::YieldOp yieldOp) {
 }
 
 // ============================================================================
-// 8. 辅助函数
+// 9. 辅助函数
 // ============================================================================
 void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
   if (!result || !source) return;
@@ -940,7 +986,7 @@ void PTOIRTranslator::UpdateDefUseVec(ValueRange values, SmallVector<const BaseM
 }
 
 // ============================================================================
-// 9. 调试与打印支持
+// 10. 调试与打印支持
 // ============================================================================
 
 std::string PTOIRTranslator::getPipelineName(pto::PipelineType pipe) {
