@@ -89,6 +89,9 @@ private:
   std::unique_ptr<OperationBase> getPipeInterfaceOp(pto::OpPipeInterface op,
                                                     OperationBase *parentOp);
 
+  template <typename OP>
+  std::unique_ptr<OperationBase> getP2PCommOp(OP op, OperationBase *parentOp);
+
   std::unique_ptr<OperationBase> getTensorExtractOp(tensor::ExtractOp extractOp,
                                                     OperationBase *parentOp);
 

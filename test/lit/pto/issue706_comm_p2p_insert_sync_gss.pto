@@ -1,0 +1,122 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-graph-sync-solver --graph-sync-solver-event-id-max=64 %s | FileCheck %s
+
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @issue706_tput_waits_for_prior_tstore(
+      %input: !pto.ptr<f32>, %local_src: !pto.ptr<f32>,
+      %remote_dst: !pto.ptr<f32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+
+    %input_view = pto.make_tensor_view %input, shape = [%c64],
+                  strides = [%c1] {layout = #pto.layout<nd>}
+                : !pto.tensor_view<64xf32>
+    %src_view = pto.make_tensor_view %local_src, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+    %dst_view = pto.make_tensor_view %remote_dst, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+
+    %input_part = pto.partition_view %input_view, offsets = [%c0],
+                  sizes = [%c64]
+                : !pto.tensor_view<64xf32>
+                  -> !pto.partition_tensor_view<64xf32>
+    %src_store_part = pto.partition_view %src_view, offsets = [%c0],
+                      sizes = [%c64]
+                    : !pto.tensor_view<64xf32>
+                      -> !pto.partition_tensor_view<64xf32>
+    %src_tput_part = pto.partition_view %src_view, offsets = [%c0],
+                     sizes = [%c64]
+                   : !pto.tensor_view<64xf32>
+                     -> !pto.partition_tensor_view<64xf32>
+    %dst_part = pto.partition_view %dst_view, offsets = [%c0],
+                sizes = [%c64]
+              : !pto.tensor_view<64xf32>
+                -> !pto.partition_tensor_view<64xf32>
+
+    %tile = pto.alloc_tile addr = %c0_i64
+          : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %stage = pto.alloc_tile addr = %c4096_i64
+           : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%input_part : !pto.partition_tensor_view<64xf32>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%src_store_part : !pto.partition_tensor_view<64xf32>)
+    pto.comm.tput(%dst_part, %src_tput_part, buf(%stage)
+                  : !pto.partition_tensor_view<64xf32>,
+                    !pto.partition_tensor_view<64xf32>,
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        {atomicType = #pto<atomic_type atomic_none>}
+    return
+  }
+
+  func.func @issue706_tget_orders_later_tload(
+      %local_dst: !pto.ptr<f32>, %remote_src: !pto.ptr<f32>,
+      %sink: !pto.ptr<f32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+
+    %dst_view = pto.make_tensor_view %local_dst, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+    %src_view = pto.make_tensor_view %remote_src, shape = [%c64],
+                strides = [%c1] {layout = #pto.layout<nd>}
+              : !pto.tensor_view<64xf32>
+    %sink_view = pto.make_tensor_view %sink, shape = [%c64],
+                 strides = [%c1] {layout = #pto.layout<nd>}
+               : !pto.tensor_view<64xf32>
+
+    %dst_tget_part = pto.partition_view %dst_view, offsets = [%c0],
+                     sizes = [%c64]
+                   : !pto.tensor_view<64xf32>
+                     -> !pto.partition_tensor_view<64xf32>
+    %dst_load_part = pto.partition_view %dst_view, offsets = [%c0],
+                     sizes = [%c64]
+                   : !pto.tensor_view<64xf32>
+                     -> !pto.partition_tensor_view<64xf32>
+    %src_part = pto.partition_view %src_view, offsets = [%c0],
+                sizes = [%c64]
+              : !pto.tensor_view<64xf32>
+                -> !pto.partition_tensor_view<64xf32>
+    %sink_part = pto.partition_view %sink_view, offsets = [%c0],
+                 sizes = [%c64]
+               : !pto.tensor_view<64xf32>
+                 -> !pto.partition_tensor_view<64xf32>
+
+    %stage = pto.alloc_tile addr = %c0_i64
+           : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tile = pto.alloc_tile addr = %c4096_i64
+          : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.comm.tget(%dst_tget_part, %src_part, buf(%stage)
+                  : !pto.partition_tensor_view<64xf32>,
+                    !pto.partition_tensor_view<64xf32>,
+                    !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%dst_load_part : !pto.partition_tensor_view<64xf32>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%sink_part : !pto.partition_tensor_view<64xf32>)
+    return
+  }
+}
+
+// CHECK-LABEL: AICORE void issue706_tput_waits_for_prior_tstore(
+// CHECK: TSTORE(
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TPUT_ID:[0-9]+]]);
+// CHECK: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TPUT_ID]]);
+// CHECK-NEXT: pto::comm::TPUT(
+
+// CHECK-LABEL: AICORE void issue706_tget_orders_later_tload(
+// CHECK: pto::comm::TGET(
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TGET_ID:[0-9]+]]);
+// CHECK-NEXT: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID[[TGET_ID]]);
+// CHECK-NEXT: TLOAD(
