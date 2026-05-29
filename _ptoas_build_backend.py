@@ -44,6 +44,7 @@ _BUILD_DIR = Path(os.environ.get("PTO_BUILD_DIR", str(_REPO / "build")))
 _MLIR_PY_PKG = (
     _LLVM_BUILD_DIR / "tools" / "mlir" / "python_packages" / "mlir_core"
 )
+_WHEEL_DIST_DIR = _BUILD_DIR / "wheel-dist"
 
 
 def get_requires_for_build_wheel(config_settings=None):
@@ -126,28 +127,6 @@ def _cmake_configure_and_build():
     subprocess.check_call(["ninja", "-C", str(_BUILD_DIR), "install"])
 
 
-def _install_dialect_files():
-    """Copy PTO dialect .py files and TileLang resources into the MLIR package dir."""
-    dialects_src = _PTO_INSTALL_DIR / "mlir" / "dialects"
-    dialects_dst = _MLIR_PY_PKG / "mlir" / "dialects"
-    if dialects_src.exists() and dialects_dst.exists():
-        for f in dialects_src.glob("*.py"):
-            shutil.copy2(f, dialects_dst / f.name)
-
-    tilelang_src = _PTO_INSTALL_DIR / "tilelang_dsl"
-    tileops_src = _PTO_INSTALL_DIR / "share" / "ptoas" / "TileOps"
-    if tilelang_src.exists():
-        dst = _MLIR_PY_PKG / "tilelang_dsl"
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(tilelang_src, dst)
-    if tileops_src.exists():
-        dst = _MLIR_PY_PKG / "TileOps"
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(tileops_src, dst)
-
-
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     _cmake_configure_and_build()
 
@@ -156,6 +135,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         "PTO_SOURCE_DIR": str(_REPO),
         "PTO_INSTALL_DIR": str(_PTO_INSTALL_DIR),
         "LLVM_BUILD_DIR": str(_LLVM_BUILD_DIR),
+        "PTO_WHEEL_DIST_DIR": str(_WHEEL_DIST_DIR),
     })
     subprocess.check_call(
         ["bash", str(_REPO / "docker" / "create_wheel.sh")],
@@ -163,12 +143,12 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     )
 
     wheels = sorted(
-        glob.glob(str(_MLIR_PY_PKG / "dist" / "ptoas-*.whl")),
+        glob.glob(str(_WHEEL_DIST_DIR / "ptoas-*.whl")),
         key=os.path.getmtime,
     )
     if not wheels:
         raise RuntimeError(
-            f"No ptoas-*.whl found in {_MLIR_PY_PKG / 'dist'} after build."
+            f"No ptoas-*.whl found in {_WHEEL_DIST_DIR} after build."
         )
 
     wheel_path = Path(wheels[-1])
@@ -186,9 +166,6 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
     """
     _cmake_configure_and_build()
 
-    # Copy dialect .py files so `from mlir.dialects import pto` works
-    _install_dialect_files()
-
     version = os.environ.get("PTOAS_PYTHON_PACKAGE_VERSION", "0.1.0")
 
     # Paths that must be on sys.path for the package to be importable
@@ -196,9 +173,7 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
         # mlir.* namespace + _pto.so (installed there by CMake)
         str(_MLIR_PY_PKG),
         # _pto.so output directory (CMAKE_LIBRARY_OUTPUT_DIRECTORY)
-        str(_BUILD_DIR / "python" / "pto"),
-        # handwritten Python sources (pto/dialects/pto.py, etc.)
-        str(_REPO / "python"),
+        str(_BUILD_DIR / "python"),
         # ptodsl pure-Python sub-package
         str(_REPO / "ptodsl"),
     ]

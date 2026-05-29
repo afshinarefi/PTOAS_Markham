@@ -163,7 +163,7 @@ jobs:
       - name: Create Python wheel
         if: false
         run: |
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
+          export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             TARGET_ARCH="x86_64"
@@ -175,7 +175,7 @@ jobs:
           export WHEEL_PLAT_NAME=$(python "$PTO_SOURCE_DIR/docker/get_macos_wheel_plat_name.py" "$TARGET_ARCH")
           bash $PTO_SOURCE_DIR/docker/create_wheel.sh
           shopt -s nullglob
-          built_wheels=("$PY_PACKAGE_DIR"/dist/ptoas*.whl)
+          built_wheels=("$PTO_WHEEL_DIST_DIR"/ptoas*.whl)
           if [ "${#built_wheels[@]}" -gt 0 ]; then
             printf 'Built wheel file: %s\n' "$(basename "${built_wheels[0]}")"
           fi
@@ -184,17 +184,18 @@ jobs:
         if: false
         run: |
           set -euo pipefail
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-          cd $PY_PACKAGE_DIR
+          export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
+          export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
+          mkdir -p "$PTO_WHEELHOUSE"
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             REQUIRED_ARCH="x86_64"
           else
             REQUIRED_ARCH="arm64"
           fi
           shopt -s nullglob
-          wheels=(dist/ptoas*.whl)
+          wheels=("$PTO_WHEEL_DIST_DIR"/ptoas*.whl)
           if [ "${#wheels[@]}" -ne 1 ]; then
-            echo "Expected exactly one wheel in dist/, found ${#wheels[@]}:"
+            echo "Expected exactly one wheel in $PTO_WHEEL_DIST_DIR, found ${#wheels[@]}:"
             printf '  %s\n' "${wheels[@]}"
             exit 1
           fi
@@ -203,13 +204,13 @@ jobs:
           echo "Wheel size:"
           du -sh "${wheels[0]}"
           echo "dist contents:"
-          ls -lh dist
+          ls -lh "$PTO_WHEEL_DIST_DIR"
           echo "delocate dependency summary:"
           delocate-listdeps "${wheels[0]}" || true
 
           delocate-wheel \
             --require-archs "${REQUIRED_ARCH}" \
-            --wheel-dir wheelhouse \
+            --wheel-dir "$PTO_WHEELHOUSE" \
             "${wheels[0]}" &
           delocate_pid=$!
 
@@ -227,7 +228,7 @@ jobs:
           while kill -0 "$delocate_pid" 2>/dev/null; do
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] delocate still running (pid=${delocate_pid})"
             ps -o pid=,ppid=,%cpu=,%mem=,etime=,command= -p "$delocate_pid" || true
-            du -sh dist wheelhouse 2>/dev/null || true
+            du -sh "$PTO_WHEEL_DIST_DIR" "$PTO_WHEELHOUSE" 2>/dev/null || true
             sleep 60
           done
 
@@ -246,20 +247,19 @@ jobs:
             echo "Filesystem usage:"
             df -h .
             echo "dist contents after failure:"
-            ls -lh dist || true
+            ls -lh "$PTO_WHEEL_DIST_DIR" || true
             echo "wheelhouse contents after failure:"
-            ls -lh wheelhouse || true
+            ls -lh "$PTO_WHEELHOUSE" || true
             exit "$rc"
           fi
 
           echo "wheelhouse contents:"
-          ls -lh wheelhouse
+          ls -lh "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
         if: false
         run: |
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-          pip install $PY_PACKAGE_DIR/wheelhouse/ptoas*.whl
+          pip install $GITHUB_WORKSPACE/wheelhouse/ptoas*.whl
           export DYLD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${DYLD_LIBRARY_PATH}
           bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
@@ -271,9 +271,10 @@ jobs:
       - name: Copy wheel to workspace
         if: false
         run: |
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
           mkdir -p $GITHUB_WORKSPACE/wheelhouse
-          cp $PY_PACKAGE_DIR/wheelhouse/ptoas*.whl $GITHUB_WORKSPACE/wheelhouse/
+          if ! compgen -G "$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" >/dev/null; then
+            cp $PTO_SOURCE_DIR/build/wheel-dist/ptoas*.whl $GITHUB_WORKSPACE/wheelhouse/
+          fi
 
       - name: Upload wheel artifact
         if: false

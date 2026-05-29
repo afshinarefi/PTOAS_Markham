@@ -74,7 +74,7 @@ def print_environment_help() -> None:
     print("2. PTO dialect bindings (optional, for PTO ops):")
     print("   $PTOAS_BUILD_DIR/python/mlir")
     print("   OR")
-    print("   $PTOAS_INSTALL_DIR/mlir")
+    print("   $PTO_INSTALL_DIR/mlir")
     print()
     print("Example setup:")
     print()

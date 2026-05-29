@@ -70,22 +70,14 @@ RUN cmake -C /tmp/LinuxHardeningCache.cmake -G Ninja \
 RUN ninja -C $PTO_BUILD_DIR && ninja -C $PTO_BUILD_DIR install
 
 # create python wheel
-ENV PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core/
-
-# copy pto.py, _pto_ops_gen.py 
-RUN cp $PTO_INSTALL_DIR/mlir/dialects/*.py $PY_PACKAGE_DIR/mlir/dialects/
-RUN rm -rf $PY_PACKAGE_DIR/tilelang_dsl $PY_PACKAGE_DIR/TileOps     && cp -R $PTO_INSTALL_DIR/tilelang_dsl $PY_PACKAGE_DIR/tilelang_dsl     && cp -R $PTO_INSTALL_DIR/share/ptoas/TileOps $PY_PACKAGE_DIR/TileOps
-
-COPY ./setup.py $PY_PACKAGE_DIR/
-
-WORKDIR $PY_PACKAGE_DIR
-RUN python setup.py bdist_wheel
+ENV PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
+RUN bash "$PTO_SOURCE_DIR/docker/create_wheel.sh"
 
 # fix missing so
 RUN export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH \
-    && auditwheel repair --plat manylinux_2_34_${ARCH} dist/ptoas*.whl
+    && auditwheel repair --plat manylinux_2_34_${ARCH} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w /wheelhouse
 
-RUN pip install wheelhouse/ptoas*.whl
+RUN pip install /wheelhouse/ptoas*.whl
 
 # test import without adjusting $PYTHONPATH and $LD_LIBRARY_PATH, in some irrelevant dir
 WORKDIR /test
@@ -121,7 +113,7 @@ FROM quay.io/ascend/cann:8.5.0-910b-ubuntu22.04-py3.11 AS runtime
 # - the `ascend/cann` image has the full CANN for on-device execution, but is very big (10 GB)
 
 # Copy only the wheel, ptoas binary, its .so dependencies, and test scripts from builder
-COPY --from=builder /llvm-workspace/llvm-project/build-release/tools/mlir/python_packages/mlir_core/wheelhouse/ptoas*.whl /tmp/
+COPY --from=builder /wheelhouse/ptoas*.whl /tmp/
 COPY --from=builder /llvm-workspace/PTOAS/build-release/tools/ptoas/ptoas /usr/local/bin/ptoas
 
 RUN mkdir -p /usr/local/lib/ptoas

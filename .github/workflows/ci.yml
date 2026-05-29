@@ -204,9 +204,11 @@ jobs:
 
       - name: Build PTOAS
         run: |
+          rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
-          # PTO_INSTALL_DIR is already set at the job level.
-          LLVM_BUILD_DIR="${LLVM_DIR}" pip install . --no-build-isolation
+          LLVM_BUILD_DIR="${LLVM_DIR}" \
+            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
       - name: Run PTODSL Python tests
         shell: bash
@@ -215,9 +217,10 @@ jobs:
           PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
           MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
           export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
-          export PYTHONPATH="${MLIR_PYTHONPATH}:${PTO_INSTALL_DIR}:${PYTHONPATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
       - name: Run lit tests
@@ -227,9 +230,10 @@ jobs:
           PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
           MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
           export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
-          export PYTHONPATH="${MLIR_PYTHONPATH}:${PTO_INSTALL_DIR}:${PYTHONPATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
           ninja -C "${PTO_BUILD_DIR}" check-pto
 
       - name: Run sample tests (py -> pto -> cpp)
@@ -242,11 +246,12 @@ jobs:
           PTO_BUILD_DIR: ${{ env.PTO_BUILD_DIR }}
           PYTHON_BIN: /usr/bin/python3
           MLIR_PYTHON_ROOT: ${{ env.MLIR_PYTHONPATH }}
-          PTO_PYTHON_ROOT: ${{ env.PTO_INSTALL_DIR }}/
+          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
         run: |
           set -euo pipefail
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
           export PATH="${PTO_INSTALL_DIR}/bin:${PATH}"
-          export PYTHONPATH="${MLIR_PYTHON_ROOT}:${PTO_PYTHON_ROOT}:${PYTHONPATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
           if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
@@ -301,6 +306,7 @@ jobs:
     env:
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto
+      PTO_INSTALL_DIR: ${{ github.workspace }}/install
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
       TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
@@ -368,6 +374,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "${GITHUB_WORKSPACE}/build"
+          rm -rf "${PTO_INSTALL_DIR}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
 
@@ -406,8 +413,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
-          LLVM_BUILD_DIR="${LLVM_DIR}" pip install . --no-build-isolation
+          LLVM_BUILD_DIR="${LLVM_DIR}" \
+            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
       - name: Resolve simulator environment
         shell: bash

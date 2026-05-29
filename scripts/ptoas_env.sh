@@ -41,6 +41,18 @@ export PTO_ISA_PATH="${PTO_ISA_PATH:-${WORKSPACE_DIR}/pto-isa}"
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
 
 export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core}"
+if [[ -z "${PTOAS_PYTHON_SITE:-}" ]]; then
+	PTOAS_PYTHON_SITE="$(
+		PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 - <<'PY' 2>/dev/null || true
+import os
+import sysconfig
+
+prefix = os.environ["PTO_INSTALL_DIR"]
+print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))
+PY
+	)"
+fi
+export PTOAS_PYTHON_SITE
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
@@ -96,9 +108,11 @@ _ptoas_run_legacy_smoke_test() {
 	echo "test set_env: OK"
 }
 
+_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${PTO_INSTALL_DIR}"
 _ptoas_prepend_path PYTHONPATH "${MLIR_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_ROOT}"
-_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${PTOAS_PYTHON_SITE}"
 
 _ptoas_prepend_path LD_LIBRARY_PATH "${LLVM_BUILD_DIR}/lib"
 _ptoas_prepend_path LD_LIBRARY_PATH "${PTO_INSTALL_DIR}/lib"

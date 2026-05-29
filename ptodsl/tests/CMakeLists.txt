@@ -7,8 +7,12 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 get_filename_component(_llvm_root "${LLVM_DIR}/../../.." ABSOLUTE)
+set(_ptodsl_test_pythonpath "${MLIR_PYTHON_PACKAGE_DIR}:${CMAKE_INSTALL_PREFIX}:$ENV{PYTHONPATH}")
+if(DEFINED ENV{PTO_INSTALL_DIR} AND NOT "$ENV{PTO_INSTALL_DIR}" STREQUAL "")
+  set(_ptodsl_test_pythonpath "$ENV{PTO_INSTALL_DIR}:${_ptodsl_test_pythonpath}")
+endif()
 set(_ptodsl_test_env
-  "PYTHONPATH=${MLIR_PYTHON_PACKAGE_DIR}:${CMAKE_INSTALL_PREFIX}:$ENV{PYTHONPATH}"
+  "PYTHONPATH=${_ptodsl_test_pythonpath}"
   "LD_LIBRARY_PATH=${_llvm_root}/lib:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
   "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:$ENV{PATH}"
 )

@@ -67,7 +67,7 @@ if(NOT MLIR_PYTHON_PACKAGE_DIR)
 endif()
 
 install(TARGETS _pto
-  LIBRARY DESTINATION "${MLIR_PYTHON_PACKAGE_DIR}/mlir/_mlir_libs"
+  LIBRARY DESTINATION "mlir/_mlir_libs"
 )
 
 # ---- 2) Generate ODS Python op bindings: _pto_ops_gen.py ----
