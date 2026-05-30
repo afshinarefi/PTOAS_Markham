@@ -51,6 +51,7 @@ add_mlir_dialect_library(PTOTransforms
   VPTONormalizeContainer.cpp
   VPTOSplitCVModule.cpp
   InsertSync/PTOIRTranslator.cpp
+  InsertSync/SyncMacroModel.cpp
   InsertSync/SyncCommon.cpp
   InsertSync/InsertSyncAnalysis.cpp
   InsertSync/MemoryDependentAnalyzer.cpp

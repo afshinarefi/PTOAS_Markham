@@ -13620,6 +13620,14 @@ void TPutOp::getEffects(
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
+  if (getPong()) {
+    auto pongRange = getPongMutable();
+    if (auto it = pongRange.begin(); it != pongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
+      addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
+  }
 }
 
 void TGetOp::getEffects(
@@ -13628,6 +13636,14 @@ void TGetOp::getEffects(
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
+  if (getPong()) {
+    auto pongRange = getPongMutable();
+    if (auto it = pongRange.begin(); it != pongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
+      addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
+  }
 }
 
 void TNotifyOp::getEffects(
@@ -13656,12 +13672,17 @@ void TBroadcastOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
   if (getPong()) {
     auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end())
+    if (auto it = pongRange.begin(); it != pongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
       addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
   }
+  for (OpOperand &operand : getGroupMutable())
+    addEffect(effects, &operand, MemoryEffects::Write::get());
 }
 
 void CommTGatherOp::getEffects(
@@ -13669,18 +13690,33 @@ void CommTGatherOp::getEffects(
         &effects) {
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
   addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
+  if (getPong()) {
+    auto pongRange = getPongMutable();
+    if (auto it = pongRange.begin(); it != pongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
+      addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
+  }
+  for (OpOperand &operand : getGroupMutable())
+    addEffect(effects, &operand, MemoryEffects::Read::get());
 }
 
 void CommTScatterOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
+  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
   if (getPong()) {
     auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end())
+    if (auto it = pongRange.begin(); it != pongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
       addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
   }
+  for (OpOperand &operand : getGroupMutable())
+    addEffect(effects, &operand, MemoryEffects::Write::get());
 }
 
 void TReduceOp::getEffects(
@@ -13689,7 +13725,17 @@ void TReduceOp::getEffects(
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
   addEffect(effects, &getAccMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getAccMutable(), MemoryEffects::Write::get());
+  addEffect(effects, &getRecvPingMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getRecvPingMutable(), MemoryEffects::Write::get());
+  if (getRecvPong()) {
+    auto recvPongRange = getRecvPongMutable();
+    if (auto it = recvPongRange.begin(); it != recvPongRange.end()) {
+      addEffect(effects, &*it, MemoryEffects::Read::get());
+      addEffect(effects, &*it, MemoryEffects::Write::get());
+    }
+  }
+  for (OpOperand &operand : getGroupMutable())
+    addEffect(effects, &operand, MemoryEffects::Read::get());
 }
 
 void WaitAsyncEventOp::getEffects(
