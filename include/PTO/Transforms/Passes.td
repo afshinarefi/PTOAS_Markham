@@ -555,6 +555,8 @@ def PTOResolveBufferSelect : Pass<"pto-resolve-buffer-select", "ModuleOp"> {
     "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect"
   ];
+}
+
 def PTOInferVPTOVecScope
     : Pass<"pto-infer-vpto-vecscope", "func::FuncOp"> {
   let summary =
