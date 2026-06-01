@@ -159,22 +159,8 @@ jobs:
       - name: Build PTOAS
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
-          cd $PTO_SOURCE_DIR
-          cmake -C "$PTO_SOURCE_DIR/cmake/LinuxHardeningCache.cmake" -G Ninja \
-            -S . \
-            -B $PTO_BUILD_DIR \
-            -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
-            -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
-            -DPython3_ROOT_DIR=${PY_PATH} \
-            -DPython3_EXECUTABLE=${PY_PATH}/bin/python \
-            -DPython3_FIND_STRATEGY=LOCATION \
-            -Dpybind11_DIR=$(${PY_PATH}/bin/python -m pybind11 --cmakedir) \
-            -DMLIR_PYTHON_PACKAGE_DIR=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core \
-            -DPTOAS_RELEASE_VERSION_OVERRIDE=${PTOAS_VERSION} \
-            -DCMAKE_INSTALL_PREFIX=${PTO_INSTALL_DIR} \
-            -DCMAKE_BUILD_TYPE=Release
-          ninja -C $PTO_BUILD_DIR
-          ninja -C $PTO_BUILD_DIR install
+          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_VERSION}" \
+          pip install . --no-build-isolation
 
       - name: Create Python wheel
         if: false
@@ -187,17 +173,17 @@ jobs:
         if: false
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
+          export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
+          export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
           export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
-          cd $PY_PACKAGE_DIR
-          auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} dist/ptoas*.whl -w wheelhouse
+          mkdir -p "$PTO_WHEELHOUSE"
+          auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
         if: false
         run: |
           export PATH="${PY_PATH}/bin:$PATH"
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-          pip install $PY_PACKAGE_DIR/wheelhouse/ptoas*.whl
+          pip install $GITHUB_WORKSPACE/wheelhouse/ptoas*.whl
           bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
       - name: Test ptoas CLI
@@ -208,9 +194,10 @@ jobs:
       - name: Copy wheel to workspace
         if: false
         run: |
-          export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
           mkdir -p $GITHUB_WORKSPACE/wheelhouse
-          cp $PY_PACKAGE_DIR/wheelhouse/ptoas*.whl $GITHUB_WORKSPACE/wheelhouse/
+          if ! compgen -G "$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" >/dev/null; then
+            cp $PTO_SOURCE_DIR/build/wheel-dist/ptoas*.whl $GITHUB_WORKSPACE/wheelhouse/
+          fi
 
       - name: Upload wheel artifact
         if: false

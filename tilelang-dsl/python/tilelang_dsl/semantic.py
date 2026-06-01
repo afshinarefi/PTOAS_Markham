@@ -53,6 +53,7 @@ from .types import (
     BarrierType,
     BLayout,
     CmpMode,
+    CompactMode,
     DeinterleaveDist,
     Event,
     InterleaveDist,
@@ -135,6 +136,7 @@ _MEMORY_SPACE_SYMBOLS = {memory_space.name: memory_space for memory_space in Mem
 _PAD_MODE_SYMBOLS = {pad_mode.name: pad_mode for pad_mode in PadMode}
 _B_LAYOUT_SYMBOLS = {layout.name: layout for layout in BLayout}
 _S_LAYOUT_SYMBOLS = {layout.name: layout for layout in SLayout}
+_COMPACT_MODE_SYMBOLS = {compact_mode.name: compact_mode for compact_mode in CompactMode}
 _PAD_VALUE_SYMBOLS = {
     pad_value.name: pad_value
     for pad_value in (PadValue.NULL, PadValue.ZERO, PadValue.MAX, PadValue.MIN)
@@ -284,19 +286,33 @@ _CUBE_MATMUL_OPS = {
     "mad_mx_bias",
 }
 _CUBE_TRANSFER_OPS = {
-    "cube_load",
-    "cube_store",
-    "cube_load_frac",
-    "bias_load",
-    "left_load",
-    "right_load",
-    "left_load_mx",
-    "right_load_mx",
-    "acc_store",
-    "acc_store_gm",
-    "acc_store_ub",
+    "mte_gm_l1",
+    "mte_l1_ub",
+    "mte_gm_l1_frac",
+    "mte_l1_bt",
+    "mte_l1_fb",
+    "mte_l1_l0a",
+    "mte_l1_l0b",
+    "mte_l1_l0a_mx",
+    "mte_l1_l0b_mx",
+    "mte_l0c_l1",
+    "mte_l0c_gm",
+    "mte_l0c_ub",
 }
-_CUBE_CALL_OPS = _CUBE_MATMUL_OPS | _CUBE_TRANSFER_OPS
+_LEGACY_CUBE_ALIAS_CANONICAL = {
+    "cube_load": "mte_gm_l1",
+    "cube_store": "mte_l1_ub",
+    "cube_load_frac": "mte_gm_l1_frac",
+    "bias_load": "mte_l1_bt",
+    "left_load": "mte_l1_l0a",
+    "right_load": "mte_l1_l0b",
+    "left_load_mx": "mte_l1_l0a_mx",
+    "right_load_mx": "mte_l1_l0b_mx",
+    "acc_store": "mte_l0c_l1",
+    "acc_store_gm": "mte_l0c_gm",
+    "acc_store_ub": "mte_l0c_ub",
+}
+_CUBE_CALL_OPS = _CUBE_MATMUL_OPS | _CUBE_TRANSFER_OPS | set(_LEGACY_CUBE_ALIAS_CANONICAL)
 _VECTOR_SCALAR_OPS = {
     "vadds",
     "vsubs",
@@ -329,6 +345,12 @@ _LOW_LEVEL_DMA_COPY_OPS = {
     "copy_gm_to_ubuf",
     "copy_ubuf_to_gm",
     "copy_ubuf_to_ubuf",
+}
+_GROUPED_MTE_DMA_OPS = {
+    "mte_gm_ub",
+    "mte_ub_gm",
+    "mte_ub_ub",
+    "mte_ub_l1",
 }
 
 
@@ -571,29 +593,6 @@ class SemanticExprStmt(SemanticStmt):
 
 
 @dataclass(frozen=True)
-class SemanticDmaOptions:
-    pad_mode: SemanticExpr | None = None
-    pad_value: SemanticExpr | None = None
-    left_padding: SemanticExpr | None = None
-    right_padding: SemanticExpr | None = None
-    init_out_buffer: SemanticExpr | None = None
-
-
-@dataclass(frozen=True)
-class SemanticDmaLoadStmt(SemanticStmt):
-    src: SemanticTensorSliceExpr
-    dst: SemanticExpr
-    options: SemanticDmaOptions = SemanticDmaOptions()
-
-
-@dataclass(frozen=True)
-class SemanticDmaStoreStmt(SemanticStmt):
-    src: SemanticExpr
-    dst: SemanticTensorSliceExpr
-    options: SemanticDmaOptions = SemanticDmaOptions()
-
-
-@dataclass(frozen=True)
 class SemanticVectorStoreStmt(SemanticStmt):
     value: SemanticExpr
     destination: SemanticExpr
@@ -736,6 +735,12 @@ class SemanticLowLevelCopyStmt(SemanticStmt):
     source: SemanticExpr
     destination: SemanticExpr
     operands: tuple[SemanticExpr, ...]
+
+
+@dataclass(frozen=True)
+class SemanticGroupedMteDmaStmt(SemanticStmt):
+    name: str
+    args: tuple[SemanticExpr, ...]
 
 
 @dataclass(frozen=True)
@@ -1110,10 +1115,14 @@ class _SemanticAnalyzer:
                 updated_env,
             )
         if isinstance(stmt, FrontendExprStmt):
-            if self._is_dma_call(stmt.expr):
-                return self._analyze_dma_stmt(stmt.expr, env, allow_outer_lookup=allow_outer_lookup)
             if self._is_sync_call(stmt.expr):
                 return self._analyze_sync_stmt(stmt.expr, env, allow_outer_lookup=allow_outer_lookup)
+            if self._is_grouped_mte_dma_call(stmt.expr):
+                return self._analyze_grouped_mte_dma_stmt(
+                    stmt.expr,
+                    env,
+                    allow_outer_lookup=allow_outer_lookup,
+                )
             if self._is_low_level_dma_call(stmt.expr):
                 return self._analyze_low_level_dma_stmt(
                     stmt.expr,
@@ -1357,13 +1366,6 @@ class _SemanticAnalyzer:
         )
         return SemanticVecscopeStmt(body=body), updated_env
 
-    def _is_dma_call(self, expr: FrontendExprNode) -> bool:
-        return (
-            isinstance(expr, FrontendCallExpr)
-            and expr.namespace == "pto"
-            and expr.name in {"dma_load", "dma_store"}
-        )
-
     def _is_vector_store_call(self, expr: FrontendExprNode) -> bool:
         return (
             isinstance(expr, FrontendCallExpr)
@@ -1412,83 +1414,11 @@ class _SemanticAnalyzer:
             and expr.name in _LOW_LEVEL_DMA_UNARY_CONFIG_OPS | _LOW_LEVEL_DMA_CONFIG_OPS | _LOW_LEVEL_DMA_COPY_OPS
         )
 
-    def _analyze_dma_stmt(
-        self,
-        expr: FrontendCallExpr,
-        env: dict[str, SemanticBinding],
-        *,
-        allow_outer_lookup: bool,
-    ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
-        args = tuple(
-            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
-            for arg in expr.args
-        )
-        if expr.name == "dma_load":
-            if len(args) != 2:
-                raise TypeError("pto.dma_load expects exactly 2 positional arguments in TileLang DSL v1")
-            src = self._require_tensor_slice(args[0], "pto.dma_load source")
-            dst = self._require_tile_expr(args[1], "pto.dma_load destination")
-            options = self._analyze_dma_options(
-                expr.keywords,
-                env,
-                allow_outer_lookup=allow_outer_lookup,
-                context="pto.dma_load",
-            )
-            self._validate_dma_load_profile(src, dst, options)
-            return SemanticDmaLoadStmt(src=src, dst=dst, options=options), dict(env)
-        if expr.name == "dma_store":
-            if len(args) != 2:
-                raise TypeError("pto.dma_store expects exactly 2 positional arguments in TileLang DSL v1")
-            src = self._require_tile_expr(args[0], "pto.dma_store source")
-            dst = self._require_tensor_slice(args[1], "pto.dma_store destination")
-            options = self._analyze_dma_options(
-                expr.keywords,
-                env,
-                allow_outer_lookup=allow_outer_lookup,
-                context="pto.dma_store",
-            )
-            self._validate_dma_store_profile(src, dst, options)
-            return SemanticDmaStoreStmt(src=src, dst=dst, options=options), dict(env)
-        raise ValueError(f"unsupported DMA stmt pto.{expr.name}")
-
-    def _analyze_dma_options(
-        self,
-        keywords: tuple[tuple[str, FrontendExprNode], ...],
-        env: dict[str, SemanticBinding],
-        *,
-        allow_outer_lookup: bool,
-        context: str,
-    ) -> SemanticDmaOptions:
-        analyzed: dict[str, SemanticExpr] = {}
-        for name, keyword_expr in keywords:
-            analyzed[name] = self._analyze_expr(
-                keyword_expr,
-                env,
-                allow_outer_lookup=allow_outer_lookup,
-            )
-
-        pad_mode = analyzed.get("pad_mode")
-        if pad_mode is not None:
-            self._pad_mode_value(pad_mode, default=PadMode.PadNull)
-
-        left_padding = analyzed.get("left_padding")
-        if left_padding is not None:
-            left_padding = self._require_index_typed_expr(left_padding)
-
-        right_padding = analyzed.get("right_padding")
-        if right_padding is not None:
-            right_padding = self._require_index_typed_expr(right_padding)
-
-        init_out_buffer = analyzed.get("init_out_buffer")
-        if init_out_buffer is not None:
-            self._require_i1_expr(init_out_buffer, f"{context} init_out_buffer")
-
-        return SemanticDmaOptions(
-            pad_mode=pad_mode,
-            pad_value=analyzed.get("pad_value"),
-            left_padding=left_padding,
-            right_padding=right_padding,
-            init_out_buffer=init_out_buffer,
+    def _is_grouped_mte_dma_call(self, expr: FrontendExprNode) -> bool:
+        return (
+            isinstance(expr, FrontendCallExpr)
+            and expr.namespace == "pto"
+            and expr.name in _GROUPED_MTE_DMA_OPS
         )
 
     def _analyze_vector_store_stmt(
@@ -1987,6 +1917,47 @@ class _SemanticAnalyzer:
             )
         raise ValueError(f"unsupported low-level DMA stmt pto.{expr.name}")
 
+    def _analyze_grouped_mte_dma_stmt(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> tuple[SemanticStmt, dict[str, SemanticBinding]]:
+        semantic_expr = self._analyze_grouped_mte_dma_expr(
+            expr,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+        )
+        return SemanticGroupedMteDmaStmt(name=expr.name, args=semantic_expr.args), dict(env)
+
+    def _analyze_grouped_mte_dma_expr(
+        self,
+        expr: FrontendCallExpr,
+        env: dict[str, SemanticBinding],
+        *,
+        allow_outer_lookup: bool,
+    ) -> SemanticCallExpr:
+        args = tuple(
+            self._analyze_expr(arg, env, allow_outer_lookup=allow_outer_lookup)
+            for arg in expr.args
+        )
+        keywords = self._analyze_keyword_args(
+            expr.keywords,
+            env,
+            allow_outer_lookup=allow_outer_lookup,
+            context=f"pto.{expr.name}",
+        )
+        if expr.name == "mte_gm_ub":
+            return self._analyze_mte_gm_ub(args, keywords)
+        if expr.name == "mte_ub_gm":
+            return self._analyze_mte_ub_gm(args, keywords)
+        if expr.name == "mte_ub_ub":
+            return self._analyze_mte_ub_copy(expr.name, args, keywords, destination_space="ub")
+        if expr.name == "mte_ub_l1":
+            return self._analyze_mte_ub_copy(expr.name, args, keywords, destination_space="mat")
+        raise ValueError(f"unsupported grouped MTE DMA stmt pto.{expr.name}")
+
     def _analyze_low_level_dma_operands(
         self,
         expr: FrontendCallExpr,
@@ -2119,223 +2090,6 @@ class _SemanticAnalyzer:
         if isinstance(expr.type, SemanticTileType):
             return self._require_tile_expr(expr, context)
         return self._require_pointer_expr(expr, context, memory_space="ub")
-
-    def _validate_dma_common_types(
-        self,
-        tensor_slice_type: SemanticTensorSliceType,
-        tile_type: SemanticTileType,
-        op_name: str,
-    ) -> None:
-        if tensor_slice_type.rank != 2:
-            raise TypeError(f"{op_name} currently only supports rank-2 TensorView slices in TileLang DSL v1")
-        if tile_type.rank != 2 or tile_type.shape is None:
-            raise TypeError(f"{op_name} requires a statically specialized rank-2 Tile in TileLang DSL v1")
-        if tensor_slice_type.element_dtype != tile_type.element_dtype:
-            raise TypeError(f"{op_name} requires matching TensorView/Tile element dtypes in TileLang DSL v1")
-
-    def _validate_dma_load_profile(
-        self,
-        src: SemanticTensorSliceExpr,
-        dst: SemanticExpr,
-        options: SemanticDmaOptions,
-    ) -> None:
-        assert isinstance(dst.type, SemanticTileType)
-        self._validate_dma_common_types(src.type, dst.type, "pto.dma_load")
-        self._validate_dma_slice_profile(src, "pto.dma_load")
-
-        pad_mode = self._pad_mode_value(options.pad_mode, default=PadMode.PadNull)
-        left_padding = self._require_static_non_negative_index_value(
-            options.left_padding,
-            context="pto.dma_load left_padding",
-            default=0,
-        )
-        right_padding = self._require_static_non_negative_index_value(
-            options.right_padding,
-            context="pto.dma_load right_padding",
-            default=0,
-        )
-        self._require_static_bool_value(
-            options.init_out_buffer,
-            context="pto.dma_load init_out_buffer",
-            default=False,
-        )
-        self._validate_dma_load_option_profile(options, pad_mode)
-
-        valid_shape = self._resolved_tile_valid_shape(dst.type)
-        expected_extents = (
-            valid_shape[0],
-            self._trimmed_tile_axis_extent(
-                valid_shape[1],
-                left_padding,
-                right_padding,
-                op_name="pto.dma_load",
-                axis=1,
-                window_label="destination Tile valid window",
-            ),
-        )
-        self._validate_dma_extent_match(
-            actual_extents=src.type.extents,
-            expected_extents=expected_extents,
-            op_name="pto.dma_load",
-            actual_label="source slice",
-            expected_label="destination Tile valid window",
-            left_padding=left_padding,
-            right_padding=right_padding,
-        )
-
-    def _validate_dma_store_profile(
-        self,
-        src: SemanticExpr,
-        dst: SemanticTensorSliceExpr,
-        options: SemanticDmaOptions,
-    ) -> None:
-        assert isinstance(src.type, SemanticTileType)
-        self._validate_dma_common_types(dst.type, src.type, "pto.dma_store")
-        self._validate_dma_slice_profile(dst, "pto.dma_store")
-
-        pad_mode = self._pad_mode_value(options.pad_mode, default=PadMode.PadNull)
-        left_padding = self._require_static_non_negative_index_value(
-            options.left_padding,
-            context="pto.dma_store left_padding",
-            default=0,
-        )
-        right_padding = self._require_static_non_negative_index_value(
-            options.right_padding,
-            context="pto.dma_store right_padding",
-            default=0,
-        )
-        self._validate_dma_store_option_profile(options, pad_mode)
-
-        valid_shape = self._resolved_tile_valid_shape(src.type)
-        expected_extents = (
-            valid_shape[0],
-            self._trimmed_tile_axis_extent(
-                valid_shape[1],
-                left_padding,
-                right_padding,
-                op_name="pto.dma_store",
-                axis=1,
-                window_label="source Tile interior window",
-            ),
-        )
-        self._validate_dma_extent_match(
-            actual_extents=dst.type.extents,
-            expected_extents=expected_extents,
-            op_name="pto.dma_store",
-            actual_label="destination slice",
-            expected_label="source Tile interior window",
-            left_padding=left_padding,
-            right_padding=right_padding,
-        )
-
-    def _validate_dma_slice_profile(
-        self,
-        tensor_slice: SemanticTensorSliceExpr,
-        op_name: str,
-    ) -> None:
-        for axis, slice_axis in enumerate(tensor_slice.slices):
-            step = self._static_index_value(slice_axis.step, default=1)
-            if step is None:
-                raise TypeError(
-                    f"{op_name} stable frontend-only DMA profile requires a static positive "
-                    f"slice step on axis {axis}"
-                )
-            if step <= 0:
-                raise TypeError(
-                    f"{op_name} stable frontend-only DMA profile requires a positive "
-                    f"slice step on axis {axis}, got {step!r}"
-                )
-            if axis == 1 and step != 1:
-                raise TypeError(
-                    f"{op_name} stable frontend-only DMA profile only supports step == 1 "
-                    "on TensorView slice axis 1"
-                )
-
-    def _validate_dma_load_option_profile(
-        self,
-        options: SemanticDmaOptions,
-        pad_mode: PadMode,
-    ) -> None:
-        if pad_mode == PadMode.PadValue and options.pad_value is None:
-            raise TypeError(
-                "pto.dma_load stable frontend-only DMA profile requires `pad_value` when "
-                "`pad_mode=PadMode.PadValue`"
-            )
-        if pad_mode != PadMode.PadValue and options.pad_value is not None:
-            raise TypeError(
-                "pto.dma_load stable frontend-only DMA profile only accepts `pad_value` "
-                "when `pad_mode=PadMode.PadValue`"
-            )
-
-    def _validate_dma_store_option_profile(
-        self,
-        options: SemanticDmaOptions,
-        pad_mode: PadMode,
-    ) -> None:
-        if options.pad_value is not None:
-            raise TypeError(
-                "pto.dma_store stable frontend-only DMA profile does not support `pad_value`; "
-                "GM-side fill is unsupported"
-            )
-        if pad_mode != PadMode.PadNull:
-            raise TypeError(
-                "pto.dma_store stable frontend-only DMA profile only supports "
-                "`pad_mode=PadMode.PadNull`; non-PadNull store padding would require GM-side fill"
-            )
-
-    def _resolved_tile_valid_shape(
-        self,
-        tile_type: SemanticTileType,
-    ) -> tuple[int | None, ...]:
-        assert tile_type.shape is not None
-        return tile_type.shape if tile_type.valid_shape is None else tile_type.valid_shape
-
-    def _trimmed_tile_axis_extent(
-        self,
-        base_extent: int | None,
-        left_padding: int,
-        right_padding: int,
-        *,
-        op_name: str,
-        axis: int,
-        window_label: str,
-    ) -> int | None:
-        if base_extent is None:
-            return None
-        trimmed_extent = base_extent - left_padding - right_padding
-        if trimmed_extent <= 0:
-            raise TypeError(
-                f"{op_name} stable frontend-only DMA profile requires {window_label} axis {axis}="
-                f"{base_extent!r} to remain positive after left_padding={left_padding} "
-                f"and right_padding={right_padding}"
-            )
-        return trimmed_extent
-
-    def _validate_dma_extent_match(
-        self,
-        *,
-        actual_extents: tuple[int | None, ...],
-        expected_extents: tuple[int | None, ...],
-        op_name: str,
-        actual_label: str,
-        expected_label: str,
-        left_padding: int,
-        right_padding: int,
-    ) -> None:
-        for axis, (actual_extent, expected_extent) in enumerate(zip(actual_extents, expected_extents)):
-            if actual_extent is None or expected_extent is None:
-                continue
-            if actual_extent != expected_extent:
-                padding_suffix = ""
-                if axis == 1 and (left_padding != 0 or right_padding != 0):
-                    padding_suffix = (
-                        f" after left_padding={left_padding} and right_padding={right_padding}"
-                    )
-                raise TypeError(
-                    f"{op_name} stable frontend-only DMA profile requires {actual_label} extent "
-                    f"axis {axis}={actual_extent!r} to match {expected_label} axis {axis}="
-                    f"{expected_extent!r}{padding_suffix}"
-                )
 
     def _bind_assignment_target(
         self,
@@ -2611,10 +2365,23 @@ class _SemanticAnalyzer:
 
         updated_env = dict(env)
         merged_results: list[SemanticIfResult] = []
-        for name, outer_binding in env.items():
+        merge_names = list(env)
+        merge_names.extend(
+            name
+            for name in then_env
+            if name not in env and name in else_env
+        )
+        for name in merge_names:
+            outer_binding = env.get(name)
             then_binding = then_env.get(name, outer_binding)
             else_binding = else_env.get(name, outer_binding)
-            if then_binding is outer_binding and else_binding is outer_binding:
+            if outer_binding is None:
+                if then_binding is None or else_binding is None:
+                    continue
+            else:
+                if then_binding is outer_binding and else_binding is outer_binding:
+                    continue
+            if then_binding is None or else_binding is None:
                 continue
             if then_binding.type != else_binding.type:
                 raise TypeError(
@@ -2807,6 +2574,8 @@ class _SemanticAnalyzer:
                 return self._attach_expr_source_location(self._memory_space_expr(base), expr)
             if expr.attr == "pad_value" and isinstance(base.type, SemanticTileType):
                 return self._attach_expr_source_location(self._tile_pad_value_expr(base), expr)
+            if expr.attr == "compact_mode" and isinstance(base.type, SemanticTileType):
+                return self._attach_expr_source_location(self._tile_compact_mode_expr(base), expr)
             if expr.attr == "config":
                 return self._attach_expr_source_location(self._tile_config_expr(base), expr)
             if expr.attr == "valid_shape":
@@ -3129,6 +2898,15 @@ class _SemanticAnalyzer:
                     value=s_layout,
                     type=SemanticMetaType(kind="s_layout"),
                 )
+        if expr.namespace in {"CompactMode", "pto.CompactMode"}:
+            compact_mode = _COMPACT_MODE_SYMBOLS.get(expr.name)
+            if compact_mode is not None:
+                return SemanticSymbolExpr(
+                    namespace=expr.namespace,
+                    name=expr.name,
+                    value=compact_mode,
+                    type=SemanticMetaType(kind="compact_mode"),
+                )
         if expr.namespace in {"PadValue", "pto.PadValue"}:
             pad_value = _PAD_VALUE_SYMBOLS.get(expr.name)
             if pad_value is not None:
@@ -3337,6 +3115,18 @@ class _SemanticAnalyzer:
             type=SemanticPadValueType(element_dtype=base_type.element_dtype),
         )
 
+    def _tile_compact_mode_expr(self, base: SemanticExpr) -> SemanticExpr:
+        base_type = base.type
+        if not isinstance(base_type, SemanticTileType):
+            raise TypeError("unsupported attribute access 'compact_mode' in TileLang DSL v1")
+        config = base_type.config or TileConfig()
+        return SemanticSymbolExpr(
+            namespace="pto",
+            name=config.compact_mode.name,
+            value=config.compact_mode,
+            type=SemanticMetaType(kind="compact_mode"),
+        )
+
     def _pad_value_eval_expr(
         self,
         base: SemanticExpr,
@@ -3411,6 +3201,13 @@ class _SemanticAnalyzer:
                 name=config.pad_value.name,
                 value=config.pad_value,
                 type=SemanticPadValueType(element_dtype=base.type.element_dtype),
+            )
+        if attr == "compact_mode":
+            return SemanticSymbolExpr(
+                namespace="pto",
+                name=config.compact_mode.name,
+                value=config.compact_mode,
+                type=SemanticMetaType(kind="compact_mode"),
             )
         raise TypeError(f"unsupported TileConfig attribute access '{attr}' in TileLang DSL v1")
 
@@ -3962,19 +3759,30 @@ class _SemanticAnalyzer:
             context=f"pto.{expr.name}",
         )
 
+        if expr.name in _LEGACY_CUBE_ALIAS_CANONICAL:
+            self._reject_legacy_cube_alias(expr.name)
         if expr.name in _CUBE_MATMUL_OPS:
             return self._analyze_cube_mad_like_op(expr.name, args, keywords)
-        if expr.name in {"cube_load", "cube_store"}:
-            return self._analyze_cube_load_store(expr.name, args, keywords)
-        if expr.name == "cube_load_frac":
-            return self._analyze_cube_load_frac(args, keywords)
-        if expr.name == "bias_load":
-            return self._analyze_cube_bias_load(args, keywords)
-        if expr.name in {"left_load", "right_load", "left_load_mx", "right_load_mx"}:
-            return self._analyze_cube_stage_load(expr.name, args, keywords)
-        if expr.name in {"acc_store", "acc_store_gm", "acc_store_ub"}:
-            return self._analyze_cube_acc_store(expr.name, args, keywords)
+        if expr.name in {"mte_gm_l1", "mte_l1_ub"}:
+            return self._analyze_mte_load_store(expr.name, args, keywords)
+        if expr.name == "mte_gm_l1_frac":
+            return self._analyze_mte_gm_l1_frac(args, keywords)
+        if expr.name == "mte_l1_bt":
+            return self._analyze_mte_l1_bt(args, keywords)
+        if expr.name == "mte_l1_fb":
+            return self._analyze_mte_l1_fb(args, keywords)
+        if expr.name in {"mte_l1_l0a", "mte_l1_l0b", "mte_l1_l0a_mx", "mte_l1_l0b_mx"}:
+            return self._analyze_mte_stage_load(expr.name, args, keywords)
+        if expr.name in {"mte_l0c_l1", "mte_l0c_gm", "mte_l0c_ub"}:
+            return self._analyze_mte_l0c_store(expr.name, args, keywords)
         raise TypeError(f"call surface `pto.{expr.name}` is not supported in TileLang DSL v1 yet")
+
+    def _reject_legacy_cube_alias(self, name: str) -> None:
+        canonical = _LEGACY_CUBE_ALIAS_CANONICAL[name]
+        raise TypeError(
+            f"legacy cube surface `pto.{name}` is not part of the current TileLang DSL v1 public contract; "
+            f"use canonical `pto.{canonical}` instead"
+        )
 
     def _analyze_keyword_args(
         self,
@@ -4125,6 +3933,14 @@ class _SemanticAnalyzer:
             return self._missing_optional_meta_expr()
         if isinstance(expr, SemanticLiteralExpr) and expr.value is None:
             return self._missing_optional_meta_expr()
+        if isinstance(expr, SemanticTupleExpr):
+            elements = expr.elements
+            if len(elements) == 3 and not any(isinstance(element, SemanticTupleExpr) for element in elements):
+                single_loop = self._require_cube_i64_tuple(expr, context, exact_len=3)
+                return SemanticTupleExpr(
+                    elements=(single_loop,),
+                    type=SemanticTupleType(elements=(single_loop.type,)),
+                )
         loops = self._require_semantic_tuple_expr(expr, context)
         normalized_loops = []
         for index, loop_expr in enumerate(loops):
@@ -4160,18 +3976,19 @@ class _SemanticAnalyzer:
         self._require_i64_like_expr(args[m_index], f"pto.{name} m")
         self._require_i64_like_expr(args[m_index + 1], f"pto.{name} n")
         self._require_i64_like_expr(args[m_index + 2], f"pto.{name} k")
-        allowed_keywords = {"unit_flag_ctrl", "disable_gemv"}
+        allowed_keywords = {"unit_flag", "disable_gemv", "sat", "tf32_mode", "n_dir"}
         unsupported_keywords = sorted(set(keywords) - allowed_keywords)
         if unsupported_keywords:
             raise TypeError(
-                f"pto.{name} only accepts keyword(s) unit_flag_ctrl, disable_gemv in TileLang DSL v1; "
+                f"pto.{name} only accepts keyword(s) unit_flag, disable_gemv, sat, tf32_mode, n_dir in TileLang DSL v1; "
                 f"got unsupported keyword(s): {', '.join(unsupported_keywords)}"
             )
-        unit_flag_ctrl = self._require_scalar_or_index_expr(
-            self._cube_keyword_or_default(keywords, "unit_flag_ctrl", SemanticLiteralExpr(value=0, type=SemanticIndexType())),
-            f"pto.{name} unit_flag_ctrl",
+        unit_flag_expr = self._normalize_cube_keyword_string(
+            keywords.get("unit_flag"),
+            f"pto.{name} unit_flag",
+            {"check_only", "check_and_set"},
+            allow_none=True,
         )
-        self._require_i64_like_expr(unit_flag_ctrl, f"pto.{name} unit_flag_ctrl")
         disable_gemv_expr = self._cube_keyword_or_default(
             keywords,
             "disable_gemv",
@@ -4179,11 +3996,720 @@ class _SemanticAnalyzer:
         )
         if not isinstance(disable_gemv_expr.type, SemanticScalarType) or disable_gemv_expr.type.dtype != i1:
             raise TypeError(f"pto.{name} disable_gemv must be an i1/bool value in TileLang DSL v1")
+        sat_expr = self._normalize_cube_keyword_string(
+            keywords.get("sat"),
+            f"pto.{name} sat",
+            {"sat", "nosat"},
+            allow_none=True,
+        )
+        tf32_mode_expr = self._normalize_cube_keyword_string(
+            keywords.get("tf32_mode"),
+            f"pto.{name} tf32_mode",
+            {"round_even", "round_away"},
+            allow_none=True,
+        )
+        n_dir_expr = self._cube_keyword_or_default(
+            keywords,
+            "n_dir",
+            SemanticLiteralExpr(value=False, type=SemanticScalarType(dtype=i1)),
+        )
+        if not isinstance(n_dir_expr.type, SemanticScalarType) or n_dir_expr.type.dtype != i1:
+            raise TypeError(f"pto.{name} n_dir must be an i1/bool value in TileLang DSL v1")
+        lhs_dtype = lhs.type.element_dtype
+        rhs_dtype = rhs.type.element_dtype
+        dst_dtype = dst.type.element_dtype
+        if not self._is_none_literal_expr(tf32_mode_expr):
+            if "_mx" in name:
+                raise TypeError(f"pto.{name} does not support tf32_mode in TileLang DSL v1")
+            if lhs_dtype != f32 or rhs_dtype != f32 or dst_dtype != f32:
+                raise TypeError(f"pto.{name} tf32_mode requires f32 lhs, rhs, and dst in TileLang DSL v1")
+        if not self._is_none_literal_expr(sat_expr):
+            if not (is_float_dtype(lhs_dtype) and is_float_dtype(rhs_dtype) and is_float_dtype(dst_dtype)):
+                raise TypeError(f"pto.{name} sat requires a floating lhs/rhs/dst dtype combination in TileLang DSL v1")
         return SemanticCallExpr(
             namespace="pto",
             name=name,
-            args=args + (unit_flag_ctrl, disable_gemv_expr),
+            args=args + (unit_flag_expr, disable_gemv_expr, sat_expr, tf32_mode_expr, n_dir_expr),
             type=None,
+        )
+
+    def _extract_cube_static_int(self, expr: SemanticExpr, context: str) -> int:
+        if isinstance(expr, SemanticLiteralExpr) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+            return expr.value
+        raise TypeError(f"{context} must be an integer constant in TileLang DSL v1")
+
+    def _normalize_cube_keyword_string(
+        self,
+        expr: SemanticExpr | None,
+        context: str,
+        allowed_values: set[str],
+        *,
+        allow_none: bool = False,
+    ) -> SemanticExpr:
+        if expr is None:
+            return self._missing_optional_meta_expr() if allow_none else None  # type: ignore[return-value]
+        if self._is_none_literal_expr(expr):
+            if allow_none:
+                return self._missing_optional_meta_expr()
+            raise TypeError(f"{context} cannot be None in TileLang DSL v1")
+        value = self._require_string_expr(expr, context)
+        if value not in allowed_values:
+            allowed_text = ", ".join(sorted(allowed_values))
+            raise TypeError(f"{context} must be one of {allowed_text} in TileLang DSL v1")
+        return SemanticLiteralExpr(value=value, type=SemanticMetaType(kind="string"))
+
+    def _normalize_cube_optional_bool_keyword(
+        self,
+        expr: SemanticExpr | None,
+        context: str,
+    ) -> SemanticExpr:
+        if expr is None or self._is_none_literal_expr(expr):
+            return self._missing_optional_meta_expr()
+        if not isinstance(expr.type, SemanticScalarType) or expr.type.dtype != i1:
+            raise TypeError(f"{context} must be an i1/bool value in TileLang DSL v1")
+        return expr
+
+    def _analyze_mte_load_store(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if len(args) != 3:
+            raise TypeError(f"pto.{name} expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(
+            args[0],
+            f"pto.{name} source",
+            memory_space="gm" if name == "mte_gm_l1" else "mat",
+        )
+        dst = self._require_pointer_expr(
+            args[1],
+            f"pto.{name} destination",
+            memory_space="mat" if name == "mte_gm_l1" else "ub",
+        )
+        self._require_matching_cube_pointer_element_dtypes(src, dst, f"pto.{name}")
+        self._require_i64_like_expr(args[2], f"pto.{name} len_burst")
+        allowed_keywords = {"nburst", "loops"}
+        unsupported_keywords = sorted(set(keywords) - allowed_keywords)
+        if unsupported_keywords:
+            raise TypeError(
+                f"pto.{name} only accepts keyword(s) nburst, loops in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported_keywords)}"
+            )
+        if "nburst" not in keywords:
+            raise TypeError(f"pto.{name} requires keyword `nburst` in TileLang DSL v1")
+        nburst_expr = self._require_cube_i64_tuple(keywords["nburst"], f"pto.{name} nburst", exact_len=3)
+        loops_expr = self._normalize_cube_loop_groups(keywords.get("loops"), f"pto.{name} loops")
+        return SemanticCallExpr(namespace="pto", name=name, args=(args[0], args[1], args[2], nburst_expr, loops_expr), type=None)
+
+    def _require_grouped_mte_nburst(
+        self,
+        keywords: dict[str, SemanticExpr],
+        context: str,
+    ) -> SemanticExpr:
+        if "nburst" not in keywords:
+            raise TypeError(f"{context} requires keyword `nburst` in TileLang DSL v1")
+        return self._require_cube_i64_tuple(keywords["nburst"], f"{context} nburst", exact_len=3)
+
+    def _normalize_grouped_mte_pad(
+        self,
+        expr: SemanticExpr | None,
+        context: str,
+    ) -> SemanticExpr:
+        if expr is None or self._is_none_literal_expr(expr):
+            return self._missing_optional_meta_expr()
+        tuple_expr = self._require_semantic_tuple_expr(expr, context, min_len=1, max_len=3)
+        if len(tuple_expr) == 2:
+            raise TypeError(f"{context} must be `pad(value)` or `pad(value, left, right)` in TileLang DSL v1")
+        self._require_scalar_expr(tuple_expr[0], f"{context} value")
+        if len(tuple_expr) == 3:
+            self._require_i64_like_expr(tuple_expr[1], f"{context} left_padding_count")
+            self._require_i64_like_expr(tuple_expr[2], f"{context} right_padding_count")
+        return SemanticTupleExpr(
+            elements=tuple(tuple_expr),
+            type=SemanticTupleType(elements=tuple(element.type for element in tuple_expr)),
+        )
+
+    def _analyze_mte_gm_ub(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticCallExpr:
+        if len(args) != 4:
+            raise TypeError("pto.mte_gm_ub expects exactly 4 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], "pto.mte_gm_ub source", memory_space="gm")
+        dst = self._require_pointer_expr(args[1], "pto.mte_gm_ub destination", memory_space="ub")
+        self._require_matching_pointer_element_dtypes(src, dst, "pto.mte_gm_ub")
+        self._require_i64_like_expr(args[2], "pto.mte_gm_ub l2_cache_ctl")
+        self._require_i64_like_expr(args[3], "pto.mte_gm_ub len_burst")
+        allowed_keywords = {"nburst", "loops", "pad"}
+        unsupported = sorted(set(keywords) - allowed_keywords)
+        if unsupported:
+            raise TypeError(
+                "pto.mte_gm_ub only accepts keyword(s) nburst, loops, pad in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported)}"
+            )
+        nburst_expr = self._require_grouped_mte_nburst(keywords, "pto.mte_gm_ub")
+        loops_expr = self._normalize_cube_loop_groups(keywords.get("loops"), "pto.mte_gm_ub loops")
+        pad_expr = self._normalize_grouped_mte_pad(keywords.get("pad"), "pto.mte_gm_ub pad")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="mte_gm_ub",
+            args=(args[0], args[1], args[2], args[3], nburst_expr, loops_expr, pad_expr),
+            type=None,
+        )
+
+    def _analyze_mte_ub_gm(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticCallExpr:
+        if len(args) != 3:
+            raise TypeError("pto.mte_ub_gm expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], "pto.mte_ub_gm source", memory_space="ub")
+        dst = self._require_pointer_expr(args[1], "pto.mte_ub_gm destination", memory_space="gm")
+        self._require_matching_pointer_element_dtypes(src, dst, "pto.mte_ub_gm")
+        self._require_i64_like_expr(args[2], "pto.mte_ub_gm len_burst")
+        allowed_keywords = {"nburst", "loops"}
+        unsupported = sorted(set(keywords) - allowed_keywords)
+        if unsupported:
+            raise TypeError(
+                "pto.mte_ub_gm only accepts keyword(s) nburst, loops in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported)}"
+            )
+        nburst_expr = self._require_grouped_mte_nburst(keywords, "pto.mte_ub_gm")
+        loops_expr = self._normalize_cube_loop_groups(keywords.get("loops"), "pto.mte_ub_gm loops")
+        return SemanticCallExpr(
+            namespace="pto",
+            name="mte_ub_gm",
+            args=(args[0], args[1], args[2], nburst_expr, loops_expr),
+            type=None,
+        )
+
+    def _analyze_mte_ub_copy(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+        *,
+        destination_space: str,
+    ) -> SemanticCallExpr:
+        if len(args) != 3:
+            raise TypeError(f"pto.{name} expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], f"pto.{name} source", memory_space="ub")
+        dst = self._require_pointer_expr(args[1], f"pto.{name} destination", memory_space=destination_space)
+        self._require_matching_pointer_element_dtypes(src, dst, f"pto.{name}")
+        self._require_i64_like_expr(args[2], f"pto.{name} len_burst")
+        allowed_keywords = {"nburst"}
+        unsupported = sorted(set(keywords) - allowed_keywords)
+        if unsupported:
+            raise TypeError(
+                f"pto.{name} only accepts keyword(s) nburst in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported)}"
+            )
+        nburst_expr = self._require_grouped_mte_nburst(keywords, f"pto.{name}")
+        return SemanticCallExpr(
+            namespace="pto",
+            name=name,
+            args=(args[0], args[1], args[2], nburst_expr),
+            type=None,
+        )
+
+    def _analyze_mte_gm_l1_frac(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if len(args) != 3:
+            raise TypeError("pto.mte_gm_l1_frac expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], "pto.mte_gm_l1_frac source", memory_space="gm")
+        dst = self._require_pointer_expr(args[1], "pto.mte_gm_l1_frac destination", memory_space="mat")
+        mode = self._normalize_cube_mode(args[2], "pto.mte_gm_l1_frac mode", {FractalMode.ND2NZ.value, FractalMode.DN2NZ.value})
+        self._require_matching_cube_pointer_element_dtypes(src, dst, "pto.mte_gm_l1_frac")
+        allowed_keywords = {"shape", "src_layout", "dst_group", "ctrl"}
+        unsupported = ", ".join(sorted(set(keywords) - allowed_keywords))
+        if unsupported:
+            raise TypeError(
+                "pto.mte_gm_l1_frac only accepts keyword(s) shape, src_layout, dst_group, ctrl "
+                f"in TileLang DSL v1; got unsupported keyword(s): {unsupported}"
+            )
+        missing = sorted(allowed_keywords - set(keywords))
+        if missing:
+            raise TypeError(f"pto.mte_gm_l1_frac requires keyword(s) {', '.join(missing)} in TileLang DSL v1")
+        shape = self._require_cube_i64_tuple(keywords["shape"], "pto.mte_gm_l1_frac shape", exact_len=2)
+        src_layout = self._require_cube_i64_tuple(keywords["src_layout"], "pto.mte_gm_l1_frac src_layout", min_len=1, max_len=2)
+        dst_group = self._require_cube_i64_tuple(keywords["dst_group"], "pto.mte_gm_l1_frac dst_group", exact_len=4)
+        ctrl = self._require_semantic_tuple_expr(keywords["ctrl"], "pto.mte_gm_l1_frac ctrl", exact_len=2)
+        self._require_i64_like_expr(ctrl[0], "pto.mte_gm_l1_frac ctrl")
+        if not (isinstance(ctrl[1].type, SemanticScalarType) and ctrl[1].type.dtype == i1):
+            raise TypeError("pto.mte_gm_l1_frac ctrl smallc0_en must be an i1/bool value in TileLang DSL v1")
+        self._validate_frac_smallc0_shape(shape, ctrl[1], "pto.mte_gm_l1_frac")
+        ctrl_expr = SemanticTupleExpr(elements=ctrl, type=SemanticTupleType(elements=tuple(element.type for element in ctrl)))
+        return SemanticCallExpr(namespace="pto", name="mte_gm_l1_frac", args=(args[0], args[1], mode, shape, src_layout, dst_group, ctrl_expr), type=None)
+
+    def _analyze_mte_l1_bt(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if len(args) != 3:
+            raise TypeError("pto.mte_l1_bt expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], "pto.mte_l1_bt source", memory_space="mat")
+        dst = self._require_pointer_expr(args[1], "pto.mte_l1_bt destination", memory_space="bias")
+        allowed_pairs = {("f32", "f32"), ("i32", "i32"), ("f16", "f32"), ("bf16", "f32")}
+        if src.type.element_dtype is not None and dst.type.element_dtype is not None and (src.type.element_dtype.name, dst.type.element_dtype.name) not in allowed_pairs:
+            raise TypeError("pto.mte_l1_bt only supports f32->f32, i32->i32, f16->f32, and bf16->f32 in TileLang DSL v1")
+        self._require_i64_like_expr(args[2], "pto.mte_l1_bt len_burst")
+        allowed_keywords = {"nburst"}
+        unsupported_keywords = sorted(set(keywords) - allowed_keywords)
+        if unsupported_keywords:
+            raise TypeError(
+                f"pto.mte_l1_bt only accepts keyword(s) nburst in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported_keywords)}"
+            )
+        if "nburst" not in keywords:
+            raise TypeError("pto.mte_l1_bt requires keyword `nburst` in TileLang DSL v1")
+        nburst_expr = self._require_cube_i64_tuple(keywords["nburst"], "pto.mte_l1_bt nburst", exact_len=3)
+        return SemanticCallExpr(namespace="pto", name="mte_l1_bt", args=(args[0], args[1], args[2], nburst_expr), type=None)
+
+    def _analyze_mte_l1_fb(
+        self,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if len(args) != 3:
+            raise TypeError("pto.mte_l1_fb expects exactly 3 positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], "pto.mte_l1_fb source", memory_space="mat")
+        self._require_pointer_expr(args[1], "pto.mte_l1_fb destination", memory_space="scaling")
+        self._require_i64_like_expr(args[2], "pto.mte_l1_fb len_burst")
+        allowed_keywords = {"nburst"}
+        unsupported_keywords = sorted(set(keywords) - allowed_keywords)
+        if unsupported_keywords:
+            raise TypeError(
+                f"pto.mte_l1_fb only accepts keyword(s) nburst in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported_keywords)}"
+            )
+        if "nburst" not in keywords:
+            raise TypeError("pto.mte_l1_fb requires keyword `nburst` in TileLang DSL v1")
+        nburst_expr = self._require_cube_i64_tuple(keywords["nburst"], "pto.mte_l1_fb nburst", exact_len=3)
+        return SemanticCallExpr(namespace="pto", name="mte_l1_fb", args=(args[0], args[1], args[2], nburst_expr), type=None)
+
+    def _analyze_mte_stage_load(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        if len(args) != 4:
+            raise TypeError(f"pto.{name} expects exactly 4 positional arguments in TileLang DSL v1")
+        allowed_keywords = {"transpose"}
+        unsupported = sorted(set(keywords) - allowed_keywords)
+        if unsupported:
+            raise TypeError(
+                f"pto.{name} only accepts keyword(s) transpose in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported)}"
+            )
+        src = self._require_pointer_expr(args[0], f"pto.{name} source", memory_space="mat")
+        dst_space = "left" if name in {"mte_l1_l0a", "mte_l1_l0a_mx"} else "right"
+        dst = self._require_pointer_expr(args[1], f"pto.{name} destination", memory_space=dst_space)
+        self._require_matching_cube_pointer_element_dtypes(src, dst, f"pto.{name}")
+        self._require_i64_like_expr(args[2], f"pto.{name} first dimension")
+        self._require_i64_like_expr(args[3], f"pto.{name} second dimension")
+        transpose = self._cube_keyword_or_default(
+            keywords,
+            "transpose",
+            SemanticLiteralExpr(value=False, type=SemanticScalarType(dtype=i1)),
+        )
+        if not isinstance(transpose.type, SemanticScalarType) or transpose.type.dtype != i1:
+            raise TypeError(f"pto.{name} transpose must be an i1/bool value in TileLang DSL v1")
+        return SemanticCallExpr(namespace="pto", name=name, args=args + (transpose,), type=None)
+
+    def _analyze_mte_l0c_store(
+        self,
+        name: str,
+        args: tuple[SemanticExpr, ...],
+        keywords: dict[str, SemanticExpr],
+    ) -> SemanticExpr:
+        expected_argc = 8 if name == "mte_l0c_gm" else 7 if name == "mte_l0c_ub" else 6
+        if len(args) != expected_argc:
+            raise TypeError(f"pto.{name} expects exactly {expected_argc} positional arguments in TileLang DSL v1")
+        src = self._require_pointer_expr(args[0], f"pto.{name} source", memory_space="acc")
+        dst_space = "mat" if name == "mte_l0c_l1" else "gm" if name == "mte_l0c_gm" else "ub"
+        dst = self._require_pointer_expr(args[1], f"pto.{name} destination", memory_space=dst_space)
+        for index, label in enumerate(("m", "n", "src_stride", "dst_stride"), start=2):
+            self._require_i64_like_expr(args[index], f"pto.{name} {label}")
+        cursor = 6
+        extra_args: list[SemanticExpr] = []
+        if name == "mte_l0c_gm":
+            self._require_i64_like_expr(args[cursor], f"pto.{name} sid")
+            self._require_i64_like_expr(args[cursor + 1], f"pto.{name} l2_cache_ctrl")
+            sid_value = self._cube_static_int_if_available(args[cursor])
+            if sid_value is not None and not 0 <= sid_value <= 3:
+                raise TypeError(f"pto.{name} sid constant must be in [0, 3] in TileLang DSL v1")
+            l2_value = self._cube_static_int_if_available(args[cursor + 1])
+            if l2_value is not None and not 0 <= l2_value <= 15:
+                raise TypeError(f"pto.{name} l2_cache_ctrl constant must be in [0, 15] in TileLang DSL v1")
+            extra_args.extend([args[cursor], args[cursor + 1]])
+            cursor += 2
+        elif name == "mte_l0c_ub":
+            dst_mode_raw = args[cursor]
+            dst_mode_kind = "sub_blockid"
+            dst_mode_value: SemanticExpr = dst_mode_raw
+            if not self._is_none_literal_expr(dst_mode_raw):
+                try:
+                    mode_text = self._require_string_expr(dst_mode_raw, f"pto.{name} dst_mode")
+                    if mode_text not in {"split_m", "split_n"}:
+                        raise TypeError
+                    dst_mode_kind = mode_text
+                    dst_mode_value = self._missing_optional_meta_expr()
+                except TypeError:
+                    self._require_i64_like_expr(dst_mode_raw, f"pto.{name} dst_mode")
+                    sub_blockid_value = self._cube_static_int_if_available(dst_mode_raw)
+                    if sub_blockid_value is not None and sub_blockid_value not in {0, 1}:
+                        raise TypeError(f"pto.{name} dst_mode sub_blockid constant must be 0 or 1 in TileLang DSL v1")
+            extra_args.extend(
+                [
+                    SemanticLiteralExpr(value=dst_mode_kind, type=SemanticMetaType(kind="string")),
+                    dst_mode_value,
+                ]
+            )
+            cursor += 1
+
+        allowed_keywords = {"unit_flag", "pre_quant", "pre_relu", "layout", "loop3", "sat"}
+        if name == "mte_l0c_gm":
+            allowed_keywords.add("atomic")
+        unsupported = sorted(set(keywords) - allowed_keywords)
+        if unsupported:
+            raise TypeError(
+                f"pto.{name} only accepts keyword(s) {', '.join(sorted(allowed_keywords))} in TileLang DSL v1; "
+                f"got unsupported keyword(s): {', '.join(unsupported)}"
+            )
+        unit_flag = self._normalize_cube_keyword_string(
+            keywords.get("unit_flag"),
+            f"pto.{name} unit_flag",
+            {"check_only", "check_and_clear"},
+            allow_none=True,
+        )
+        pre_quant_payload = self._missing_optional_meta_expr()
+        pre_quant_mode = self._missing_optional_meta_expr()
+        if "pre_quant" in keywords:
+            pre_quant = self._require_semantic_tuple_expr(keywords["pre_quant"], f"pto.{name} pre_quant", exact_len=2)
+            pre_quant_payload = pre_quant[0]
+            pre_quant_mode = self._normalize_cube_keyword_string(
+                pre_quant[1],
+                f"pto.{name} pre_quant mode",
+                {
+                    "f32_f16", "qf322hif8_pre_vec", "qf322hif8_pre_scalar", "qf322hif8_pre_hybrid_vec",
+                    "qf322hif8_pre_hybrid_scalar", "deqs32_int_vec", "deqs32_int_scalar", "req8_vec",
+                    "req8_scalar", "deqf16_vec", "deqf16_scalar", "qf322fp8_pre_vec", "qf322fp8_pre_scalar",
+                    "qf322f32_pre_vec", "qf322f32_pre_scalar", "f32_bf16", "qf162b8_pre_vec",
+                    "qf162b8_pre_scalar", "qf162s4_pre_vec", "qf162s4_pre_scalar", "req4_vec",
+                    "req4_scalar", "qf322b8_pre_vec", "qf322b8_pre_scalar", "qf322s4_pre_vec",
+                    "qf322s4_pre_scalar", "deqs16_vec", "deqs16_scalar", "qf162s16_pre_vec",
+                    "qf162s16_pre_scalar", "qf322f16_pre_vec", "qf322f16_pre_scalar", "qf322bf16_pre_vec",
+                    "qf322bf16_pre_scalar", "qs322bf16_pre_vec", "qs322bf16_pre_scalar",
+                },
+            )
+            if src.type.element_dtype.name not in {"f32", "i32"}:
+                raise TypeError(f"pto.{name} pre_quant requires f32 or i32 source elements in TileLang DSL v1")
+            self._validate_fixpipe_payload(
+                pre_quant_payload,
+                pre_quant_mode,
+                context=f"pto.{name} pre_quant",
+                scalar_required_suffix="_scalar",
+                vector_required_suffix="_vec",
+            )
+            self._validate_fixpipe_pre_quant_mode_compatibility(
+                src_dtype=src.type.element_dtype,
+                dst_dtype=dst.type.element_dtype,
+                mode=pre_quant_mode,
+                context=f"pto.{name} pre_quant",
+            )
+        pre_relu_payload = self._missing_optional_meta_expr()
+        pre_relu_mode = self._missing_optional_meta_expr()
+        clip_expr = self._missing_optional_meta_expr()
+        if "pre_relu" in keywords:
+            pre_relu = self._require_semantic_tuple_expr(keywords["pre_relu"], f"pto.{name} pre_relu", exact_len=3)
+            pre_relu_mode = self._normalize_cube_keyword_string(
+                pre_relu[0],
+                f"pto.{name} pre_relu mode",
+                {"no_relu", "normal_relu", "scalar_relu", "vector_relu"},
+            )
+            if not self._is_none_literal_expr(pre_relu[1]):
+                pre_relu_payload = pre_relu[1]
+            if not self._is_none_literal_expr(pre_relu[2]):
+                clip_expr = pre_relu[2]
+            pre_relu_mode_value = self._require_string_expr(pre_relu_mode, f"pto.{name} pre_relu mode")
+            if pre_relu_mode_value in {"no_relu", "normal_relu"}:
+                if not self._is_none_literal_expr(pre_relu_payload):
+                    raise TypeError(f"pto.{name} pre_relu mode {pre_relu_mode_value} does not accept a payload in TileLang DSL v1")
+            elif pre_relu_mode_value == "scalar_relu":
+                if self._is_none_literal_expr(pre_relu_payload):
+                    raise TypeError(f"pto.{name} pre_relu mode scalar_relu requires a scalar payload in TileLang DSL v1")
+                self._require_fixpipe_scalar_payload(pre_relu_payload, f"pto.{name} pre_relu scalar payload")
+            elif pre_relu_mode_value == "vector_relu":
+                if self._is_none_literal_expr(pre_relu_payload):
+                    raise TypeError(f"pto.{name} pre_relu mode vector_relu requires an fb payload in TileLang DSL v1")
+                self._require_fixpipe_vector_payload(pre_relu_payload, f"pto.{name} pre_relu vector payload")
+            self._validate_fixpipe_clip_compatibility(
+                clip_expr,
+                dst_dtype=dst.type.element_dtype,
+                context=f"pto.{name} pre_relu clip",
+            )
+        layout_mode = self._missing_optional_meta_expr()
+        layout_arg = self._missing_optional_meta_expr()
+        if "layout" in keywords:
+            layout_expr = keywords["layout"]
+            if self._is_none_literal_expr(layout_expr):
+                pass
+            elif isinstance(layout_expr, SemanticTupleExpr):
+                layout_parts = self._require_semantic_tuple_expr(layout_expr, f"pto.{name} layout", exact_len=2)
+                layout_mode = self._normalize_cube_keyword_string(
+                    layout_parts[0],
+                    f"pto.{name} layout mode",
+                    {"nz2dn", "nz2nz"},
+                )
+                layout_arg = layout_parts[1]
+                self._require_i64_like_expr(layout_arg, f"pto.{name} layout operand")
+            else:
+                layout_mode = self._normalize_cube_keyword_string(
+                    layout_expr,
+                    f"pto.{name} layout mode",
+                    {"nz2nd"},
+                )
+        loop3_expr = self._normalize_cube_loop_groups(keywords.get("loop3"), f"pto.{name} loop3")
+        if isinstance(loop3_expr, SemanticTupleExpr) and len(loop3_expr.elements) != 1:
+            raise TypeError(f"pto.{name} loop3 expects exactly one loop triple in TileLang DSL v1")
+        loop3_value: SemanticExpr
+        if isinstance(loop3_expr, SemanticTupleExpr):
+            loop3_value = loop3_expr.elements[0]
+        else:
+            loop3_value = loop3_expr
+        sat_expr = self._normalize_cube_keyword_string(
+            keywords.get("sat"),
+            f"pto.{name} sat",
+            {"sat", "sat(preserve_nan)", "nosat"},
+            allow_none=True,
+        )
+        atomic_type = self._missing_optional_meta_expr()
+        atomic_op = self._missing_optional_meta_expr()
+        if "atomic" in keywords:
+            if name != "mte_l0c_gm":
+                raise TypeError(f"pto.{name} does not support atomic in TileLang DSL v1")
+            atomic_tuple = self._require_semantic_tuple_expr(keywords["atomic"], f"pto.{name} atomic", exact_len=2)
+            atomic_type = self._normalize_cube_keyword_string(
+                atomic_tuple[0],
+                f"pto.{name} atomic type",
+                {"f32", "f16", "bf16", "s32", "s16", "s8"},
+            )
+            atomic_op = self._normalize_cube_keyword_string(
+                atomic_tuple[1],
+                f"pto.{name} atomic op",
+                {"add", "max", "min"},
+            )
+        layout_mode_value = None if self._is_none_literal_expr(layout_mode) else self._require_string_expr(layout_mode, f"pto.{name} layout mode")
+        layout_arg_value = self._cube_static_int_if_available(layout_arg)
+        if layout_mode_value == "nz2dn" and not self._is_none_literal_expr(unit_flag):
+            if layout_arg_value is not None and layout_arg_value != 1:
+                raise TypeError(f"pto.{name} unit_flag must be omitted when nz2dn loop0_src_stride is not 1 in TileLang DSL v1")
+        if layout_mode_value == "nz2nz":
+            if dst.type.element_dtype != f32:
+                raise TypeError(f"pto.{name} nz2nz requires an f32 destination in TileLang DSL v1")
+            if not self._is_none_literal_expr(loop3_value):
+                raise TypeError(f"pto.{name} nz2nz does not support loop3 in TileLang DSL v1")
+        if name == "mte_l0c_ub":
+            dst_mode_kind_expr = extra_args[0]
+            dst_mode_kind_value = self._require_string_expr(dst_mode_kind_expr, f"pto.{name} dst_mode kind")
+            if dst_mode_kind_value in {"split_m", "split_n"}:
+                m_value = self._cube_static_int_if_available(args[2])
+                n_value = self._cube_static_int_if_available(args[3])
+                if dst_mode_kind_value == "split_m" and m_value is not None and m_value % 2 != 0:
+                    raise TypeError("pto.mte_l0c_ub dst_mode split_m requires even m in TileLang DSL v1")
+                if dst_mode_kind_value == "split_n" and n_value is not None and n_value % 32 != 0:
+                    raise TypeError("pto.mte_l0c_ub dst_mode split_n requires n to be a multiple of 32 in TileLang DSL v1")
+                if layout_mode_value not in {None, "nz2nd"}:
+                    raise TypeError("pto.mte_l0c_ub split_m/split_n only support normal or nz2nd layout in TileLang DSL v1")
+                if not (
+                    self._is_none_literal_expr(unit_flag)
+                    and self._is_none_literal_expr(pre_quant_mode)
+                    and self._is_none_literal_expr(pre_relu_mode)
+                    and self._is_none_literal_expr(clip_expr)
+                    and self._is_none_literal_expr(loop3_value)
+                    and self._is_none_literal_expr(sat_expr)
+                ):
+                    raise TypeError(
+                        "pto.mte_l0c_ub split_m/split_n do not support unit_flag, pre_quant, pre_relu, clip, loop3, or sat in TileLang DSL v1"
+                    )
+        base_args = args[:6] if name in {"mte_l0c_gm", "mte_l0c_ub"} else args[:cursor]
+        return SemanticCallExpr(
+            namespace="pto",
+            name=name,
+            args=tuple(base_args) + tuple(extra_args) + (
+                unit_flag,
+                pre_quant_payload,
+                pre_quant_mode,
+                pre_relu_payload,
+                pre_relu_mode,
+                clip_expr,
+                layout_mode,
+                layout_arg,
+                loop3_value,
+                sat_expr,
+                atomic_type,
+                atomic_op,
+            ),
+            type=None,
+        )
+
+    def _cube_static_int_if_available(self, expr: SemanticExpr) -> int | None:
+        if isinstance(expr, SemanticLiteralExpr) and isinstance(expr.value, int) and not isinstance(expr.value, bool):
+            return expr.value
+        return None
+
+    def _validate_frac_smallc0_shape(
+        self,
+        shape: SemanticExpr,
+        smallc0_en_expr: SemanticExpr,
+        op_name: str,
+    ) -> None:
+        smallc0_en = self._try_static_value(smallc0_en_expr)
+        if smallc0_en is not True:
+            return
+        if not isinstance(shape, SemanticTupleExpr) or len(shape.elements) != 2:
+            return
+        d_value = self._cube_static_int_if_available(shape.elements[1])
+        if d_value is not None and d_value > 4:
+            raise TypeError(
+                f"{op_name} small-C0 mode requires shape d_value <= 4 when `ctrl(..., True)` is statically known in TileLang DSL v1"
+            )
+
+    def _require_fixpipe_scalar_payload(self, expr: SemanticExpr, context: str) -> None:
+        if not isinstance(expr.type, SemanticScalarType) or expr.type.dtype not in {f16, bf16, f32}:
+            raise TypeError(f"{context} must be an f16, bf16, or f32 scalar in TileLang DSL v1")
+
+    def _require_fixpipe_vector_payload(self, expr: SemanticExpr, context: str) -> None:
+        ptr = self._require_pointer_expr(expr, context, memory_space="scaling")
+        if ptr.type.element_dtype not in {f16, bf16, f32}:
+            raise TypeError(f"{context} must be an fb pointer with f16, bf16, or f32 elements in TileLang DSL v1")
+
+    def _validate_fixpipe_payload(
+        self,
+        payload: SemanticExpr,
+        mode: SemanticExpr,
+        *,
+        context: str,
+        scalar_required_suffix: str,
+        vector_required_suffix: str,
+    ) -> None:
+        mode_value = self._require_string_expr(mode, f"{context} mode")
+        if mode_value in {"f32_f16", "f32_bf16"}:
+            self._require_fixpipe_scalar_payload(payload, f"{context} payload")
+        elif mode_value.endswith(scalar_required_suffix):
+            self._require_fixpipe_scalar_payload(payload, f"{context} payload")
+        elif mode_value.endswith(vector_required_suffix):
+            self._require_fixpipe_vector_payload(payload, f"{context} payload")
+
+    def _fixpipe_pre_quant_mode_families(self, mode_value: str) -> tuple[str | None, str | None]:
+        if mode_value in {"f32_f16", "f32_bf16"}:
+            return ("f32", mode_value.split("_", 1)[1])
+        if mode_value.startswith("qf322") or mode_value.startswith("qf162"):
+            if "f32_pre" in mode_value:
+                return ("f32", "f32")
+            if "bf16_pre" in mode_value:
+                return ("f32", "bf16")
+            if "f16_pre" in mode_value:
+                return ("f32", "f16")
+            if "b8" in mode_value:
+                return ("f32", "i8_family")
+            if "s4" in mode_value:
+                return ("f32", "i4_family")
+            if "s16" in mode_value:
+                return ("i32", "i16_family")
+            if "hif8" in mode_value or "fp8" in mode_value:
+                return ("f32", "fp8_family")
+        if mode_value.startswith("deqs32_int"):
+            return ("i32", "i32")
+        if mode_value.startswith("deqs16"):
+            return ("i32", "i16_family")
+        if mode_value.startswith("req8"):
+            return ("i32", "i8_family")
+        if mode_value.startswith("req4"):
+            return ("i32", "i4_family")
+        if mode_value.startswith("deqf16"):
+            return ("i32", "f16")
+        if mode_value.startswith("qs322bf16"):
+            return ("i32", "bf16")
+        return (None, None)
+
+    def _fixpipe_pre_quant_dst_family_matches(self, dst_dtype: ScalarType, dst_family: str | None) -> bool:
+        if dst_family is None:
+            return True
+        if dst_family in {"f16", "bf16", "f32", "i32"}:
+            return dst_dtype.name == dst_family
+        if dst_family == "i16_family":
+            return is_integer_dtype(dst_dtype) and integer_bitwidth(dst_dtype) == 16 and integer_signedness(dst_dtype) != "unsigned"
+        if dst_family == "i8_family":
+            return is_integer_dtype(dst_dtype) and integer_bitwidth(dst_dtype) == 8
+        if dst_family == "i4_family":
+            return False
+        if dst_family == "fp8_family":
+            return False
+        return False
+
+    def _validate_fixpipe_pre_quant_mode_compatibility(
+        self,
+        *,
+        src_dtype: ScalarType,
+        dst_dtype: ScalarType,
+        mode: SemanticExpr,
+        context: str,
+    ) -> None:
+        mode_value = self._require_string_expr(mode, f"{context} mode")
+        expected_src_family, expected_dst_family = self._fixpipe_pre_quant_mode_families(mode_value)
+        if expected_src_family is not None and src_dtype.name != expected_src_family:
+            raise TypeError(
+                f"{context} mode {mode_value} requires {expected_src_family} source elements in TileLang DSL v1"
+            )
+        if not self._fixpipe_pre_quant_dst_family_matches(dst_dtype, expected_dst_family):
+            raise TypeError(
+                f"{context} mode {mode_value} is not compatible with destination dtype {dst_dtype.name} in TileLang DSL v1"
+            )
+
+    def _validate_fixpipe_clip_compatibility(
+        self,
+        clip_expr: SemanticExpr,
+        *,
+        dst_dtype: ScalarType,
+        context: str,
+    ) -> None:
+        if self._is_none_literal_expr(clip_expr):
+            return
+        if dst_dtype == f16:
+            if not isinstance(clip_expr.type, SemanticScalarType) or clip_expr.type.dtype != f16:
+                raise TypeError(f"{context} requires an f16 clip payload for f16 destinations in TileLang DSL v1")
+            return
+        if dst_dtype == ui8:
+            if not isinstance(clip_expr.type, SemanticScalarType) or clip_expr.type.dtype not in {ui16, i16}:
+                raise TypeError(f"{context} requires a ui16/i16 clip payload for ui8 destinations in TileLang DSL v1")
+            return
+        if is_integer_dtype(dst_dtype):
+            bits = integer_bitwidth(dst_dtype)
+            signedness = integer_signedness(dst_dtype)
+            if bits in {8, 16} and signedness != "unsigned":
+                if not isinstance(clip_expr.type, SemanticScalarType):
+                    raise TypeError(f"{context} requires an integer clip payload matching the destination family in TileLang DSL v1")
+                clip_dtype = clip_expr.type.dtype
+                if not (
+                    is_integer_dtype(clip_dtype)
+                    and integer_bitwidth(clip_dtype) == bits
+                    and integer_signedness(clip_dtype) != "unsigned"
+                ):
+                    raise TypeError(
+                        f"{context} requires an i{bits}/si{bits} clip payload for {dst_dtype.name} destinations in TileLang DSL v1"
+                    )
+                return
+        raise TypeError(
+            f"{context} is only supported for destination f16, ui8, and signed/signless 8/16-bit integer dtypes in TileLang DSL v1"
         )
 
     def _analyze_cube_load_store(
@@ -4276,6 +4802,7 @@ class _SemanticAnalyzer:
             and ctrl[1].type.dtype == i1
         ):
             raise TypeError("pto.cube_load_frac ctrl smallc0_en must be an i1/bool value in TileLang DSL v1")
+        self._validate_frac_smallc0_shape(shape, ctrl[1], "pto.cube_load_frac")
         ctrl_expr = SemanticTupleExpr(
             elements=ctrl,
             type=SemanticTupleType(elements=tuple(element.type for element in ctrl)),
@@ -4885,8 +5412,6 @@ class _SemanticAnalyzer:
         compact_mode_expr: SemanticExpr | None,
         addr_expr: SemanticExpr | None,
     ) -> SemanticExpr:
-        if compact_mode_expr is not None:
-            raise TypeError("pto.Tile compact_mode is not supported in TileLang DSL v1 yet")
         if addr_expr is not None:
             self._require_i64_like_expr(addr_expr, "pto.Tile addr")
 
@@ -4904,6 +5429,7 @@ class _SemanticAnalyzer:
             s_layout_expr=s_layout_expr,
             fractal_size_expr=fractal_size_expr,
             pad_value_expr=pad_value_expr,
+            compact_mode_expr=compact_mode_expr,
         )
         lowered_args: list[SemanticExpr] = []
         if valid_shape_expr is not None or addr_expr is not None:
@@ -4980,6 +5506,7 @@ class _SemanticAnalyzer:
         s_layout_expr: SemanticExpr | None,
         fractal_size_expr: SemanticExpr | None,
         pad_value_expr: SemanticExpr | None,
+        compact_mode_expr: SemanticExpr | None,
     ) -> TileConfig:
         defaults = dict(TileConfig.for_memory_space(memory_space).fields)
         if b_layout_expr is not None:
@@ -4996,6 +5523,10 @@ class _SemanticAnalyzer:
             if not isinstance(pad_value, PadValue):
                 raise TypeError("pto.Tile pad_value must be a PadValue symbol in TileLang DSL v1")
             defaults["pad_value"] = pad_value
+        if compact_mode_expr is not None:
+            defaults["compact_mode"] = self._require_compact_mode_symbol(
+                compact_mode_expr, "pto.Tile compact_mode"
+            )
         return TileConfig(tuple(sorted(defaults.items())))
 
     def _require_b_layout_symbol(self, expr: SemanticExpr, context: str) -> BLayout:
@@ -5031,6 +5562,23 @@ class _SemanticAnalyzer:
         ):
             return expr.binding.value
         raise TypeError(f"{context} must be an SLayout symbol in TileLang DSL v1")
+
+    def _require_compact_mode_symbol(self, expr: SemanticExpr, context: str) -> CompactMode:
+        if (
+            isinstance(expr, SemanticSymbolExpr)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "compact_mode"
+            and isinstance(expr.value, CompactMode)
+        ):
+            return expr.value
+        if (
+            isinstance(expr, SemanticBindingRef)
+            and isinstance(expr.type, SemanticMetaType)
+            and expr.type.kind == "compact_mode"
+            and isinstance(expr.binding.value, CompactMode)
+        ):
+            return expr.binding.value
+        raise TypeError(f"{context} must be a CompactMode symbol in TileLang DSL v1")
 
     def _analyze_get_lanes(
         self,
@@ -6976,25 +7524,6 @@ class _SemanticAnalyzer:
         self._require_i64_like_expr(expr, context)
         return expr
 
-    def _pad_mode_value(
-        self,
-        expr: SemanticExpr | None,
-        *,
-        default: PadMode,
-    ) -> PadMode:
-        if expr is None:
-            return default
-        if isinstance(expr, SemanticSymbolExpr) and expr.type.kind == "pad_mode":
-            return expr.value
-        if (
-            isinstance(expr, SemanticBindingRef)
-            and isinstance(expr.type, SemanticMetaType)
-            and expr.type.kind == "pad_mode"
-            and isinstance(expr.binding.value, PadMode)
-        ):
-            return expr.binding.value
-        raise TypeError("DMA pad_mode must be a PadMode symbol in TileLang DSL v1")
-
     def _require_loop_bound_type(self, ty: SemanticType) -> None:
         if isinstance(ty, (SemanticIndexType, SemanticScalarType)):
             return
@@ -7363,9 +7892,6 @@ __all__ = [
     "SemanticBinding",
     "SemanticBindingRef",
     "SemanticCallExpr",
-    "SemanticDmaOptions",
-    "SemanticDmaLoadStmt",
-    "SemanticDmaStoreStmt",
     "SemanticExpr",
     "SemanticExprStmt",
     "SemanticForStmt",

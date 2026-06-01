@@ -22,6 +22,27 @@ from .kernel import (
     select_kernel,
     vkernel,
 )
+from .lowering_backend import (
+    LoweringBackend,
+    LoweringResult,
+    TextBackend,
+    PybindBackend,
+    get_backend,
+    lower_with_backend,
+)
+from .backend_validator import (
+    BackendComparisonResult,
+    VerifyResult,
+    compare_backends,
+    run_backend_validation_suite,
+    print_comparison_summary,
+)
+from .env_config import (
+    check_mlir_bindings_available,
+    check_pto_dialect_available,
+    verify_environment,
+    print_environment_help,
+)
 from .types import (
     AlignType,
     AnyFloat,
@@ -30,6 +51,7 @@ from .types import (
     AnyType,
     BarrierType,
     BLayout,
+    CompactMode,
     DeinterleaveDist,
     EVENT,
     InterleaveDist,
@@ -110,6 +132,24 @@ __all__ = [
     "inline_proc",
     "select_kernel",
     "vkernel",
+    # Lowering backend (Issue #237)
+    "LoweringBackend",
+    "LoweringResult",
+    "TextBackend",
+    "PybindBackend",
+    "get_backend",
+    "lower_with_backend",
+    # Backend validator (Issue #237)
+    "BackendComparisonResult",
+    "VerifyResult",
+    "compare_backends",
+    "run_backend_validation_suite",
+    "print_comparison_summary",
+    # Environment config (Issue #237)
+    "check_mlir_bindings_available",
+    "check_pto_dialect_available",
+    "verify_environment",
+    "print_environment_help",
     "ScalarType",
     "WildcardType",
     "TypeVariable",
@@ -140,6 +180,7 @@ __all__ = [
     "PAT",
     "BarrierType",
     "BLayout",
+    "CompactMode",
     "DeinterleaveDist",
     "InterleaveDist",
     "PadMode",

@@ -12,6 +12,7 @@
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
 #include "VPTOFatobjEmission.h"
 #include "VPTOHostStubEmission.h"
+#include "TilelangDaemon.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -22,6 +23,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include <cctype>
 #include <cstring>
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -48,8 +50,18 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include <memory>
 #include <string>
+#include <thread>
+#include <chrono>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/types.h>
+
+extern "C" {
+extern char **environ;
+}
 
 using namespace mlir;
 using namespace pto;
@@ -331,6 +343,12 @@ static llvm::cl::opt<std::string> tilelangPkgPath(
                    "(default: <source>/tilelang-dsl/python, baked in at build time)"),
     llvm::cl::init(PTOAS_DEFAULT_TILELANG_PKG_PATH));
 
+static llvm::cl::opt<std::string> daemonSocketPath(
+    "daemon-socket-path",
+    llvm::cl::desc("Path to Unix domain socket for daemon RPC "
+                   "(default: /tmp/tilelang_daemon_{pid}.sock)"),
+    llvm::cl::init(""));
+
 static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
                                                            char **argv) {
   pto::ExpandTileOpOptions expandOpts;
@@ -347,6 +365,27 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     std::string detectedTilelangPkgPath = detectInstalledTilelangPkgPath(argv[0]);
     if (!detectedTilelangPkgPath.empty())
       expandOpts.tilelangPkgPath = detectedTilelangPkgPath;
+  }
+
+  // Daemon mode is default (no CLI option needed)
+  // Automatically start daemon for instance caching
+  if (!expandOpts.tilelangPath.empty()) {
+    std::string socket = daemonSocketPath;
+    if (socket.empty())
+      socket = ptoas::DaemonManager::generateSocketPath();
+
+    // Register cleanup handler (daemon will be stopped on PTOAS exit)
+    ptoas::registerDaemonCleanup();
+
+    // Try to start daemon automatically
+    if (ptoas::DaemonManager::start(socket, expandOpts.tilelangPath, expandOpts.tilelangPkgPath)) {
+      expandOpts.daemonSocketPath = socket;
+      llvm::errs() << "Info: TileLang daemon started successfully\n";
+    } else {
+      // Fallback: daemon failed, use subprocess mode (current approach)
+      expandOpts.daemonSocketPath = "";
+      llvm::errs() << "Warning: Failed to start daemon, using subprocess mode (fallback)\n";
+    }
   }
 
   return expandOpts;
@@ -1527,6 +1566,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::cf::ControlFlowDialect>();
   registry.insert<mlir::bufferization::BufferizationDialect>();
   registry.insert<mlir::scf::SCFDialect>();
+  registry.insert<mlir::math::MathDialect>();
 
   registry.insert<mlir::pto::PTODialect>();
   arith::registerBufferizableOpInterfaceExternalModels(registry);
@@ -1586,6 +1626,7 @@ int main(int argc, char **argv) {
   context.getOrLoadDialect<mlir::pto::PTODialect>();
   context.getOrLoadDialect<func::FuncDialect>();
   context.getOrLoadDialect<arith::ArithDialect>();
+  context.getOrLoadDialect<math::MathDialect>();
   context.getOrLoadDialect<memref::MemRefDialect>();
   context.getOrLoadDialect<affine::AffineDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();

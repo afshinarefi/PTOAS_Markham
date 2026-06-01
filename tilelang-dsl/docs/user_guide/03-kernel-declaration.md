@@ -175,6 +175,7 @@ def large_batch_matmul(a: pto.Tile, b: pto.Tile, c: pto.Tile) -> None:
 Constraint callables bind by parameter name.
 
 - Kernel parameter names such as `src`, `dst`, `a`, `b` receive lightweight proxy objects, so constraints can use direct expressions like `src.shape[0] <= dst.shape[0]`.
+- Scalar kernel parameters receive a lightweight proxy as well; use `indexCol.value` to read a compile-time constant when the caller passed a static integer or index operand.
 - Extra `context_attrs` passed to `pto.select_kernel(...)` bind by key name, for example `batch`, `enabled`, or `expected_rows`.
 
 ##### Parameter Proxy Objects
@@ -183,6 +184,7 @@ When a constraint argument name matches a kernel parameter name, the callable re
 
 - For `TensorView` parameters, the proxy exposes `rank`, `shape`, `strides`, `dtype`, and `memory_space`.
 - For `Tile` parameters, the proxy exposes `rank`, `shape`, `valid_shape`, `dtype`, `memory_space`, and `config`.
+- For scalar parameters, the proxy exposes `dtype` and `value`. `value` is "unknown" when the operand is not a compile-time constant.
 - `shape`, `strides`, and `valid_shape` support index access such as `src.shape[0]` or `dst.valid_shape[1]`.
 - Missing or not-yet-known metadata evaluates as "unknown", so comparisons conservatively pass rather than failing early.
 
@@ -453,7 +455,7 @@ spaces such as `MAT`, `LEFT`, `RIGHT`, `ACC`, and `BIAS` via `pto.Tile`.
 | Execution scope | `pto.vecscope` / `pto.strict_vecscope` | **No scope** — function body is linear IR |
 | GM data input | `TensorView` / `Tile` | `TensorView` / `PartitionTensorView` |
 | Operand abstraction | Tile + vector registers + masks | `pto.ptr<T, addr_space>` raw pointers |
-| Core operations | Vector ALU, load/store | Data movement (cube_load/store) + matmul (mad) |
+| Core operations | Vector ALU, load/store | Data movement (`mte_*`) + matmul (`mad*`) |
 | Address spaces | GM, UB (VEC) | GM, MAT, LEFT, RIGHT, ACC, BIAS, UB |
 | Generated IR attr | `#pto.kernel_kind<vector>` | `#pto.kernel_kind<cube>` |
 
@@ -486,19 +488,19 @@ def gemm(a_tv: pto.PartitionTensorView,   # [M, K] in GM
     l0c = pto.Tile([16, 16], pto.f32, pto.MemorySpace.ACC)
 
     # 4. GM → L1 data movement
-    pto.cube_load(a_ptr, l1_a.as_ptr(), 16, nburst=(1, 0, 0))
-    pto.cube_load(b_ptr, l1_b.as_ptr(), 16, nburst=(1, 0, 0))
+    pto.mte_gm_l1(a_ptr, l1_a.as_ptr(), 16, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_ptr, l1_b.as_ptr(), 16, nburst=(1, 0, 0))
 
     # 5. L1 → L0 data movement
-    pto.left_load(l1_a.as_ptr(), l0a.as_ptr(), 16, 32)
-    pto.right_load(l1_b.as_ptr(), l0b.as_ptr(), 32, 16)
+    pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), 16, 32)
+    pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), 32, 16)
 
     # 6. Matrix multiplication
     pto.mad(l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), 16, 16, 32)
 
     # 7. L0C → GM writeback
-    pto.acc_store_gm(
-        l0c.as_ptr(), c_ptr, 16, 16, 16, 16, mode=pto.FractalMode.NZ2ND
+    pto.mte_l0c_gm(
+        l0c.as_ptr(), c_ptr, 16, 16, 16, 16, 0, 0, layout="nz2nd"
     )
 ```
 

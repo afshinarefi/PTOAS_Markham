@@ -67,12 +67,12 @@ README 第 3.2 节是 LLVM/MLIR 的下载和编译步骤。当前场景下 LLVM 
 
 ## 3.3 第二步：构建 ptoas
 
-这里沿用 README 第 3.3 节的流程，但有两处需要改动：
+这里沿用 README 第 3.3 节的流程，但 `LLVM_DIR` 和 `MLIR_DIR` 需要改为
+`/opt/llvm/lib/cmake/...`。
 
-1. `LLVM_DIR` 和 `MLIR_DIR` 改为 `/opt/llvm/lib/cmake/...`
-2. `MLIR_PYTHON_PACKAGE_DIR` 不再指向共享的 `/opt/llvm/python_packages/mlir_core`，而是指向 `PTO_INSTALL_DIR`
-
-如果继续沿用 README 里的 `MLIR_PYTHON_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core`，在 `/opt/llvm` 场景下会把 `_pto.cpython-*.so` 安装到共享 LLVM 目录，不适合多人共用。
+`MLIR_PYTHON_PACKAGE_DIR` 仍然指向 LLVM 的 MLIR Python package。PTOAS 的
+`pto.py`、`_pto_ops_gen.py` 和 `_pto.cpython-*.so` 会安装到
+`CMAKE_INSTALL_PREFIX`，不会写入共享的 LLVM 安装目录。
 
 ```bash
 cd "$PTO_SOURCE_DIR"
@@ -90,7 +90,7 @@ cmake -G Ninja \
     -DPython3_FIND_STRATEGY=LOCATION \
     -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-    -DMLIR_PYTHON_PACKAGE_DIR="$PTO_INSTALL_DIR" \
+    -DMLIR_PYTHON_PACKAGE_DIR="$LLVM_INSTALL_DIR/python_packages/mlir_core" \
     -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
 
 # 3. 编译并安装
@@ -142,7 +142,7 @@ export LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PA
 
 - `LLVM_DIR=/opt/llvm/lib/cmake/llvm`
 - `MLIR_DIR=/opt/llvm/lib/cmake/mlir`
-- `MLIR_PYTHON_PACKAGE_DIR=$PTO_INSTALL_DIR`
+- `MLIR_PYTHON_PACKAGE_DIR=/opt/llvm/python_packages/mlir_core`
 - `CMAKE_INSTALL_PREFIX=$PTO_INSTALL_DIR`
 
 最小验证结果：

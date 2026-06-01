@@ -501,7 +501,18 @@ Usage:
 tile_ub = pto.Tile([256, 128], pto.f32, MemorySpace.UB)
 tile_left = pto.Tile([16, 64], pto.f16, MemorySpace.LEFT)
 tile_acc = pto.Tile([16, 16], pto.f32, MemorySpace.ACC, valid_shape=(12, 12))
+tile_compact = pto.Tile(
+    [16, 128],
+    pto.f32,
+    MemorySpace.UB,
+    compact_mode=pto.CompactMode.RowPlusOne,
+)
 ```
+
+`compact_mode` is supported in TileLang DSL v1 and lowers into the tile
+configuration carried by `!pto.tile_buf<..., compact=...>`. Static compact
+metadata can be queried through either `tile.config.compact_mode` or
+`tile.compact_mode`.
 
 Important notes on shape and valid shape:
 - `shape` must be a compile-time constant. Tile dimensions are fixed at compilation time and cannot change at runtime.

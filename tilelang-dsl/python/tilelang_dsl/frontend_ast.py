@@ -807,6 +807,11 @@ _BOOL_OP_NAMES = {
 }
 
 _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
+    "Tile": frozenset({"valid_shape", "blayout", "slayout", "fractal_size", "pad_value", "compact_mode", "addr"}),
+    "mte_gm_ub": frozenset({"nburst", "loops", "pad"}),
+    "mte_ub_gm": frozenset({"nburst", "loops"}),
+    "mte_ub_ub": frozenset({"nburst"}),
+    "mte_ub_l1": frozenset({"nburst"}),
     "set_mov_pad_val": frozenset({"pad_value"}),
     "set_loop2_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
     "set_loop1_stride_outtoub": frozenset({"src_stride", "dst_stride"}),
@@ -850,43 +855,24 @@ _DMA_CALL_KEYWORDS: dict[str, frozenset[str]] = {
     "vsts": frozenset({"dist"}),
     "vbitcast": frozenset(),
     "pbitcast": frozenset(),
-    "cube_load": frozenset({"nburst", "loops"}),
-    "cube_store": frozenset({"nburst", "loops"}),
-    "cube_load_frac": frozenset({"shape", "src_layout", "dst_group", "ctrl"}),
-    "bias_load": frozenset({"nburst"}),
-    "left_load": frozenset(),
-    "right_load": frozenset(),
-    "left_load_mx": frozenset(),
-    "right_load_mx": frozenset(),
-    "mad": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "mad_acc": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "mad_bias": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "mad_mx": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "mad_mx_acc": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "mad_mx_bias": frozenset({"unit_flag_ctrl", "disable_gemv"}),
-    "acc_store": frozenset(
-        {"mode", "loop0_src_stride", "split", "loop3"}
-    ),
-    "acc_store_gm": frozenset(
-        {
-            "mode",
-            "loop0_src_stride",
-            "split",
-            "loop3",
-            "sid",
-            "l2_cache_ctrl",
-        }
-    ),
-    "acc_store_ub": frozenset(
-        {
-            "mode",
-            "loop0_src_stride",
-            "channel_split_en",
-            "loop3",
-            "dual_dst_mode",
-            "sub_blockid",
-        }
-    ),
+    "mte_gm_l1": frozenset({"nburst", "loops"}),
+    "mte_l1_ub": frozenset({"nburst", "loops"}),
+    "mte_gm_l1_frac": frozenset({"shape", "src_layout", "dst_group", "ctrl"}),
+    "mte_l1_bt": frozenset({"nburst"}),
+    "mte_l1_fb": frozenset({"nburst"}),
+    "mte_l1_l0a": frozenset({"transpose"}),
+    "mte_l1_l0b": frozenset({"transpose"}),
+    "mte_l1_l0a_mx": frozenset({"transpose"}),
+    "mte_l1_l0b_mx": frozenset({"transpose"}),
+    "mad": frozenset({"unit_flag", "disable_gemv", "sat", "tf32_mode", "n_dir"}),
+    "mad_acc": frozenset({"unit_flag", "disable_gemv", "sat", "tf32_mode", "n_dir"}),
+    "mad_bias": frozenset({"unit_flag", "disable_gemv", "sat", "tf32_mode", "n_dir"}),
+    "mad_mx": frozenset({"unit_flag", "disable_gemv", "sat", "n_dir"}),
+    "mad_mx_acc": frozenset({"unit_flag", "disable_gemv", "sat", "n_dir"}),
+    "mad_mx_bias": frozenset({"unit_flag", "disable_gemv", "sat", "n_dir"}),
+    "mte_l0c_l1": frozenset({"unit_flag", "pre_quant", "pre_relu", "layout", "loop3", "sat"}),
+    "mte_l0c_gm": frozenset({"unit_flag", "pre_quant", "pre_relu", "layout", "loop3", "sat", "atomic"}),
+    "mte_l0c_ub": frozenset({"unit_flag", "pre_quant", "pre_relu", "layout", "loop3", "sat"}),
 }
 
 

@@ -115,6 +115,9 @@ struct OperandTypeInfo {
   // --- Vector-only (builtin VectorType) ---
   SmallVector<int64_t> vectorShape;
 
+  // --- Scalar-only ---
+  std::optional<int64_t> scalarValue;
+
   /// Equality for SpecKey caching — only compares fields relevant to each kind.
   bool operator==(const OperandTypeInfo &rhs) const {
     if (kind != rhs.kind || dtype != rhs.dtype)
@@ -127,7 +130,9 @@ struct OperandTypeInfo {
              fractal == rhs.fractal && pad == rhs.pad;
     if (kind == OperandKind::Vector)
       return vectorShape == rhs.vectorShape;
-    // View and Scalar: dtype alone is sufficient for template caching.
+    if (kind == OperandKind::Scalar)
+      return scalarValue == rhs.scalarValue;
+    // View: dtype alone is sufficient for template caching.
     return true;
   }
 };
@@ -164,8 +169,12 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
       } else if (op.kind == OperandKind::Vector) {
         for (int64_t d : op.vectorShape)
           h = llvm::hash_combine(h, d);
+      } else if (op.kind == OperandKind::Scalar) {
+        h = llvm::hash_combine(h, op.scalarValue.has_value());
+        if (op.scalarValue)
+          h = llvm::hash_combine(h, *op.scalarValue);
       }
-      // View/Vector/Scalar: only kind + dtype contribute to hash.
+      // View: only kind + dtype contribute to hash.
     }
     for (const auto &[attrName, attrValue] : key.contextAttrs)
       h = llvm::hash_combine(h, attrName, attrValue);
@@ -175,7 +184,6 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
     return lhs == rhs;
   }
 };
-
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -594,6 +602,9 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   info.dtype = getDtypeString(ty);
   if (info.dtype.empty())
     return std::nullopt;
+  int64_t scalarValue = 0;
+  if (getStaticIntFromValue(value, scalarValue))
+    info.scalarValue = scalarValue;
   return info;
 }
 
@@ -619,15 +630,17 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
 // ExpandState: runtime state for a single pass invocation.
 // ============================================================================
 struct ExpandState {
-  std::vector<OwningOpRef<ModuleOp>> parsedModules;
-  llvm::DenseMap<SpecKey, func::FuncOp, SpecKeyInfo> specCache;
+  std::vector<OwningOpRef<ModuleOp>> parsedModules;  // Keep parsed modules alive
 
   std::string tilelangPath;
   std::string tilelangPkgPath;
   std::string pythonExe;
+  std::string daemonSocketPath;
 
   func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
                                   ModuleOp mod, MLIRContext *ctx);
+  func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
+                                     ModuleOp mod, MLIRContext *ctx);
 
   LogicalResult expandTileOpsInFunction(func::FuncOp func, ModuleOp mod,
                                         MLIRContext *ctx);
@@ -725,7 +738,12 @@ static std::string buildOperandSpecsJson(const SpecKey &key) {
     }
 
     // Scalar
-    json += "{\"kind\":\"scalar\",\"dtype\":\"" + op.dtype + "\"}";
+    json += "{\"kind\":\"scalar\",\"dtype\":\"" + op.dtype + "\"";
+    if (op.scalarValue) {
+      json += ",\"value\":";
+      json += std::to_string(*op.scalarValue);
+    }
+    json += "}";
   }
   json += "]";
   return json;
@@ -748,15 +766,192 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
 }
 
 // ============================================================================
+// Invoke Python DSL daemon RPC to generate a specialized template function.
+// ============================================================================
+func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
+                                               Operation *tileOp,
+                                               ModuleOp mod, MLIRContext *ctx) {
+  // 1. Locate the Python executable.
+  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
+  if (!pythonPath) {
+    llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
+    return nullptr;
+  }
+
+  // 2. Build operand schema JSON for daemon RPC.
+  std::string operandSpecsJson = buildOperandSpecsJson(key);
+  std::string contextAttrsJson = buildContextAttrsJson(key);
+  if (key.targetArch.empty()) {
+    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
+    return nullptr;
+  }
+
+  // 3. Create temp file for stdout redirect.
+  SmallString<128> tmpPath;
+  int tmpFD;
+  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_daemon", "mlir",
+                                                     tmpFD, tmpPath)) {
+    llvm::errs() << "ExpandTileOp: cannot create temp file: "
+                 << ec.message() << "\n";
+    return nullptr;
+  }
+  ::close(tmpFD);
+
+  // 4. Build command args for daemon helper.
+  std::string opName = "pto." + key.opName;
+  SmallVector<StringRef> args = {
+      *pythonPath, "-m", "tilelang_dsl.daemon_helper",
+      "--socket",      daemonSocketPath,
+      "--target",      key.targetArch,
+      "--op",          opName,
+      "--operand-specs", operandSpecsJson,
+  };
+  if (!key.contextAttrs.empty()) {
+    args.push_back("--context-attrs");
+    args.push_back(contextAttrsJson);
+  }
+
+  // 5. Set up environment with PYTHONPATH.
+  std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
+                                          std::nullopt};
+
+  SmallVector<StringRef> envp;
+  std::string pythonPathEnv;
+  std::vector<std::string> envStorage;
+  bool hasPythonPath = !tilelangPkgPath.empty();
+  if (hasPythonPath) {
+    const char *existingPath = ::getenv("PYTHONPATH");
+    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
+    if (existingPath && existingPath[0] != '\0') {
+      pythonPathEnv += ":";
+      pythonPathEnv += existingPath;
+    }
+    for (char **e = environ; *e; ++e) {
+      StringRef entry(*e);
+      if (entry.starts_with("PYTHONPATH="))
+        continue;
+      envStorage.push_back(std::string(entry));
+    }
+    envStorage.push_back(pythonPathEnv);
+    for (auto &s : envStorage)
+      envp.push_back(s);
+  }
+
+  // 6. Execute daemon helper.
+  std::string errMsg;
+  int rc = llvm::sys::ExecuteAndWait(
+      *pythonPath, args,
+      hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
+      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
+
+  if (rc != 0) {
+    llvm::errs() << "ExpandTileOp: daemon helper failed (rc=" << rc
+                 << "): " << errMsg << "\n";
+    llvm::sys::fs::remove(tmpPath);
+    return nullptr;
+  }
+
+  // 7. Read the generated MLIR.
+  auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
+  llvm::sys::fs::remove(tmpPath);
+  if (!bufOrErr) {
+    llvm::errs() << "ExpandTileOp: cannot read daemon output\n";
+    return nullptr;
+  }
+  StringRef mlirText = (*bufOrErr)->getBuffer();
+  if (mlirText.empty()) {
+    llvm::errs() << "ExpandTileOp: empty daemon output\n";
+    return nullptr;
+  }
+
+  // 8. Parse the MLIR text.
+  auto parsedMod = parseSourceString<ModuleOp>(mlirText, ctx);
+  if (!parsedMod) {
+    llvm::errs() << "ExpandTileOp: failed to parse daemon output\n";
+    return nullptr;
+  }
+
+  // 9. Clone the generated function set into the target module.
+  auto parsedFuncs = parsedMod->getOps<func::FuncOp>();
+  if (parsedFuncs.empty()) {
+    llvm::errs() << "ExpandTileOp: no func.func in daemon output\n";
+    return nullptr;
+  }
+
+  // Create builder and set insertion point to insert functions into module
+  OpBuilder builder(ctx);
+  builder.setInsertionPointToEnd(mod.getBody());
+
+  DenseMap<StringRef, StringRef> renamedSymbols;
+  SmallVector<func::FuncOp, 4> clonedFuncs;
+  std::vector<std::string> newNameStorage;
+
+  SymbolTable targetSymTable(mod);
+  for (func::FuncOp fn : parsedFuncs) {
+    // Use builder.clone() to insert into module body
+    IRMapping mapping;
+    auto cloned = cast<func::FuncOp>(builder.clone(*fn, mapping));
+    StringRef baseName = fn.getSymName();
+    std::string newName = std::string(baseName);
+
+    // Ensure uniqueness in the target module.
+    if (targetSymTable.lookup(newName)) {
+      unsigned counter = 0;
+      std::string uniqueName;
+      do {
+        uniqueName = baseName.str() + "__" + std::to_string(counter++);
+      } while (targetSymTable.lookup(uniqueName));
+      newName = uniqueName;  // Fixed: just use uniqueName, not double concatenation
+    }
+    newNameStorage.push_back(newName);
+    renamedSymbols[fn.getSymName()] = newNameStorage.back();
+    cloned.setName(newNameStorage.back());
+    
+    // Set visibility to Private for template functions (required for inline pass)
+    cloned.setVisibility(SymbolTable::Visibility::Private);
+    
+    clonedFuncs.push_back(cloned);
+  }
+
+  for (func::FuncOp fn : clonedFuncs) {
+    fn.walk([&](func::CallOp call) {
+      StringRef callee = call.getCallee();
+      if (callee.empty())
+        return;
+      auto renameIt = renamedSymbols.find(callee);
+      if (renameIt == renamedSymbols.end())
+        return;
+      call.setCallee(renameIt->second);
+    });
+  }
+
+  auto cloned = clonedFuncs.front();
+  if (!cloned->hasAttr("pto.tilelang.instance")) {
+    llvm::errs() << "ExpandTileOp: warning: daemon output function @"
+                 << cloned.getSymName()
+                 << " missing pto.tilelang.instance attribute\n";
+  }
+
+  // Keep the parsed module alive.
+  parsedModules.push_back(std::move(parsedMod));
+
+  return cloned;
+}
+
+// ============================================================================
 // Invoke Python DSL helper to generate a specialized template function.
 // ============================================================================
 func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
                                               Operation *tileOp,
                                               ModuleOp mod, MLIRContext *ctx) {
-  // Check cache first.
-  auto cacheIt = specCache.find(key);
-  if (cacheIt != specCache.end())
-    return cacheIt->second;
+  // Try daemon first if daemon socket path is provided.
+  if (!daemonSocketPath.empty()) {
+    func::FuncOp daemonResult = invokeTilelangDaemon(key, tileOp, mod, ctx);
+    if (daemonResult)
+      return daemonResult;
+    // Daemon failed, fall back to subprocess mode.
+    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
+  }
 
   // 1. Locate the Python executable.
   auto pythonPath = llvm::sys::findProgramByName(pythonExe);
@@ -910,11 +1105,22 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     } else if (op.kind == OperandKind::Vector) {
       for (int64_t d : op.vectorShape)
         uniqueName += "_" + std::to_string(d);
+    } else if (op.kind == OperandKind::Scalar && op.scalarValue) {
+      uniqueName += "_sv" + std::to_string(*op.scalarValue);
     }
   }
   for (const auto &[attrName, attrValue] : key.contextAttrs)
     uniqueName += "_ctx_" + attrName + "_" + attrValue;
 
+  // Check if function already exists in module (deduplication)
+  SymbolTable targetSymTable(mod);
+  if (auto existingFunc = targetSymTable.lookup(uniqueName)) {
+    // Function already exists, return it directly (avoid redefinition)
+    llvm::errs() << "ExpandTileOp: reuse existing function @" << uniqueName << "\n";
+    return cast<func::FuncOp>(existingFunc);
+  }
+
+  std::vector<std::string> newNameStorage;
   for (auto [index, fn] : llvm::enumerate(parsedFuncs)) {
     IRMapping mapping;
     auto cloned = cast<func::FuncOp>(builder.clone(*fn, mapping));
@@ -925,8 +1131,9 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
     } else {
       newName = uniqueName + "__" + std::string(fn.getSymName());
     }
-    renamedSymbols[fn.getSymName()] = newName;
-    cloned.setName(newName);
+    newNameStorage.push_back(newName);
+    renamedSymbols[fn.getSymName()] = newNameStorage.back();
+    cloned.setName(newNameStorage.back());
     clonedFuncs.push_back(cloned);
   }
 
@@ -954,7 +1161,6 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   // Keep the parsed module alive.
   parsedModules.push_back(std::move(parsedMod));
 
-  specCache[key] = cloned;
   return cloned;
 }
 
@@ -1030,6 +1236,7 @@ void ExpandTileOpPass::runOnOperation() {
   state.tilelangPath = std::string(tilelangPath);
   state.tilelangPkgPath = std::string(tilelangPkgPath);
   state.pythonExe = std::string(pythonExe);
+  state.daemonSocketPath = std::string(daemonSocketPath);
 
   for (auto func : mod.getOps<func::FuncOp>()) {
     if (func.isExternal())

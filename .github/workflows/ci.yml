@@ -204,20 +204,24 @@ jobs:
 
       - name: Build PTOAS
         run: |
-          export PYBIND11_CMAKE_DIR="$(python3 -m pybind11 --cmakedir)"
-          cmake -C "${GITHUB_WORKSPACE}/cmake/LinuxHardeningCache.cmake" -G Ninja -S . -B "${PTO_BUILD_DIR}" \
-            -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
-            -DPython3_EXECUTABLE=python3 \
-            -DPython3_FIND_STRATEGY=LOCATION \
-            -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
-            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DMLIR_PYTHON_PACKAGE_DIR="${LLVM_DIR}/tools/mlir/python_packages/mlir_core" \
-            -DCMAKE_INSTALL_PREFIX="${PTO_INSTALL_DIR}" \
-            -DCMAKE_BUILD_TYPE=Debug
-          ninja -C "${PTO_BUILD_DIR}" ptoas
-          ninja -C "${PTO_BUILD_DIR}" ptobc
-          ninja -C "${PTO_BUILD_DIR}" install
+          rm -rf "${PTO_INSTALL_DIR}"
+          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          LLVM_BUILD_DIR="${LLVM_DIR}" \
+            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
+
+      - name: Run PTODSL Python tests
+        shell: bash
+        env:
+          LLVM_DIR: ${{ env.LLVM_DIR }}
+          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
+          MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
+        run: |
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
+          export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
+          ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
       - name: Run lit tests
         shell: bash
@@ -226,9 +230,10 @@ jobs:
           PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
           MLIR_PYTHONPATH: ${{ env.MLIR_PYTHONPATH }}
         run: |
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
           export PATH="${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
-          export PYTHONPATH="${MLIR_PYTHONPATH}:${PTO_INSTALL_DIR}:${PYTHONPATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHONPATH}:${PYTHONPATH:-}"
           ninja -C "${PTO_BUILD_DIR}" check-pto
 
       - name: Run sample tests (py -> pto -> cpp)
@@ -241,11 +246,12 @@ jobs:
           PTO_BUILD_DIR: ${{ env.PTO_BUILD_DIR }}
           PYTHON_BIN: /usr/bin/python3
           MLIR_PYTHON_ROOT: ${{ env.MLIR_PYTHONPATH }}
-          PTO_PYTHON_ROOT: ${{ env.PTO_INSTALL_DIR }}/
+          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
         run: |
           set -euo pipefail
+          PTOAS_PYTHON_SITE="$(PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 -c 'import os, sysconfig; prefix = os.environ["PTO_INSTALL_DIR"]; print(sysconfig.get_path("purelib", vars={"base": prefix, "platbase": prefix}))')"
           export PATH="${PTO_INSTALL_DIR}/bin:${PATH}"
-          export PYTHONPATH="${MLIR_PYTHON_ROOT}:${PTO_PYTHON_ROOT}:${PYTHONPATH:-}"
+          export PYTHONPATH="${PTOAS_PYTHON_SITE}:${PTO_INSTALL_DIR}:${MLIR_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
           if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
@@ -300,6 +306,7 @@ jobs:
     env:
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto
+      PTO_INSTALL_DIR: ${{ github.workspace }}/install
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
       TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
@@ -367,6 +374,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "${GITHUB_WORKSPACE}/build"
+          rm -rf "${PTO_INSTALL_DIR}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
 
@@ -405,17 +413,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export PYBIND11_CMAKE_DIR="$(python3 -m pybind11 --cmakedir)"
-          cmake -G Ninja -S . -B build \
-            -DLLVM_DIR="${LLVM_DIR}/lib/cmake/llvm" \
-            -DMLIR_DIR="${LLVM_DIR}/lib/cmake/mlir" \
-            -DPython3_EXECUTABLE=python3 \
-            -DPython3_FIND_STRATEGY=LOCATION \
-            -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
-            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DMLIR_PYTHON_PACKAGE_DIR="${LLVM_DIR}/tools/mlir/python_packages/mlir_core" \
-            -DCMAKE_BUILD_TYPE=Release
-          ninja -C build ptoas
+          rm -rf "${PTO_INSTALL_DIR}"
+          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          LLVM_BUILD_DIR="${LLVM_DIR}" \
+            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
+            python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
       - name: Resolve simulator environment
         shell: bash
@@ -475,6 +477,18 @@ jobs:
               2>&1 | tee "${TILELANG_DSL_WORKSPACE}/run_ci.log"
           fi
 
+      - name: Run PTODSL DSL ST CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          export LLVM_BUILD_DIR="${LLVM_DIR}"
+          export PYTHON_BIN="python3"
+          ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
+          PTOAS_BIN="${PTOAS_BIN}" \
+          scripts/sim_dsl.sh test/dsl-st/predicate_pack_launch.py \
+            2>&1 | tee "${TILELANG_DSL_WORKSPACE}/ptodsl-dsl-st.log"
+
       - name: Upload TileLang DSL logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -482,6 +496,7 @@ jobs:
           name: tilelang-dsl-ci-${{ github.run_id }}
           path: |
             ${{ env.TILELANG_DSL_WORKSPACE }}/run_ci.log
+            ${{ env.TILELANG_DSL_WORKSPACE }}/ptodsl-dsl-st.log
           if-no-files-found: warn
 
       - name: Run TileLang DSL unit tests

@@ -25,11 +25,10 @@ from .semantic import (
     SemanticCallExpr,
     SemanticDmaConfigStmt,
     SemanticDmaUnaryConfigStmt,
-    SemanticDmaLoadStmt,
-    SemanticDmaStoreStmt,
     SemanticExpr,
     SemanticExprStmt,
     SemanticForStmt,
+    SemanticGroupedMteDmaStmt,
     SemanticGetBufStmt,
     SemanticIndexCastExpr,
     SemanticIfStmt,
@@ -76,6 +75,7 @@ from .semantic import (
     SemanticWaitIntraCoreStmt,
 )
 from .types import (
+    CompactMode,
     MaskPattern,
     PadValue,
     ScalarType,
@@ -195,31 +195,6 @@ class _RenderedTextualType(SemanticType):
     text: str
 
 
-@dataclass(frozen=True)
-class _DmaTransferConfig:
-    n_burst: _RenderedValue
-    len_burst: _RenderedValue
-    copy_src_stride: _RenderedValue
-    copy_dst_stride: _RenderedValue
-    loop_src_stride: _RenderedValue
-    loop_dst_stride: _RenderedValue
-
-
-@dataclass(frozen=True)
-class _DmaLoadPaddingProfile:
-    pad_mode_name: str
-    left_padding: int
-    right_padding: int
-    init_out_buffer: bool
-    pad_value: SemanticExpr | None
-
-
-@dataclass(frozen=True)
-class _DmaStoreTrimProfile:
-    left_padding: int
-    right_padding: int
-
-
 class _AuthoringRenderer:
     def __init__(self, kernel: SemanticKernel):
         self.kernel = kernel
@@ -318,14 +293,6 @@ class _AuthoringRenderer:
             return
         if isinstance(stmt, SemanticExprStmt):
             self._collect_used_tile_buffers_from_expr(stmt.expr, used)
-            return
-        if isinstance(stmt, SemanticDmaLoadStmt):
-            self._record_tile_buffer_use(stmt.dst, used)
-            self._collect_used_tile_buffers_from_expr(stmt.src, used)
-            return
-        if isinstance(stmt, SemanticDmaStoreStmt):
-            self._record_tile_buffer_use(stmt.src, used)
-            self._collect_used_tile_buffers_from_expr(stmt.dst, used)
             return
         if isinstance(stmt, SemanticVectorStoreStmt):
             self._collect_used_tile_buffers_from_expr(stmt.value, used)
@@ -453,10 +420,6 @@ class _AuthoringRenderer:
             lines: list[str] = []
             self._lower_expr(stmt.expr, env, indent=indent, into=lines)
             return lines
-        if isinstance(stmt, SemanticDmaLoadStmt):
-            return self._render_dma_load(stmt, env, indent=indent)
-        if isinstance(stmt, SemanticDmaStoreStmt):
-            return self._render_dma_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticVectorStoreStmt):
             return self._render_vector_store(stmt, env, indent=indent)
         if isinstance(stmt, SemanticVScatterStmt):
@@ -503,6 +466,8 @@ class _AuthoringRenderer:
             return self._render_dma_config(stmt, env, indent=indent)
         if isinstance(stmt, SemanticLowLevelCopyStmt):
             return self._render_low_level_copy(stmt, env, indent=indent)
+        if isinstance(stmt, SemanticGroupedMteDmaStmt):
+            return self._render_grouped_mte_dma(stmt, env, indent=indent)
         if isinstance(stmt, SemanticReturnStmt):
             lines: list[str] = []
             if stmt.value is None:
@@ -647,6 +612,26 @@ class _AuthoringRenderer:
             + f"pto.{stmt.name} {operand_text} : {type_text}"
         )
         return lines
+
+    def _render_grouped_mte_dma(
+        self,
+        stmt: SemanticGroupedMteDmaStmt,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+    ) -> list[str]:
+        lines: list[str] = []
+        expr = SemanticCallExpr(namespace="pto", name=stmt.name, args=stmt.args, type=None)
+        if stmt.name == "mte_gm_ub":
+            self._render_mte_gm_ub(expr, env, indent=indent, into=lines)
+            return lines
+        if stmt.name == "mte_ub_gm":
+            self._render_mte_ub_gm(expr, env, indent=indent, into=lines)
+            return lines
+        if stmt.name in {"mte_ub_ub", "mte_ub_l1"}:
+            self._render_mte_ub_copy(expr, env, indent=indent, into=lines)
+            return lines
+        raise ValueError(f"unsupported grouped MTE DMA stmt pto.{stmt.name}")
 
     def _render_assign(
         self,
@@ -951,104 +936,6 @@ class _AuthoringRenderer:
         raise NotImplementedError(
             f"multi-result assignment for `pto.{stmt.value.name}` is not supported in TileLang DSL v1"
         )
-
-    def _render_dma_load(
-        self,
-        stmt: SemanticDmaLoadStmt,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-    ) -> list[str]:
-        lines: list[str] = []
-        profile = self._resolve_dma_load_padding_profile(stmt.options)
-        src = self._lower_expr(stmt.src.base, env, indent=indent, into=lines)
-        dst = self._lower_expr(stmt.dst, env, indent=indent, into=lines)
-        src_name, src_type = self._materialize_tensor_slice_ptr(
-            stmt.src,
-            src,
-            env,
-            indent=indent,
-            into=lines,
-        )
-        dst_name, dst_type = self._materialize_tile_window_ptr(
-            dst,
-            col_offset=profile.left_padding,
-            indent=indent,
-            into=lines,
-        )
-        transfer = self._infer_dma_load_transfer(stmt.src, stmt.dst.type, src, env, indent=indent, into=lines)
-
-        copy_lines = self._render_dma_load_copy_ops(
-            src_name,
-            src_type,
-            dst_name,
-            dst_type,
-            transfer,
-            indent=indent,
-        )
-        prefill_lines = self._render_dma_load_prefill(
-            stmt.dst,
-            dst,
-            env,
-            profile,
-            indent=indent,
-        )
-        if profile.pad_mode_name == "PadFirstElem":
-            lines.extend(copy_lines)
-            lines.extend(prefill_lines)
-            if profile.init_out_buffer:
-                lines.extend(copy_lines)
-            return lines
-
-        lines.extend(prefill_lines)
-        lines.extend(copy_lines)
-        return lines
-
-    def _render_dma_store(
-        self,
-        stmt: SemanticDmaStoreStmt,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-    ) -> list[str]:
-        lines: list[str] = []
-        profile = self._resolve_dma_store_trim_profile(stmt.options)
-        src = self._lower_expr(stmt.src, env, indent=indent, into=lines)
-        dst = self._lower_expr(stmt.dst.base, env, indent=indent, into=lines)
-        src_name, src_type = self._materialize_tile_window_ptr(
-            src,
-            col_offset=profile.left_padding,
-            indent=indent,
-            into=lines,
-        )
-        dst_name, dst_type = self._materialize_tensor_slice_ptr(
-            stmt.dst,
-            dst,
-            env,
-            indent=indent,
-            into=lines,
-        )
-        transfer = self._infer_dma_store_transfer(stmt.dst, stmt.src.type, dst, env, indent=indent, into=lines)
-
-        c0_i64 = self._materialize_constant(0, _I64_TYPE)
-        c1_i64 = self._materialize_constant(1, _I64_TYPE)
-
-        lines.extend(
-            [
-                self._indent(indent)
-                + f"pto.set_loop_size_ubtoout {c1_i64}, {c1_i64} : i64, i64",
-                self._indent(indent)
-                + f"pto.set_loop1_stride_ubtoout {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
-                self._indent(indent)
-                + f"pto.set_loop2_stride_ubtoout {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
-                self._indent(indent)
-                + "pto.copy_ubuf_to_gm "
-                + f"{src_name}, {dst_name}, {c0_i64}, {transfer.n_burst.name}, {transfer.len_burst.name}, {c0_i64}, "
-                + f"{transfer.copy_dst_stride.name}, {transfer.copy_src_stride.name} : {src_type}, {dst_type}, "
-                + "i64, i64, i64, i64, i64, i64",
-            ]
-        )
-        return lines
 
     def _render_vector_store(
         self,
@@ -1407,86 +1294,6 @@ class _AuthoringRenderer:
         )
         return _RenderedValue(name=result_name, type=_RenderedTextualType(result_type_text))
 
-    def _resolve_dma_load_padding_profile(self, options: object) -> _DmaLoadPaddingProfile:
-        pad_mode_name = self._static_pad_mode_name(getattr(options, "pad_mode", None)) or "PadNull"
-        left_padding = self._static_expr_value(getattr(options, "left_padding", None), default=0)
-        right_padding = self._static_expr_value(getattr(options, "right_padding", None), default=0)
-        init_out_buffer = self._static_expr_value(getattr(options, "init_out_buffer", None), default=False)
-        if not isinstance(left_padding, int) or left_padding < 0:
-            raise NotImplementedError(
-                "pto.dma_load lowering currently expects `left_padding` to be a static non-negative index"
-            )
-        if not isinstance(right_padding, int) or right_padding < 0:
-            raise NotImplementedError(
-                "pto.dma_load lowering currently expects `right_padding` to be a static non-negative index"
-            )
-        if not isinstance(init_out_buffer, bool):
-            raise NotImplementedError(
-                "pto.dma_load lowering currently expects `init_out_buffer` to be a compile-time bool"
-            )
-        if pad_mode_name not in {"PadNull", "PadFirstElem", "PadValue"}:
-            raise NotImplementedError(
-                f"pto.dma_load lowering does not recognize pad_mode `{pad_mode_name}` in TileLang DSL v1"
-            )
-        if pad_mode_name == "PadNull" and init_out_buffer:
-            raise NotImplementedError(
-                "pto.dma_load lowering does not support `init_out_buffer=True` with `pad_mode=PadMode.PadNull`; "
-                "the stable frontend-only path has no explicit fill value for that combination"
-            )
-        return _DmaLoadPaddingProfile(
-            pad_mode_name=pad_mode_name,
-            left_padding=left_padding,
-            right_padding=right_padding,
-            init_out_buffer=init_out_buffer,
-            pad_value=getattr(options, "pad_value", None),
-        )
-
-    def _resolve_dma_store_trim_profile(self, options: object) -> _DmaStoreTrimProfile:
-        pad_mode_name = self._static_pad_mode_name(getattr(options, "pad_mode", None)) or "PadNull"
-        left_padding = self._static_expr_value(getattr(options, "left_padding", None), default=0)
-        right_padding = self._static_expr_value(getattr(options, "right_padding", None), default=0)
-        if pad_mode_name != "PadNull":
-            raise NotImplementedError(
-                "pto.dma_store lowering only supports `pad_mode=PadMode.PadNull`; "
-                "non-PadNull store padding would require GM-side fill in the stable frontend-only path"
-            )
-        if self._static_expr_value(getattr(options, "pad_value", None)) is not None:
-            raise NotImplementedError(
-                "pto.dma_store lowering does not support `pad_value`; GM-side fill is unsupported"
-            )
-        if not isinstance(left_padding, int) or left_padding < 0:
-            raise NotImplementedError(
-                "pto.dma_store lowering currently expects `left_padding` to be a static non-negative index"
-            )
-        if not isinstance(right_padding, int) or right_padding < 0:
-            raise NotImplementedError(
-                "pto.dma_store lowering currently expects `right_padding` to be a static non-negative index"
-            )
-        return _DmaStoreTrimProfile(
-            left_padding=left_padding,
-            right_padding=right_padding,
-        )
-
-    def _require_default_dma_lowering_profile(self, options: object, op_name: str) -> None:
-        if not self._is_default_dma_lowering_profile(options):
-            raise NotImplementedError(
-                f"{op_name} lowering for padding/trim/init options is not implemented yet in TileLang DSL v1; "
-                "this stable frontend-only DMA path only lowers the default no-padding profile today"
-            )
-
-    def _is_default_dma_lowering_profile(self, options: object) -> bool:
-        return (
-            self._static_pad_mode_name(getattr(options, "pad_mode", None)) in {None, "PadNull"}
-            and self._static_expr_value(getattr(options, "pad_value", None)) is None
-            and self._static_expr_value(getattr(options, "left_padding", None), default=0) == 0
-            and self._static_expr_value(getattr(options, "right_padding", None), default=0) == 0
-            and self._static_expr_value(getattr(options, "init_out_buffer", None), default=False) is False
-        )
-
-    def _static_pad_mode_name(self, expr: SemanticExpr | None) -> str | None:
-        value = self._static_expr_value(expr)
-        return None if value is None else getattr(value, "name", None)
-
     def _static_expr_value(self, expr: SemanticExpr | None, *, default: object = None) -> object:
         if expr is None:
             return default
@@ -1497,568 +1304,6 @@ class _AuthoringRenderer:
         if isinstance(expr, SemanticBindingRef):
             return expr.binding.value
         return None
-
-    def _infer_dma_load_transfer(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tile_type: SemanticTileType,
-        tensor_base: _RenderedValue,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _DmaTransferConfig:
-        element_bytes = self._dtype_byte_width(slice_expr.type.element_dtype)
-        row_count = self._materialize_dma_axis_extent(slice_expr, 0, env, indent=indent, into=into)
-        col_count = self._materialize_dma_axis_extent(slice_expr, 1, env, indent=indent, into=into)
-        gm_row_stride = self._materialize_tensor_row_stride_bytes(
-            slice_expr,
-            tensor_base,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        row_step = self._materialize_dma_row_step(slice_expr, env, indent=indent, into=into)
-        copy_src_stride = self._emit_binary_value(
-            "mul",
-            gm_row_stride,
-            row_step,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        copy_dst_stride = self._materialize_tile_row_stride_bytes(
-            tile_type,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        len_burst = self._materialize_dma_len_burst(
-            col_count,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        loop_src_stride = self._emit_binary_value(
-            "mul",
-            row_count,
-            copy_src_stride,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        loop_dst_stride = self._emit_binary_value(
-            "mul",
-            row_count,
-            copy_dst_stride,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        return _DmaTransferConfig(
-            n_burst=row_count,
-            len_burst=len_burst,
-            copy_src_stride=copy_src_stride,
-            copy_dst_stride=copy_dst_stride,
-            loop_src_stride=loop_src_stride,
-            loop_dst_stride=loop_dst_stride,
-        )
-
-    def _infer_dma_store_transfer(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tile_type: SemanticTileType,
-        tensor_base: _RenderedValue,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _DmaTransferConfig:
-        element_bytes = self._dtype_byte_width(slice_expr.type.element_dtype)
-        row_count = self._materialize_dma_axis_extent(slice_expr, 0, env, indent=indent, into=into)
-        col_count = self._materialize_dma_axis_extent(slice_expr, 1, env, indent=indent, into=into)
-        copy_src_stride = self._materialize_tile_row_stride_bytes(
-            tile_type,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        gm_row_stride = self._materialize_tensor_row_stride_bytes(
-            slice_expr,
-            tensor_base,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        row_step = self._materialize_dma_row_step(slice_expr, env, indent=indent, into=into)
-        copy_dst_stride = self._emit_binary_value(
-            "mul",
-            gm_row_stride,
-            row_step,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        len_burst = self._materialize_dma_len_burst(
-            col_count,
-            element_bytes,
-            indent=indent,
-            into=into,
-        )
-        loop_src_stride = self._emit_binary_value(
-            "mul",
-            row_count,
-            copy_src_stride,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        loop_dst_stride = self._emit_binary_value(
-            "mul",
-            row_count,
-            copy_dst_stride,
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-        return _DmaTransferConfig(
-            n_burst=row_count,
-            len_burst=len_burst,
-            copy_src_stride=copy_src_stride,
-            copy_dst_stride=copy_dst_stride,
-            loop_src_stride=loop_src_stride,
-            loop_dst_stride=loop_dst_stride,
-        )
-
-    def _render_dma_load_copy_ops(
-        self,
-        src_name: str,
-        src_type: str,
-        dst_name: str,
-        dst_type: str,
-        transfer: _DmaTransferConfig,
-        *,
-        indent: int,
-    ) -> list[str]:
-        c0_i64 = self._materialize_constant(0, _I64_TYPE)
-        c1_i64 = self._materialize_constant(1, _I64_TYPE)
-        false_bit = self._materialize_constant(False, _I1_TYPE)
-        return [
-            self._indent(indent)
-            + f"pto.set_loop2_stride_outtoub {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
-            self._indent(indent)
-            + f"pto.set_loop1_stride_outtoub {transfer.loop_src_stride.name}, {transfer.loop_dst_stride.name} : i64, i64",
-            self._indent(indent)
-            + f"pto.set_loop_size_outtoub {c1_i64}, {c1_i64} : i64, i64",
-            self._indent(indent)
-            + "pto.copy_gm_to_ubuf "
-            + f"{src_name}, {dst_name}, {c0_i64}, {transfer.n_burst.name}, {transfer.len_burst.name}, {c0_i64}, {c0_i64}, "
-            + f"{false_bit}, {c0_i64}, {transfer.copy_src_stride.name}, {transfer.copy_dst_stride.name} : "
-            + f"{src_type}, {dst_type}, "
-            + "i64, i64, i64, i64, i64, i1, i64, i64, i64",
-        ]
-
-    def _render_dma_load_prefill(
-        self,
-        tile_expr: SemanticExpr,
-        tile_value: _RenderedValue,
-        env: dict[str, _RenderedValue],
-        profile: _DmaLoadPaddingProfile,
-        *,
-        indent: int,
-    ) -> list[str]:
-        fill_bands = profile.left_padding > 0 or profile.right_padding > 0
-        if profile.pad_mode_name == "PadNull" and not profile.init_out_buffer:
-            return []
-        if profile.pad_mode_name in {"PadValue", "PadFirstElem"} and not (profile.init_out_buffer or fill_bands):
-            return []
-
-        lines: list[str] = []
-        tile_memref = self._materialize_tile_memref(tile_value, indent=indent, into=lines)
-        rows_upper = self._materialize_tile_window_extent(
-            tile_expr,
-            tile_value,
-            axis=0,
-            indent=indent,
-            into=lines,
-        )
-        cols_upper = self._materialize_tile_window_extent(
-            tile_expr,
-            tile_value,
-            axis=1,
-            indent=indent,
-            into=lines,
-        )
-        fill_vec = self._materialize_dma_load_prefill_vector(
-            tile_memref,
-            tile_value.type.element_dtype,
-            env,
-            profile,
-            indent=indent,
-            into=lines,
-        )
-
-        windows: list[tuple[_RenderedValue, _RenderedValue]] = []
-        c0_index = _RenderedValue(
-            name=self._materialize_constant(0, SemanticIndexType()),
-            type=SemanticIndexType(),
-        )
-        if profile.init_out_buffer:
-            windows.append((c0_index, cols_upper))
-        else:
-            if profile.left_padding > 0:
-                windows.append(
-                    (
-                        c0_index,
-                        _RenderedValue(
-                            name=self._materialize_constant(profile.left_padding, SemanticIndexType()),
-                            type=SemanticIndexType(),
-                        ),
-                    )
-                )
-            if profile.right_padding > 0:
-                right_width = _RenderedValue(
-                    name=self._materialize_constant(profile.right_padding, SemanticIndexType()),
-                    type=SemanticIndexType(),
-                )
-                right_start = self._emit_binary_value(
-                    "sub",
-                    cols_upper,
-                    right_width,
-                    SemanticIndexType(),
-                    indent=indent,
-                    into=lines,
-                )
-                windows.append((right_start, cols_upper))
-
-        if not windows:
-            return []
-        lines.extend(
-            self._render_tile_fill_windows(
-                tile_memref,
-                tile_value.type.element_dtype,
-                fill_vec,
-                rows_upper,
-                windows,
-                indent=indent,
-            )
-        )
-        return lines
-
-    def _render_tile_fill_windows(
-        self,
-        tile_memref: _RenderedValue,
-        element_dtype: ScalarType,
-        fill_vec: _RenderedValue,
-        rows_upper: _RenderedValue,
-        windows: list[tuple[_RenderedValue, _RenderedValue]],
-        *,
-        indent: int,
-    ) -> list[str]:
-        lines: list[str] = []
-        c0 = self._materialize_constant(0, SemanticIndexType())
-        c1 = self._materialize_constant(1, SemanticIndexType())
-        vector_step = self._materialize_constant(get_lanes(element_dtype), SemanticIndexType())
-        mask_type = SemanticMaskType(granularity=self._mask_granularity_for_dtype(element_dtype))
-        lines.append(self._indent(indent) + "pto.vecscope {")
-        for start, stop in windows:
-            row_iv = self._new_temp()
-            lines.append(
-                self._indent(indent + 2)
-                + f"scf.for {row_iv} = {c0} to {rows_upper.name} step {c1} {{"
-            )
-            col_iv = self._new_temp()
-            lines.append(
-                self._indent(indent + 4)
-                + f"scf.for {col_iv} = {start.name} to {stop.name} step {vector_step} {{"
-            )
-            remaining = self._emit_binary_value(
-                "sub",
-                stop,
-                _RenderedValue(name=col_iv, type=SemanticIndexType()),
-                SemanticIndexType(),
-                indent=indent + 6,
-                into=lines,
-            )
-            remaining_i32 = self._coerce_rendered_value(
-                remaining,
-                _I32_TYPE,
-                indent=indent + 6,
-                into=lines,
-            )
-            mask_name = self._new_temp()
-            next_name = self._new_temp()
-            lines.append(
-                self._indent(indent + 6)
-                + f"{mask_name}, {next_name} = pto.plt_{mask_type.granularity} {remaining_i32.name} : "
-                + f"i32 -> {self._render_type(mask_type)}, i32"
-            )
-            lines.append(
-                self._indent(indent + 6)
-                + f"pto.vsts {fill_vec.name}, {tile_memref.name}[{row_iv}, {col_iv}], {mask_name} : "
-                + f"{self._render_type(fill_vec.type)}, {self._render_type(tile_memref.type)}, {self._render_type(mask_type)}"
-            )
-            lines.append(self._indent(indent + 4) + "}")
-            lines.append(self._indent(indent + 2) + "}")
-        lines.append(self._indent(indent) + "}")
-        return lines
-
-    def _materialize_dma_load_prefill_vector(
-        self,
-        tile_memref: _RenderedValue,
-        element_dtype: ScalarType,
-        env: dict[str, _RenderedValue],
-        profile: _DmaLoadPaddingProfile,
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        vec_type = SemanticVRegType(element_dtype=element_dtype, lanes=get_lanes(element_dtype))
-        result_name = self._new_temp()
-        if profile.pad_mode_name == "PadValue":
-            scalar = self._materialize_dma_pad_value_scalar(
-                profile.pad_value,
-                element_dtype,
-                env,
-                indent=indent,
-                into=into,
-            )
-            into.append(
-                self._indent(indent)
-                + f"{result_name} = pto.vbr {scalar.name} : {self._render_type(scalar.type)} -> {self._render_type(vec_type)}"
-            )
-            return _RenderedValue(name=result_name, type=vec_type)
-        if profile.pad_mode_name == "PadFirstElem":
-            c0 = self._materialize_constant(0, SemanticIndexType())
-            first_col = self._materialize_constant(profile.left_padding, SemanticIndexType())
-            into.append(
-                self._indent(indent)
-                + f'{result_name} = pto.vlds {tile_memref.name}[{c0}, {first_col}] {{dist = "{self._broadcast_dist_for_dtype(element_dtype)}"}} : '
-                + f"{self._render_type(tile_memref.type)} -> {self._render_type(vec_type)}"
-            )
-            return _RenderedValue(name=result_name, type=vec_type)
-        raise NotImplementedError(
-            f"pto.dma_load lowering does not produce a prefill vector for pad_mode `{profile.pad_mode_name}`"
-        )
-
-    def _materialize_dma_pad_value_scalar(
-        self,
-        expr: SemanticExpr | None,
-        element_dtype: ScalarType,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        scalar_type = SemanticScalarType(dtype=element_dtype)
-        static_value = self._static_expr_value(expr)
-        if isinstance(static_value, (int, float)):
-            return _RenderedValue(
-                name=self._materialize_constant(static_value, scalar_type),
-                type=scalar_type,
-            )
-        if expr is None:
-            raise NotImplementedError("pto.dma_load PadValue lowering requires a concrete `pad_value` expression")
-        value = self._lower_expr(expr, env, indent=indent, into=into)
-        if isinstance(value.type, SemanticScalarType) and value.type.dtype == element_dtype:
-            return value
-        raise NotImplementedError(
-            "pto.dma_load PadValue lowering currently expects `pad_value` to be a compile-time numeric literal "
-            "or a scalar value whose dtype matches the destination Tile element dtype"
-        )
-
-    def _materialize_tile_window_extent(
-        self,
-        tile_expr: SemanticExpr,
-        tile_value: _RenderedValue,
-        *,
-        axis: int,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        if (
-            isinstance(tile_expr, SemanticBindingRef)
-            and isinstance(tile_expr.type, SemanticTileType)
-            and tile_expr.type.valid_shape is not None
-            and tile_expr.type.valid_shape[axis] is None
-        ):
-            return self._materialize_tile_valid_dim(
-                tile_expr.binding,
-                axis,
-                indent=indent,
-                into=into,
-            )
-        if not isinstance(tile_value.type, SemanticTileType):
-            raise NotImplementedError("DMA load prefill expects a Tile destination")
-        valid_shape = tile_value.type.valid_shape or tile_value.type.shape
-        if valid_shape is None:
-            raise NotImplementedError("DMA load prefill expects a statically known Tile shape or valid_shape")
-        extent = valid_shape[axis]
-        if extent is None:
-            raise NotImplementedError("DMA load prefill does not support dynamic Tile valid_shape on non-binding values")
-        return _RenderedValue(
-            name=self._materialize_constant(extent, SemanticIndexType()),
-            type=SemanticIndexType(),
-        )
-
-    def _mask_granularity_for_dtype(self, dtype: ScalarType) -> str:
-        int_bits = integer_bitwidth(dtype)
-        if dtype.name == "f32" or int_bits in {32, 64}:
-            return "b32"
-        if dtype.name in {"f16", "bf16"} or int_bits == 16:
-            return "b16"
-        if int_bits == 8:
-            return "b8"
-        raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load prefill lowering")
-
-    def _broadcast_dist_for_dtype(self, dtype: ScalarType) -> str:
-        int_bits = integer_bitwidth(dtype)
-        if dtype.name == "f32" or int_bits == 32:
-            return "BRC_B32"
-        if dtype.name in {"f16", "bf16"} or int_bits == 16:
-            return "BRC_B16"
-        if int_bits == 8:
-            return "BRC_B8"
-        raise NotImplementedError(f"dtype `{dtype.name}` is not supported by DMA load broadcast lowering")
-
-    def _materialize_tile_window_ptr(
-        self,
-        tile_value: _RenderedValue,
-        *,
-        col_offset: int,
-        indent: int,
-        into: list[str],
-    ) -> tuple[str, str]:
-        base_ptr_name, base_ptr_type = self._materialize_copy_buffer_ptr(
-            tile_value,
-            indent=indent,
-            into=into,
-        )
-        if col_offset == 0:
-            return base_ptr_name, base_ptr_type
-        byte_ptr_type = "!pto.ptr<i8, ub>"
-        byte_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{byte_ptr_name} = pto.castptr {base_ptr_name} : {base_ptr_type} -> {byte_ptr_type}"
-        )
-        offset_bytes = self._materialize_constant(
-            col_offset * self._dtype_byte_width(tile_value.type.element_dtype),
-            SemanticIndexType(),
-        )
-        offset_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{offset_ptr_name} = pto.addptr {byte_ptr_name}, {offset_bytes} : {byte_ptr_type} -> {byte_ptr_type}"
-        )
-        typed_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{typed_ptr_name} = pto.castptr {offset_ptr_name} : {byte_ptr_type} -> {base_ptr_type}"
-        )
-        return typed_ptr_name, base_ptr_type
-
-    def _materialize_tensor_slice_ptr(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tensor_base: _RenderedValue,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> tuple[str, str]:
-        base_ptr_name, base_ptr_type = self._materialize_copy_buffer_ptr(
-            tensor_base,
-            indent=indent,
-            into=into,
-        )
-        if self._is_zero_index_expr(slice_expr.slices[0].start) and self._is_zero_index_expr(slice_expr.slices[1].start):
-            return base_ptr_name, base_ptr_type
-
-        byte_ptr_type = "!pto.ptr<i8, gm>"
-        byte_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{byte_ptr_name} = pto.castptr {base_ptr_name} : {base_ptr_type} -> {byte_ptr_type}"
-        )
-        offset = self._materialize_tensor_slice_offset_bytes(
-            slice_expr,
-            tensor_base,
-            env,
-            indent=indent,
-            into=into,
-        )
-        offset_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{offset_ptr_name} = pto.addptr {byte_ptr_name}, {offset.name} : "
-            + f"{byte_ptr_type} -> {byte_ptr_type}"
-        )
-        typed_ptr_name = self._new_temp()
-        into.append(
-            self._indent(indent)
-            + f"{typed_ptr_name} = pto.castptr {offset_ptr_name} : {byte_ptr_type} -> {base_ptr_type}"
-        )
-        return typed_ptr_name, base_ptr_type
-
-    def _materialize_tensor_slice_offset_bytes(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tensor_base: _RenderedValue,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        offset_elems = _RenderedValue(
-            name=self._materialize_constant(0, SemanticIndexType()),
-            type=SemanticIndexType(),
-        )
-        for axis_index, slice_axis in enumerate(slice_expr.slices):
-            axis_start = self._lower_expr(slice_axis.start, env, indent=indent, into=into)
-            axis_stride_elems = self._materialize_tensor_axis_stride_elems(
-                tensor_base,
-                axis=slice_expr.type.physical_axes[axis_index],
-                indent=indent,
-                into=into,
-            )
-            axis_offset_elems = self._emit_binary_value(
-                "mul",
-                axis_start,
-                axis_stride_elems,
-                SemanticIndexType(),
-                indent=indent,
-                into=into,
-            )
-            offset_elems = self._emit_binary_value(
-                "add",
-                offset_elems,
-                axis_offset_elems,
-                SemanticIndexType(),
-                indent=indent,
-                into=into,
-            )
-        return self._emit_binary_value(
-            "mul",
-            offset_elems,
-            _RenderedValue(
-                name=self._materialize_constant(
-                    self._dtype_byte_width(slice_expr.type.element_dtype),
-                    SemanticIndexType(),
-                ),
-                type=SemanticIndexType(),
-            ),
-            SemanticIndexType(),
-            indent=indent,
-            into=into,
-        )
-
-    def _is_zero_index_expr(self, expr: SemanticExpr) -> bool:
-        if isinstance(expr, SemanticLiteralExpr):
-            return isinstance(expr.value, int) and expr.value == 0
-        if isinstance(expr, SemanticBindingRef):
-            return isinstance(expr.binding.value, int) and expr.binding.value == 0
-        return False
 
     def _materialize_tensor_dim(
         self,
@@ -2082,56 +1327,6 @@ class _AuthoringRenderer:
                 + f"{dim_index} = memref.dim {tensor_base.name}, {axis_value} : {self._render_type(tensor_base.type)}"
             )
         return _RenderedValue(name=dim_index, type=SemanticIndexType())
-
-    def _materialize_dma_axis_extent(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        axis: int,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        axis_slice = slice_expr.slices[axis]
-        if axis_slice.extent is not None:
-            return _RenderedValue(
-                name=self._materialize_constant(axis_slice.extent, _I64_TYPE),
-                type=_I64_TYPE,
-            )
-
-        distance_expr = SemanticBinaryExpr(
-            lhs=axis_slice.stop,
-            op="sub",
-            rhs=axis_slice.start,
-            type=SemanticIndexType(),
-        )
-        extent_expr: SemanticExpr = distance_expr
-        step_value = self._static_expr_value(axis_slice.step)
-        if not isinstance(step_value, int):
-            raise NotImplementedError("DMA lowering currently expects a static slice step")
-        if step_value != 1:
-            extent_expr = SemanticBinaryExpr(
-                lhs=SemanticBinaryExpr(
-                    lhs=distance_expr,
-                    op="add",
-                    rhs=SemanticLiteralExpr(value=step_value - 1, type=SemanticIndexType()),
-                    type=SemanticIndexType(),
-                ),
-                op="floordiv",
-                rhs=SemanticLiteralExpr(value=step_value, type=SemanticIndexType()),
-                type=SemanticIndexType(),
-            )
-        return self._lower_to_i64(extent_expr, env, indent=indent, into=into)
-
-    def _materialize_dma_row_step(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        env: dict[str, _RenderedValue],
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        return self._lower_to_i64(slice_expr.slices[0].step, env, indent=indent, into=into)
 
     def _materialize_tensor_axis_stride_elems(
         self,
@@ -2161,82 +1356,6 @@ class _AuthoringRenderer:
                 into=into,
             )
         return stride
-
-    def _materialize_tensor_row_stride_bytes(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tensor_base: _RenderedValue,
-        element_bytes: int,
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        stride_elems = self._materialize_tensor_axis_stride_elems(
-            tensor_base,
-            axis=slice_expr.type.physical_axes[0],
-            indent=indent,
-            into=into,
-        )
-        dim_bytes = self._emit_binary_value(
-            "mul",
-            stride_elems,
-            _RenderedValue(
-                name=self._materialize_constant(element_bytes, SemanticIndexType()),
-                type=SemanticIndexType(),
-            ),
-            SemanticIndexType(),
-            indent=indent,
-            into=into,
-        )
-        return self._coerce_rendered_to_i64(dim_bytes, indent=indent, into=into)
-
-    def _materialize_tile_row_stride_bytes(
-        self,
-        tile_type: SemanticTileType,
-        element_bytes: int,
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        if tile_type.shape is None or len(tile_type.shape) != 2:
-            raise NotImplementedError("DMA lowering requires a statically specialized rank-2 Tile shape")
-        row_bytes = tile_type.shape[1] * element_bytes
-        return _RenderedValue(
-            name=self._materialize_constant(row_bytes, _I64_TYPE),
-            type=_I64_TYPE,
-        )
-
-    def _materialize_dma_len_burst(
-        self,
-        col_count: _RenderedValue,
-        element_bytes: int,
-        *,
-        indent: int,
-        into: list[str],
-    ) -> _RenderedValue:
-        return self._emit_binary_value(
-            "mul",
-            col_count,
-            _RenderedValue(
-                name=self._materialize_constant(element_bytes, _I64_TYPE),
-                type=_I64_TYPE,
-            ),
-            _I64_TYPE,
-            indent=indent,
-            into=into,
-        )
-
-    def _dma_transfer_extents(
-        self,
-        slice_expr: SemanticTensorSliceExpr,
-        tile_type: SemanticTileType,
-    ) -> tuple[int, int]:
-        row_count, col_count = self._tensor_slice_extents(slice_expr)
-        if row_count is not None and col_count is not None:
-            return row_count, col_count
-        if tile_type.shape is None or len(tile_type.shape) != 2:
-            raise NotImplementedError("DMA lowering requires a statically specialized rank-2 Tile shape")
-        return tile_type.shape
 
     def _emit_binary_value(
         self,
@@ -2952,24 +2071,28 @@ class _AuthoringRenderer:
             self._render_cube_mad_like(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
-        if expr.name in {"cube_load", "cube_store"}:
-            self._render_cube_load_store(expr, env, indent=indent, into=into)
+        if expr.name in {"mte_gm_l1", "mte_l1_ub"}:
+            self._render_mte_load_store(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
-        if expr.name == "cube_load_frac":
-            self._render_cube_load_frac(expr, env, indent=indent, into=into)
+        if expr.name == "mte_gm_l1_frac":
+            self._render_mte_gm_l1_frac(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
-        if expr.name == "bias_load":
-            self._render_cube_bias_load(expr, env, indent=indent, into=into)
+        if expr.name == "mte_l1_bt":
+            self._render_mte_l1_bt(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
-        if expr.name in {"left_load", "right_load", "left_load_mx", "right_load_mx"}:
-            self._render_cube_stage_load(expr, env, indent=indent, into=into)
+        if expr.name == "mte_l1_fb":
+            self._render_mte_l1_fb(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
-        if expr.name in {"acc_store", "acc_store_gm", "acc_store_ub"}:
-            self._render_cube_acc_store(expr, env, indent=indent, into=into)
+        if expr.name in {"mte_l1_l0a", "mte_l1_l0b", "mte_l1_l0a_mx", "mte_l1_l0b_mx"}:
+            self._render_mte_stage_load(expr, env, indent=indent, into=into)
+            return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
+
+        if expr.name in {"mte_l0c_l1", "mte_l0c_gm", "mte_l0c_ub"}:
+            self._render_mte_l0c_store(expr, env, indent=indent, into=into)
             return _RenderedValue(name="__void_call__", type=SemanticMetaType(kind="void"))
 
         if expr.name in {"ppack", "punpack"}:
@@ -3298,15 +2421,11 @@ class _AuthoringRenderer:
         m = self._lower_to_i64(expr.args[dim_start], env, indent=indent, into=into)
         n = self._lower_to_i64(expr.args[dim_start + 1], env, indent=indent, into=into)
         k = self._lower_to_i64(expr.args[dim_start + 2], env, indent=indent, into=into)
-        unit_flag_ctrl = self._extract_static_int(expr.args[-2], context=f"pto.{expr.name} unit_flag_ctrl")
-        disable_gemv = self._extract_static_bool(expr.args[-1], context=f"pto.{expr.name} disable_gemv")
-
-        attr_parts: list[str] = []
-        if unit_flag_ctrl != 0:
-            attr_parts.append(f"unit_flag_ctrl = {unit_flag_ctrl} : i32")
-        if disable_gemv is not True:
-            attr_parts.append(f"disable_gemv = {'true' if disable_gemv else 'false'}")
-        attr_suffix = f" {{{', '.join(attr_parts)}}}" if attr_parts else ""
+        unit_flag = self._extract_optional_static_string(expr.args[dim_start + 3], context=f"pto.{expr.name} unit_flag")
+        disable_gemv = self._extract_static_bool(expr.args[dim_start + 4], context=f"pto.{expr.name} disable_gemv")
+        sat = self._extract_optional_static_string(expr.args[dim_start + 5], context=f"pto.{expr.name} sat")
+        tf32_mode = self._extract_optional_static_string(expr.args[dim_start + 6], context=f"pto.{expr.name} tf32_mode")
+        n_dir = self._extract_static_bool(expr.args[dim_start + 7], context=f"pto.{expr.name} n_dir")
 
         operands = [lhs.name, rhs.name, dst.name]
         operand_types = [self._render_type(lhs.type), self._render_type(rhs.type), self._render_type(dst.type)]
@@ -3315,16 +2434,28 @@ class _AuthoringRenderer:
             operand_types.append(self._render_type(bias.type))
         operands.extend([m.name, n.name, k.name])
         operand_types.extend([self._render_type(m.type), self._render_type(n.type), self._render_type(k.type)])
+        clause_parts: list[str] = []
+        if unit_flag is not None:
+            clause_parts.append(f"unit_flag({unit_flag})")
+        if disable_gemv:
+            clause_parts.append("disable_gemv")
+        if sat is not None:
+            clause_parts.append(sat)
+        if tf32_mode is not None:
+            clause_parts.append(f"tf32_mode({tf32_mode})")
+        if n_dir:
+            clause_parts.append("n_dir")
+        clause_suffix = (" " + " ".join(clause_parts)) if clause_parts else ""
         into.append(
             self._indent(indent)
             + f"pto.{expr.name} "
             + ", ".join(operands)
-            + attr_suffix
+            + clause_suffix
             + " : "
             + ", ".join(operand_types)
         )
 
-    def _render_cube_load_store(
+    def _render_mte_load_store(
         self,
         expr: SemanticCallExpr,
         env: dict[str, _RenderedValue],
@@ -3355,7 +2486,7 @@ class _AuthoringRenderer:
             )
         into.append(self._indent(indent) + op_text + " : " + type_text)
 
-    def _render_cube_load_frac(
+    def _render_mte_gm_ub(
         self,
         expr: SemanticCallExpr,
         env: dict[str, _RenderedValue],
@@ -3365,32 +2496,66 @@ class _AuthoringRenderer:
     ) -> None:
         source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
         destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
-        mode = self._extract_static_string(expr.args[2], context="pto.cube_load_frac mode")
-        shape = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=2)
-        src_layout = self._lower_cube_i64_tuple(expr.args[4], env, indent=indent, into=into, min_len=1, max_len=2)
-        dst_group = self._lower_cube_i64_tuple(expr.args[5], env, indent=indent, into=into, expected_len=4)
-        ctrl = self._lower_cube_tuple_elements(expr.args[6], env, indent=indent, into=into, expected_len=2)
-        l2_cache_ctrl = self._coerce_rendered_to_i64(ctrl[0], indent=indent, into=into)
-        smallc0_en = self._coerce_rendered_value(ctrl[1], _I1_TYPE, indent=indent, into=into)
-
-        src_layout_operands = ", ".join(value.name for value in src_layout)
-        src_layout_types = ", ".join(self._render_type(value.type) for value in src_layout)
-        into.append(
-            self._indent(indent)
-            + f"pto.cube_load_frac {source.name}, {destination.name}, {mode}, "
-            + f"shape({shape[0].name}, {shape[1].name}), "
-            + f"src_layout({src_layout_operands}), "
-            + f"dst_group({dst_group[0].name}, {dst_group[1].name}, {dst_group[2].name}, {dst_group[3].name}), "
-            + f"ctrl({l2_cache_ctrl.name}, {smallc0_en.name}) : "
-            + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, {mode}, "
-            + f"shape {self._render_type(shape[0].type)}, {self._render_type(shape[1].type)}, "
-            + f"src_layout({src_layout_types}), "
-            + f"dst_group {self._render_type(dst_group[0].type)}, {self._render_type(dst_group[1].type)}, "
-            + f"{self._render_type(dst_group[2].type)}, {self._render_type(dst_group[3].type)}, "
-            + f"ctrl {self._render_type(l2_cache_ctrl.type)}, {self._render_type(smallc0_en.type)}"
+        l2_cache_ctl = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
+        len_burst = self._lower_to_i64(expr.args[3], env, indent=indent, into=into)
+        nburst = self._lower_cube_i64_tuple(expr.args[4], env, indent=indent, into=into, expected_len=3)
+        loop_groups = self._lower_cube_loop_groups(expr.args[5], env, indent=indent, into=into)
+        op_text = (
+            f"pto.{expr.name} {source.name}, {destination.name}, {l2_cache_ctl.name}, {len_burst.name}"
+            f" nburst({nburst[0].name}, {nburst[1].name}, {nburst[2].name})"
         )
+        type_text = (
+            f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
+            f"{self._render_type(l2_cache_ctl.type)}, {self._render_type(len_burst.type)}, "
+            f"{self._render_type(nburst[0].type)}, {self._render_type(nburst[1].type)}, {self._render_type(nburst[2].type)}"
+        )
+        for count, src_stride, dst_stride in loop_groups:
+            op_text += f" loop({count.name}, {src_stride.name}, {dst_stride.name})"
+            type_text += (
+                f", loop {self._render_type(count.type)}, {self._render_type(src_stride.type)}, "
+                f"{self._render_type(dst_stride.type)}"
+            )
+        if isinstance(expr.args[6], SemanticTupleExpr):
+            pad_values = self._lower_cube_tuple_elements(expr.args[6], env, indent=indent, into=into, expected_len=None)
+            op_text += f" pad({pad_values[0].name}"
+            type_text += f", pad {self._render_type(pad_values[0].type)}"
+            if len(pad_values) == 3:
+                op_text += f", {pad_values[1].name}, {pad_values[2].name}"
+                type_text += f", {self._render_type(pad_values[1].type)}, {self._render_type(pad_values[2].type)}"
+            op_text += ")"
+        into.append(self._indent(indent) + op_text + " : " + type_text)
 
-    def _render_cube_bias_load(
+    def _render_mte_ub_gm(
+        self,
+        expr: SemanticCallExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> None:
+        source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+        destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+        len_burst = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
+        nburst = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=3)
+        loop_groups = self._lower_cube_loop_groups(expr.args[4], env, indent=indent, into=into)
+        op_text = (
+            f"pto.{expr.name} {source.name}, {destination.name}, {len_burst.name}"
+            f" nburst({nburst[0].name}, {nburst[1].name}, {nburst[2].name})"
+        )
+        type_text = (
+            f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
+            f"{self._render_type(len_burst.type)}, {self._render_type(nburst[0].type)}, "
+            f"{self._render_type(nburst[1].type)}, {self._render_type(nburst[2].type)}"
+        )
+        for count, src_stride, dst_stride in loop_groups:
+            op_text += f" loop({count.name}, {src_stride.name}, {dst_stride.name})"
+            type_text += (
+                f", loop {self._render_type(count.type)}, {self._render_type(src_stride.type)}, "
+                f"{self._render_type(dst_stride.type)}"
+            )
+        into.append(self._indent(indent) + op_text + " : " + type_text)
+
+    def _render_mte_ub_copy(
         self,
         expr: SemanticCallExpr,
         env: dict[str, _RenderedValue],
@@ -3404,14 +2569,91 @@ class _AuthoringRenderer:
         nburst = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=3)
         into.append(
             self._indent(indent)
-            + f"pto.bias_load {source.name}, {destination.name}, {len_burst.name}"
+            + f"pto.{expr.name} {source.name}, {destination.name}, {len_burst.name}"
+            + f" nburst({nburst[0].name}, {nburst[1].name}, {nburst[2].name}) : "
+            + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
+            + f"{self._render_type(nburst[0].type)}, {self._render_type(len_burst.type)}, "
+            + f"{self._render_type(nburst[1].type)}, {self._render_type(nburst[2].type)}"
+        )
+
+    def _render_mte_gm_l1_frac(
+        self,
+        expr: SemanticCallExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> None:
+        source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+        destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+        mode = self._extract_static_string(expr.args[2], context=f"pto.{expr.name} mode")
+        shape = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=2)
+        src_layout = self._lower_cube_i64_tuple(expr.args[4], env, indent=indent, into=into, min_len=1, max_len=2)
+        dst_group = self._lower_cube_i64_tuple(expr.args[5], env, indent=indent, into=into, expected_len=4)
+        ctrl = self._lower_cube_tuple_elements(expr.args[6], env, indent=indent, into=into, expected_len=2)
+        l2_cache_ctrl = self._coerce_rendered_to_i64(ctrl[0], indent=indent, into=into)
+        smallc0_en = self._coerce_rendered_value(ctrl[1], _I1_TYPE, indent=indent, into=into)
+
+        src_layout_operands = ", ".join(value.name for value in src_layout)
+        src_layout_types = ", ".join(self._render_type(value.type) for value in src_layout)
+        into.append(
+            self._indent(indent)
+            + f"pto.{expr.name} {source.name}, {destination.name}, {mode}, "
+            + f"shape({shape[0].name}, {shape[1].name}), "
+            + f"src_layout({src_layout_operands}), "
+            + f"dst_group({dst_group[0].name}, {dst_group[1].name}, {dst_group[2].name}, {dst_group[3].name}), "
+            + f"ctrl({l2_cache_ctrl.name}, {smallc0_en.name}) : "
+            + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, {mode}, "
+            + f"shape {self._render_type(shape[0].type)}, {self._render_type(shape[1].type)}, "
+            + f"src_layout({src_layout_types}), "
+            + f"dst_group {self._render_type(dst_group[0].type)}, {self._render_type(dst_group[1].type)}, "
+            + f"{self._render_type(dst_group[2].type)}, {self._render_type(dst_group[3].type)}, "
+            + f"ctrl {self._render_type(l2_cache_ctrl.type)}, {self._render_type(smallc0_en.type)}"
+        )
+
+    def _render_mte_l1_bt(
+        self,
+        expr: SemanticCallExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> None:
+        source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+        destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+        len_burst = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
+        nburst = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=3)
+        into.append(
+            self._indent(indent)
+            + f"pto.{expr.name} {source.name}, {destination.name}, {len_burst.name}"
             + f" nburst({nburst[0].name}, {nburst[1].name}, {nburst[2].name}) : "
             + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
             + f"{self._render_type(len_burst.type)}, {self._render_type(nburst[0].type)}, "
             + f"{self._render_type(nburst[1].type)}, {self._render_type(nburst[2].type)}"
         )
 
-    def _render_cube_stage_load(
+    def _render_mte_l1_fb(
+        self,
+        expr: SemanticCallExpr,
+        env: dict[str, _RenderedValue],
+        *,
+        indent: int,
+        into: list[str],
+    ) -> None:
+        source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
+        destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
+        len_burst = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
+        nburst = self._lower_cube_i64_tuple(expr.args[3], env, indent=indent, into=into, expected_len=3)
+        into.append(
+            self._indent(indent)
+            + f"pto.{expr.name} {source.name}, {destination.name}, {len_burst.name}"
+            + f" nburst({nburst[0].name}, {nburst[1].name}, {nburst[2].name}) : "
+            + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
+            + f"{self._render_type(len_burst.type)}, {self._render_type(nburst[0].type)}, "
+            + f"{self._render_type(nburst[1].type)}, {self._render_type(nburst[2].type)}"
+        )
+
+    def _render_mte_stage_load(
         self,
         expr: SemanticCallExpr,
         env: dict[str, _RenderedValue],
@@ -3423,14 +2665,17 @@ class _AuthoringRenderer:
         destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
         first = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
         second = self._lower_to_i64(expr.args[3], env, indent=indent, into=into)
+        attr_suffix = ""
+        if len(expr.args) > 4 and self._extract_static_bool(expr.args[4], context=f"pto.{expr.name} transpose"):
+            attr_suffix = " {transpose = true}"
         into.append(
             self._indent(indent)
-            + f"pto.{expr.name} {source.name}, {destination.name}, {first.name}, {second.name} : "
+            + f"pto.{expr.name} {source.name}, {destination.name}, {first.name}, {second.name}{attr_suffix} : "
             + f"{self._render_type(source.type)}, {self._render_type(destination.type)}, "
             + f"{self._render_type(first.type)}, {self._render_type(second.type)}"
         )
 
-    def _render_cube_acc_store(
+    def _render_mte_l0c_store(
         self,
         expr: SemanticCallExpr,
         env: dict[str, _RenderedValue],
@@ -3440,70 +2685,99 @@ class _AuthoringRenderer:
     ) -> None:
         source = self._lower_expr(expr.args[0], env, indent=indent, into=into)
         destination = self._lower_expr(expr.args[1], env, indent=indent, into=into)
-        dims = [
-            self._lower_to_i64(expr.args[i], env, indent=indent, into=into) for i in range(2, 6)
-        ]
+        m = self._lower_to_i64(expr.args[2], env, indent=indent, into=into)
+        n = self._lower_to_i64(expr.args[3], env, indent=indent, into=into)
+        src_stride = self._lower_to_i64(expr.args[4], env, indent=indent, into=into)
+        dst_stride = self._lower_to_i64(expr.args[5], env, indent=indent, into=into)
         cursor = 6
-        sid_l2: tuple[_RenderedValue, _RenderedValue] | None = None
-        dual_sub: tuple[_RenderedValue, _RenderedValue] | None = None
-        if expr.name == "acc_store_gm":
+
+        operands = [source, destination, m, n, src_stride, dst_stride]
+        type_parts = [self._render_type(value.type) for value in operands]
+        clause_parts: list[str] = []
+
+        if expr.name == "mte_l0c_gm":
             sid = self._lower_to_i64(expr.args[cursor], env, indent=indent, into=into)
-            l2 = self._lower_to_i64(expr.args[cursor + 1], env, indent=indent, into=into)
-            sid_l2 = (sid, l2)
+            l2_cache_ctrl = self._lower_to_i64(expr.args[cursor + 1], env, indent=indent, into=into)
+            operands.extend([sid, l2_cache_ctrl])
+            type_parts.extend([self._render_type(sid.type), self._render_type(l2_cache_ctrl.type)])
             cursor += 2
-        elif expr.name == "acc_store_ub":
-            dual = self._lower_to_i64(expr.args[cursor], env, indent=indent, into=into)
-            sub = self._lower_to_i64(expr.args[cursor + 1], env, indent=indent, into=into)
-            dual_sub = (dual, sub)
+        elif expr.name == "mte_l0c_ub":
+            dst_mode_kind = self._extract_static_string(expr.args[cursor], context="pto.mte_l0c_ub dst_mode kind")
+            dst_mode_value_expr = expr.args[cursor + 1]
+            if dst_mode_kind == "sub_blockid":
+                if self._is_none_meta_expr(dst_mode_value_expr):
+                    clause_parts.append("dst_mode(sub_blockid)")
+                else:
+                    dst_mode_value = self._lower_to_i64(dst_mode_value_expr, env, indent=indent, into=into)
+                    clause_parts.append(f"dst_mode({dst_mode_value.name})")
+                    type_parts.append(self._render_type(dst_mode_value.type))
+            elif dst_mode_kind in {"split_m", "split_n"}:
+                clause_parts.append(f"dst_mode({dst_mode_kind})")
+            else:
+                raise NotImplementedError(f"unsupported pto.mte_l0c_ub dst_mode kind `{dst_mode_kind}` in lowering")
             cursor += 2
 
-        mode = self._extract_static_string(expr.args[cursor], context=f"pto.{expr.name} mode")
-        cursor += 1
+        unit_flag = self._extract_optional_static_string(expr.args[cursor], context=f"pto.{expr.name} unit_flag")
+        pre_quant_payload_expr = expr.args[cursor + 1]
+        pre_quant_mode = self._extract_optional_static_string(expr.args[cursor + 2], context=f"pto.{expr.name} pre_quant mode")
+        pre_relu_payload_expr = expr.args[cursor + 3]
+        pre_relu_mode = self._extract_optional_static_string(expr.args[cursor + 4], context=f"pto.{expr.name} pre_relu mode")
+        clip_expr = expr.args[cursor + 5]
+        layout_mode = self._extract_optional_static_string(expr.args[cursor + 6], context=f"pto.{expr.name} layout")
+        layout_arg_expr = expr.args[cursor + 7]
+        loop3_expr = expr.args[cursor + 8]
+        sat = self._extract_optional_static_string(expr.args[cursor + 9], context=f"pto.{expr.name} sat")
+        atomic_type = self._extract_optional_static_string(expr.args[cursor + 10], context=f"pto.{expr.name} atomic type")
+        atomic_op = self._extract_optional_static_string(expr.args[cursor + 11], context=f"pto.{expr.name} atomic op")
 
-        split_value: _RenderedValue | None = None
-        loop0_src_stride: _RenderedValue | None = None
-        loop3_values: tuple[_RenderedValue, _RenderedValue, _RenderedValue] | None = None
-        if mode == "nz2dn" and cursor < len(expr.args):
-            loop0_src_stride = self._lower_to_i64(expr.args[cursor], env, indent=indent, into=into)
-            cursor += 1
-        elif mode == "nz2nz" and cursor < len(expr.args):
-            split_value = self._lower_to_i64(expr.args[cursor], env, indent=indent, into=into)
-            cursor += 1
-        if cursor < len(expr.args):
-            lowered_loop3 = self._lower_cube_i64_tuple(
-                expr.args[cursor], env, indent=indent, into=into, expected_len=3
-            )
-            loop3_values = (lowered_loop3[0], lowered_loop3[1], lowered_loop3[2])
+        if unit_flag is not None:
+            clause_parts.append(f"unit_flag({unit_flag})")
 
-        pieces: list[_RenderedValue] = [source, destination, *dims]
-        if sid_l2 is not None:
-            pieces.extend(sid_l2)
-        elif dual_sub is not None:
-            pieces.extend(dual_sub)
+        if pre_quant_mode is not None:
+            pre_quant_payload = self._lower_expr(pre_quant_payload_expr, env, indent=indent, into=into)
+            clause_parts.append(f"pre_quant({pre_quant_payload.name}, mode = {pre_quant_mode})")
+            type_parts.append(self._render_type(pre_quant_payload.type))
 
-        operand_text = ", ".join(value.name for value in pieces)
-        type_text = ", ".join(self._render_type(value.type) for value in pieces)
-        op_text = f"pto.{expr.name} {operand_text}, {mode}"
-        extra_type_parts: list[str] = []
-        if mode == "nz2dn" and loop0_src_stride is not None:
-            op_text = f"pto.{expr.name} {operand_text}, {mode}({loop0_src_stride.name})"
-            extra_type_parts.append(self._render_type(loop0_src_stride.type))
-        elif mode == "nz2nz" and split_value is not None:
-            op_text = f"pto.{expr.name} {operand_text}, {mode}({split_value.name})"
-            extra_type_parts.append(self._render_type(split_value.type))
-        if loop3_values is not None:
-            op_text += (
-                f", loop3({loop3_values[0].name}, {loop3_values[1].name}, {loop3_values[2].name})"
-            )
-            extra_type_parts.extend(
-                [
-                    self._render_type(loop3_values[0].type),
-                    self._render_type(loop3_values[1].type),
-                    self._render_type(loop3_values[2].type),
-                ]
-            )
-        suffix = (", " + ", ".join(extra_type_parts)) if extra_type_parts else ""
-        into.append(self._indent(indent) + op_text + " : " + type_text + suffix)
+        if pre_relu_mode is not None:
+            pre_relu_clause_parts: list[str] = []
+            if not self._is_none_meta_expr(pre_relu_payload_expr):
+                pre_relu_payload = self._lower_expr(pre_relu_payload_expr, env, indent=indent, into=into)
+                pre_relu_clause_parts.append(pre_relu_payload.name)
+                type_parts.append(self._render_type(pre_relu_payload.type))
+            pre_relu_clause_parts.append(f"mode = {pre_relu_mode}")
+            if not self._is_none_meta_expr(clip_expr):
+                clip = self._lower_expr(clip_expr, env, indent=indent, into=into)
+                pre_relu_clause_parts.append(f"clip = {clip.name}")
+                type_parts.append(self._render_type(clip.type))
+            clause_parts.append(f"pre_relu({', '.join(pre_relu_clause_parts)})")
+
+        if layout_mode is not None:
+            if layout_mode == "nz2nd":
+                clause_parts.append("nz2nd")
+            elif layout_mode in {"nz2dn", "nz2nz"}:
+                layout_arg = self._lower_to_i64(layout_arg_expr, env, indent=indent, into=into)
+                clause_parts.append(f"{layout_mode}({layout_arg.name})")
+                type_parts.append(self._render_type(layout_arg.type))
+            else:
+                raise NotImplementedError(f"unsupported pto.{expr.name} layout `{layout_mode}` in lowering")
+
+        if not self._is_none_meta_expr(loop3_expr):
+            loop3 = self._lower_cube_i64_tuple(loop3_expr, env, indent=indent, into=into, expected_len=3)
+            clause_parts.append(f"loop3({loop3[0].name}, {loop3[1].name}, {loop3[2].name})")
+            type_parts.extend(self._render_type(value.type) for value in loop3)
+
+        if sat is not None:
+            clause_parts.append(sat)
+
+        if atomic_type is not None or atomic_op is not None:
+            if atomic_type is None or atomic_op is None:
+                raise NotImplementedError(f"pto.{expr.name} lowering requires both atomic type and atomic op")
+            clause_parts.append(f"atomic(type = {atomic_type}, op = {atomic_op})")
+
+        op_text = f"pto.{expr.name} " + ", ".join(value.name for value in operands)
+        if clause_parts:
+            op_text += ", " + ", ".join(clause_parts)
+        into.append(self._indent(indent) + op_text + " : " + ", ".join(type_parts))
 
     def _lower_cube_loop_groups(
         self,
@@ -3583,6 +2857,11 @@ class _AuthoringRenderer:
         if not isinstance(value, str):
             raise NotImplementedError(f"{context} must be a string constant in TileLang DSL v1 lowering")
         return value
+
+    def _extract_optional_static_string(self, expr: SemanticExpr, *, context: str) -> str | None:
+        if self._is_none_meta_expr(expr):
+            return None
+        return self._extract_static_string(expr, context=context)
 
     def _is_none_meta_expr(self, expr: SemanticExpr | None) -> bool:
         return isinstance(expr, SemanticLiteralExpr) and expr.value is None
@@ -4501,7 +3780,7 @@ class _AuthoringRenderer:
         if isinstance(ty, SemanticScalarType):
             return ty.dtype.name
         if isinstance(ty, SemanticPtrType):
-            return f"!pto.ptr<{ty.element_dtype.name}, {ty.memory_space}>"
+            return f"!pto.ptr<{ty.element_dtype.name}, {self._render_address_space_name(ty.memory_space)}>"
         if isinstance(ty, SemanticTensorViewType):
             return self._render_tensor_view_type(
                 element_dtype=ty.element_dtype.name,
@@ -4537,7 +3816,7 @@ class _AuthoringRenderer:
             return f"!pto.ptr<{ty.element_dtype.name}, gm>"
         if isinstance(ty, SemanticTileType):
             memory_space = ty.memory_space or "ub"
-            return f"!pto.ptr<{ty.element_dtype.name}, {memory_space}>"
+            return f"!pto.ptr<{ty.element_dtype.name}, {self._render_address_space_name(memory_space)}>"
         return self._render_type(ty)
 
     def _render_memref_type(
@@ -4573,8 +3852,8 @@ class _AuthoringRenderer:
             return "#pto.address_space<gm>"
         if memory_space == "ub":
             return "#pto.address_space<vec>"
-        if memory_space in {"mat", "left", "right", "acc", "bias"}:
-            return f"#pto.address_space<{memory_space}>"
+        if memory_space in {"mat", "left", "right", "acc", "bias", "scaling"}:
+            return f"#pto.address_space<{self._render_address_space_name(memory_space)}>"
         raise NotImplementedError(f"unsupported memref memory space '{memory_space}' in TileLang DSL v1 lowering")
 
     def _render_tile_buf_type(self, ty: SemanticTileType) -> str:
@@ -4588,12 +3867,15 @@ class _AuthoringRenderer:
         v_row = valid_shape[0]
         v_col = 1 if ty.rank == 1 else valid_shape[1]
         config = ty.config or TileConfig()
+        compact_suffix = ""
+        if config.compact_mode.value != "null":
+            compact_suffix = f", compact={self._render_tile_buf_compact_mode(config.compact_mode)}"
         return (
             f"!pto.tile_buf<loc={self._render_tile_buf_loc(ty.memory_space or 'ub')}, "
             f"dtype={ty.element_dtype.name}, rows={rows}, cols={cols}, "
             f"v_row={self._render_tile_buf_dim(v_row)}, v_col={self._render_tile_buf_dim(v_col)}, "
             f"blayout={config.b_layout.value}, slayout={config.s_layout.value}, "
-            f"fractal={config.s_fractal_size}, pad={self._render_tile_buf_pad_value(config.pad_value)}>"
+            f"fractal={config.s_fractal_size}, pad={self._render_tile_buf_pad_value(config.pad_value)}{compact_suffix}>"
         )
 
     def _render_tile_buf_loc(self, memory_space: str) -> str:
@@ -4601,9 +3883,25 @@ class _AuthoringRenderer:
             return "vec"
         if memory_space == "gm":
             return "gm"
-        if memory_space in {"mat", "left", "right", "acc", "bias"}:
+        if memory_space in {"mat", "left", "right", "acc", "bias", "scaling"}:
             return memory_space
         raise NotImplementedError(f"unsupported tile_buf memory space '{memory_space}'")
+
+    def _render_address_space_name(self, memory_space: str) -> str:
+        mapping = {
+            "gm": "gm",
+            "mat": "l1",
+            "left": "l0a",
+            "right": "l0b",
+            "acc": "l0c",
+            "bias": "bt",
+            "scaling": "fb",
+            "ub": "ub",
+        }
+        try:
+            return mapping[memory_space]
+        except KeyError as exc:
+            raise NotImplementedError(f"unsupported pointer memory space '{memory_space}'") from exc
 
     def _render_tile_buf_dim(self, dim: int | None) -> str:
         return "?" if dim is None else str(dim)
@@ -4614,6 +3912,15 @@ class _AuthoringRenderer:
                 "custom TileConfig.pad_value MLIR type rendering requires PTO tile_buf parser support for custom pad encodings"
             )
         return str(pad_value.encoded)
+
+    def _render_tile_buf_compact_mode(self, compact_mode: CompactMode) -> str:
+        if compact_mode == CompactMode.NULL:
+            return "0"
+        if compact_mode == CompactMode.NORMAL:
+            return "1"
+        if compact_mode == CompactMode.ROW_PLUS_ONE:
+            return "2"
+        raise NotImplementedError(f"unsupported TileConfig.compact_mode '{compact_mode}'")
 
     def _dtype_byte_width(self, dtype: ScalarType) -> int:
         try:
@@ -4636,4 +3943,21 @@ def lower_semantic_kernel(kernel: SemanticKernel) -> AuthoringModule:
     return AuthoringModule(kernel=kernel)
 
 
-__all__ = ["AuthoringModule", "lower_semantic_kernel"]
+def lower_semantic_kernel_with_backend(
+    kernel: SemanticKernel,
+    backend: str = "text",
+) -> "LoweringResult":
+    """Lower semantic kernel with selectable backend (Issue #237).
+
+    Args:
+        kernel: The semantic kernel to lower.
+        backend: Backend identifier ("text" or "pybind").
+
+    Returns:
+        LoweringResult from the specified backend.
+    """
+    from .lowering_backend import lower_with_backend
+    return lower_with_backend(kernel, backend)
+
+
+__all__ = ["AuthoringModule", "lower_semantic_kernel", "lower_semantic_kernel_with_backend"]

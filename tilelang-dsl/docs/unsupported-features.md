@@ -25,6 +25,48 @@ contract, treat these as the source-of-truth companion documents:
 
 ## Unsupported Features
 
+### Removed Legacy DMA And MTE Load/Store Surface Names
+
+The current TileLang DSL contract no longer treats the following names as
+public authoring APIs:
+
+- `pto.dma_load(...)`
+- `pto.dma_store(...)`
+- legacy cube load/store aliases such as `pto.left_load(...)`,
+  `pto.right_load(...)`, `pto.bias_load(...)`, `pto.cube_load(...)`,
+  `pto.cube_store(...)`, and `pto.acc_store(...)`
+
+Treat these names as removed legacy surface, not as "older but still current"
+alternatives. Current docs, support-tier summaries, and OpenSpec changes should
+use canonical `pto.mte_*` names instead.
+
+If implementation code paths still reference some of these names internally or
+in compatibility-oriented tests, that does not promote them back into the
+current public contract.
+
+### Documented Grouped DMA `mte_*` Surface Is Not Fully Implemented Yet
+
+The user guide is being aligned to the VPTO manual around the canonical grouped
+DMA names:
+
+- `pto.mte_gm_ub(...)`
+- `pto.mte_ub_gm(...)`
+- `pto.mte_ub_ub(...)`
+- `pto.mte_ub_l1(...)`
+
+However, the standalone `tilelang_dsl` package does not yet fully implement
+this grouped-DMA public surface in the current frontend/semantic path. In
+practice, the currently implemented GM/UB DMA path still centers on the older
+low-level `copy_*`, `set_loop*_stride_*`, `set_loop_size_*`, and
+`set_mov_pad_val(...)` operations.
+
+So the current boundary is:
+
+- canonical grouped DMA `pto.mte_*` names are the intended public contract
+- legacy `dma_load` / `dma_store` are removed old interfaces
+- low-level `copy_*` programming ops are still the implemented compatibility
+  path, not the preferred user-facing contract
+
 ### Missing Public Type Constructors And Aliases
 
 The guide documents a richer type-construction surface that is not exported by

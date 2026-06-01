@@ -20,6 +20,7 @@
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -7967,6 +7968,7 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
   kernelModulePM.addPass(std::make_unique<LowerVPTOTypesPass>());
   kernelModulePM.addPass(
       std::make_unique<NormalizeFuncSignaturesForLLVMLoweringPass>());
+  kernelModulePM.addPass(arith::createArithExpandOpsPass());
   kernelModulePM.addPass(createConvertSCFToCFPass());
   kernelModulePM.addPass(createArithToLLVMConversionPass());
   kernelModulePM.addPass(createConvertIndexToLLVMPass());

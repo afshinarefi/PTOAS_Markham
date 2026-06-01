@@ -219,6 +219,10 @@ ADVANCED_TOPLEVEL_PTO_CALLS = frozenset(
     {
         "strict_vecscope",
         "store_scalar",
+        "mte_gm_ub",
+        "mte_ub_gm",
+        "mte_ub_ub",
+        "mte_ub_l1",
         "set_mov_pad_val",
         "copy_gm_to_ubuf",
         "copy_ubuf_to_gm",
@@ -234,23 +238,24 @@ ADVANCED_TOPLEVEL_PTO_CALLS = frozenset(
 
 CUBE_ONLY_PTO_CALLS = frozenset(
     {
-        "cube_load",
-        "cube_store",
-        "cube_load_frac",
-        "bias_load",
-        "left_load",
-        "right_load",
-        "left_load_mx",
-        "right_load_mx",
         "mad",
         "mad_acc",
         "mad_bias",
         "mad_mx",
         "mad_mx_acc",
         "mad_mx_bias",
-        "acc_store",
-        "acc_store_gm",
-        "acc_store_ub",
+        "mte_gm_l1",
+        "mte_l1_ub",
+        "mte_gm_l1_frac",
+        "mte_l1_bt",
+        "mte_l1_fb",
+        "mte_l1_l0a",
+        "mte_l1_l0b",
+        "mte_l1_l0a_mx",
+        "mte_l1_l0b_mx",
+        "mte_l0c_l1",
+        "mte_l0c_gm",
+        "mte_l0c_ub",
     }
 )
 
@@ -278,6 +283,30 @@ ADVANCED_RAW_POINTER_SURFACES = frozenset(
         "PointerType",
         "pto.castptr",
         "pto.addptr",
+    }
+)
+ADVANCED_GROUPED_MTE_DMA_SURFACES = frozenset(
+    {
+        "pto.mte_gm_ub",
+        "pto.mte_ub_gm",
+        "pto.mte_ub_ub",
+        "pto.mte_ub_l1",
+    }
+)
+ADVANCED_CUBE_MTE_SURFACES = frozenset(
+    {
+        "pto.mte_gm_l1",
+        "pto.mte_l1_ub",
+        "pto.mte_gm_l1_frac",
+        "pto.mte_l1_bt",
+        "pto.mte_l1_fb",
+        "pto.mte_l1_l0a",
+        "pto.mte_l1_l0b",
+        "pto.mte_l1_l0a_mx",
+        "pto.mte_l1_l0b_mx",
+        "pto.mte_l0c_l1",
+        "pto.mte_l0c_gm",
+        "pto.mte_l0c_ub",
     }
 )
 ADVANCED_LOW_LEVEL_DMA_SURFACES = frozenset(
@@ -320,6 +349,8 @@ AUTHORING_TIER_SURFACE_GROUPS = {
     "tile_indexing_sugar": BASIC_TILE_INDEXING_SURFACES,
     "strict_vecscope": ADVANCED_EXPLICIT_VECSCOPE_SURFACES,
     "raw_pointer_family": ADVANCED_RAW_POINTER_SURFACES,
+    "grouped_mte_dma_family": ADVANCED_GROUPED_MTE_DMA_SURFACES,
+    "cube_mte_family": ADVANCED_CUBE_MTE_SURFACES,
     "low_level_dma_family": ADVANCED_LOW_LEVEL_DMA_SURFACES,
     "tile_helper_family": ADVANCED_TILE_HELPER_SURFACES,
 }
@@ -331,6 +362,8 @@ AUTHORING_TIER_GROUP_TIERS = {
     "tile_indexing_sugar": BASIC_TIER,
     "strict_vecscope": ADVANCED_TIER,
     "raw_pointer_family": ADVANCED_TIER,
+    "grouped_mte_dma_family": ADVANCED_TIER,
+    "cube_mte_family": ADVANCED_TIER,
     "low_level_dma_family": ADVANCED_TIER,
     "tile_helper_family": ADVANCED_TIER,
 }
@@ -374,6 +407,8 @@ def get_pto_call_tier(call_name: str) -> str:
         return ADVANCED_TIER
     if call_name in ADVANCED_TOPLEVEL_PTO_CALLS:
         return ADVANCED_TIER
+    if call_name in CUBE_ONLY_PTO_CALLS:
+        return ADVANCED_TIER
     raise KeyError(unsupported_feature_message(f"pto.{call_name}"))
 
 
@@ -416,6 +451,10 @@ LANGUAGE_CONSTRUCT_TIERS = {
     "ptr": ADVANCED_TIER,  # raw pointer constructor
     "strict_vecscope": ADVANCED_TIER,  # explicit vecscope management
     "pto.strict_vecscope": ADVANCED_TIER,
+    "pto.mte_gm_ub": ADVANCED_TIER,
+    "pto.mte_ub_gm": ADVANCED_TIER,
+    "pto.mte_ub_ub": ADVANCED_TIER,
+    "pto.mte_ub_l1": ADVANCED_TIER,
     "tile.slice": ADVANCED_TIER,
     "tile.reshape": ADVANCED_TIER,
     "tile.as_ptr": ADVANCED_TIER,
@@ -480,6 +519,8 @@ __all__ = [
     "BASIC_TILE_INDEXING_SURFACES",
     "ADVANCED_EXPLICIT_VECSCOPE_SURFACES",
     "ADVANCED_RAW_POINTER_SURFACES",
+    "ADVANCED_GROUPED_MTE_DMA_SURFACES",
+    "ADVANCED_CUBE_MTE_SURFACES",
     "ADVANCED_LOW_LEVEL_DMA_SURFACES",
     "ADVANCED_TILE_HELPER_SURFACES",
     "AUTHORING_TIER_SURFACE_GROUPS",

@@ -191,19 +191,20 @@ def gemm(a_tv: pto.PartitionTensorView,   # [M, K] in GM
     l0c_tile = pto.Tile([M, N], pto.f32, MemorySpace.ACC)
 
     # GM → L1
-    pto.cube_load(a_ptr, l1_a_tile.as_ptr(), K, nburst=(1, 0, 0))
-    pto.cube_load(b_ptr, l1_b_tile.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_gm_l1(a_ptr, l1_a_tile.as_ptr(), K, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_ptr, l1_b_tile.as_ptr(), N, nburst=(1, 0, 0))
 
     # L1 → L0
-    pto.left_load(l1_a_tile.as_ptr(), l0a_tile.as_ptr(), M, K)
-    pto.right_load(l1_b_tile.as_ptr(), l0b_tile.as_ptr(), K, N)
+    pto.mte_l1_l0a(l1_a_tile.as_ptr(), l0a_tile.as_ptr(), M, K)
+    pto.mte_l1_l0b(l1_b_tile.as_ptr(), l0b_tile.as_ptr(), K, N)
 
     # Compute: C = A × B
     pto.mad(l0a_tile.as_ptr(), l0b_tile.as_ptr(), l0c_tile.as_ptr(), M, N, K)
 
     # L0C → GM writeback
-    pto.acc_store_gm(l0c_tile.as_ptr(), c_ptr, M, N,
-                     src_stride=N, dst_stride=N, mode="nz2nd")
+    pto.mte_l0c_gm(l0c_tile.as_ptr(), c_ptr, M, N,
+                   src_stride=N, dst_stride=N, sid=0, l2_cache_ctrl=0,
+                   layout="nz2nd")
 ```
 
 ### Split-K GEMM
@@ -242,10 +243,10 @@ def gemm_splitk(a_tv: pto.PartitionTensorView,   # [M, K]
         b_k = pto.addptr(b_ptr, k_off)
 
         # GM → L1 → L0
-        pto.cube_load(a_k, l1_a.as_ptr(), BASEK, nburst=(1, 0, 0))
-        pto.cube_load(b_k, l1_b.as_ptr(), N, nburst=(1, 0, 0))
-        pto.left_load(l1_a.as_ptr(), l0a.as_ptr(), M, BASEK)
-        pto.right_load(l1_b.as_ptr(), l0b.as_ptr(), BASEK, N)
+        pto.mte_gm_l1(a_k, l1_a.as_ptr(), BASEK, nburst=(1, 0, 0))
+        pto.mte_gm_l1(b_k, l1_b.as_ptr(), N, nburst=(1, 0, 0))
+        pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, BASEK)
+        pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), BASEK, N)
 
         # First step: zero-init; subsequent steps: accumulate
         if k_step == 0:
@@ -254,8 +255,9 @@ def gemm_splitk(a_tv: pto.PartitionTensorView,   # [M, K]
             pto.mad_acc(l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), M, N, BASEK)
 
     # L0C → GM
-    pto.acc_store_gm(l0c.as_ptr(), c_ptr, M, N,
-                     src_stride=N, dst_stride=N, mode="nz2nd")
+    pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
+                   src_stride=N, dst_stride=N, sid=0, l2_cache_ctrl=0,
+                   layout="nz2nd")
 ```
 
 ### GEMM with Bias
@@ -293,21 +295,22 @@ def gemm_bias(a_tv: pto.PartitionTensorView,
     bt = pto.Tile([1, N], pto.f32, MemorySpace.BIAS)
 
     # Data movement
-    pto.cube_load(a_ptr, l1_a.as_ptr(), K, nburst=(1, 0, 0))
-    pto.cube_load(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
-    pto.cube_load(bias_ptr, l1_bias.as_ptr(), N, nburst=(1, 0, 0))
-    pto.bias_load(l1_bias.as_ptr(), bt.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_gm_l1(a_ptr, l1_a.as_ptr(), K, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_gm_l1(bias_ptr, l1_bias.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_l1_bt(l1_bias.as_ptr(), bt.as_ptr(), N, nburst=(1, 0, 0))
 
     # L1 → L0
-    pto.left_load(l1_a.as_ptr(), l0a.as_ptr(), M, K)
-    pto.right_load(l1_b.as_ptr(), l0b.as_ptr(), K, N)
+    pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, K)
+    pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), K, N)
 
     # Compute: C = A × B + bias
     pto.mad_bias(l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), bt.as_ptr(), M, N, K)
 
     # Writeback
-    pto.acc_store_gm(l0c.as_ptr(), c_ptr, M, N,
-                     src_stride=N, dst_stride=N, mode="nz2nd")
+    pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
+                   src_stride=N, dst_stride=N, sid=0, l2_cache_ctrl=0,
+                   layout="nz2nd")
 ```
 
 ### Fractal Load (nd2nz) Example
@@ -336,19 +339,20 @@ def gemm_frac(a_tv: pto.PartitionTensorView,
     l0c = pto.Tile([M, N], pto.f32, MemorySpace.ACC)
 
     # Fractal load: ND → NZ
-    pto.cube_load_frac(a_ptr, l1_a.as_ptr(), "nd2nz",
+    pto.mte_gm_l1_frac(a_ptr, l1_a.as_ptr(), "nd2nz",
                        shape=(M, K),
                        src_layout=(K,),
                        dst_group=(1, 0, 0, 0),
                        ctrl=(0, False))
-    pto.cube_load(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
 
-    pto.left_load(l1_a.as_ptr(), l0a.as_ptr(), M, K)
-    pto.right_load(l1_b.as_ptr(), l0b.as_ptr(), K, N)
+    pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, K)
+    pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), K, N)
     pto.mad(l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), M, N, K)
 
-    pto.acc_store_gm(l0c.as_ptr(), c_ptr, M, N,
-                     src_stride=N, dst_stride=N, mode="nz2nd")
+    pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
+                   src_stride=N, dst_stride=N, sid=0, l2_cache_ctrl=0,
+                   layout="nz2nd")
 ```
 
 ### Pure-Compute Kernel (Pre-Allocated Tiles)
@@ -397,16 +401,17 @@ def gemm_template(a_tv: pto.PartitionTensorView,
     l0b = pto.Tile([K, N], pto.f16, MemorySpace.RIGHT)
     l0c = pto.Tile([M, N], pto.f32, MemorySpace.ACC)
 
-    pto.cube_load(a_ptr, l1_a.as_ptr(), K, nburst=(1, 0, 0))
-    pto.cube_load(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
-    pto.left_load(l1_a.as_ptr(), l0a.as_ptr(), M, K)
-    pto.right_load(l1_b.as_ptr(), l0b.as_ptr(), K, N)
+    pto.mte_gm_l1(a_ptr, l1_a.as_ptr(), K, nburst=(1, 0, 0))
+    pto.mte_gm_l1(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
+    pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, K)
+    pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), K, N)
 
     # Template slot: resolved at specialization time
     pto.tpl("compute", l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), M, N, K)
 
-    pto.acc_store_gm(l0c.as_ptr(), c_ptr, M, N,
-                     src_stride=N, dst_stride=N, mode="nz2nd")
+    pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
+                   src_stride=N, dst_stride=N, sid=0, l2_cache_ctrl=0,
+                   layout="nz2nd")
 ```
 
 Usage:

@@ -855,6 +855,12 @@ class _ConstraintValue:
     def __rfloordiv__(self, other: Any) -> "_ConstraintValue":
         return _ConstraintValue(self._coerce_other(other)).__floordiv__(self)
 
+    def __mod__(self, other: Any) -> "_ConstraintValue":
+        return self._arith(other, lambda lhs, rhs: lhs % rhs)
+
+    def __rmod__(self, other: Any) -> "_ConstraintValue":
+        return _ConstraintValue(self._coerce_other(other)).__mod__(self)
+
     def __eq__(self, other: Any) -> bool:  # type: ignore[override]
         return self._compare(other, lambda lhs, rhs: lhs == rhs)
 
@@ -940,6 +946,10 @@ class _ConstraintParamView:
     @property
     def dtype(self) -> Any:
         return self._attrs.get("dtype")
+
+    @property
+    def value(self) -> _ConstraintValue:
+        return _ConstraintValue(self._attrs.get("value"))
 
     @property
     def memory_space(self) -> Any:
@@ -1286,7 +1296,9 @@ class VKernelDescriptor:
             set_sequence_attr("shape")
             set_sequence_attr("valid_shape")
             set_sequence_attr("strides")
+            set_scalar_attr("dtype")
             set_scalar_attr("rank")
+            set_scalar_attr("value")
             set_scalar_attr("memory_space")
             set_scalar_attr("config")
 
@@ -1823,23 +1835,17 @@ def _coerce_tile_specialization(
             param_name,
             f"illegal Tile profile for '{param_name}': v1 only supports rank-1 or rank-2 Tile shapes",
         )
-    allowed_memory_spaces = (
-        {MemorySpace.UB}
-        if kernel_family != "cube"
-        else {
-            MemorySpace.MAT,
-            MemorySpace.LEFT,
-            MemorySpace.RIGHT,
-            MemorySpace.ACC,
-            MemorySpace.BIAS,
-            MemorySpace.UB,
-        }
-    )
+    allowed_memory_spaces = {
+        MemorySpace.MAT,
+        MemorySpace.LEFT,
+        MemorySpace.RIGHT,
+        MemorySpace.ACC,
+        MemorySpace.BIAS,
+        MemorySpace.SCALING,
+        MemorySpace.UB,
+    }
     if spec.memory_space not in allowed_memory_spaces:
-        if kernel_family == "cube":
-            allowed_text = "MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/UB"
-        else:
-            allowed_text = "MemorySpace.UB"
+        allowed_text = "MemorySpace.MAT/LEFT/RIGHT/ACC/BIAS/SCALING/UB"
         _raise_tile_param_error(
             source_info,
             param_name,

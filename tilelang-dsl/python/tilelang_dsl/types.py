@@ -142,6 +142,7 @@ class MemorySpace(str, Enum):
     RIGHT = "right"
     ACC = "acc"
     BIAS = "bias"
+    SCALING = "scaling"
     UB = "ub"
 
 
@@ -285,6 +286,12 @@ class SLayout(str, Enum):
     NONE_BOX = "none_box"
     ROW_MAJOR = "row_major"
     COL_MAJOR = "col_major"
+
+
+class CompactMode(str, Enum):
+    NULL = "null"
+    NORMAL = "normal"
+    ROW_PLUS_ONE = "row_plus_one"
 
 
 def _float32_from_bits(bits: int) -> float:
@@ -558,6 +565,8 @@ class TileConfig:
             "s_fractal_size": "s_fractal_size",
             "pad": "pad_value",
             "pad_value": "pad_value",
+            "compact": "compact_mode",
+            "compact_mode": "compact_mode",
         }
         return aliases.get(key, key)
 
@@ -573,6 +582,8 @@ class TileConfig:
             return value
         if key == "pad_value":
             return TileConfig._normalize_pad_value(value)
+        if key == "compact_mode":
+            return TileConfig._normalize_compact_mode(value)
         return value
 
     @staticmethod
@@ -622,6 +633,27 @@ class TileConfig:
                 return PadValue.MIN
         raise ValueError(f"unsupported TileConfig pad_value value {value!r}")
 
+    @staticmethod
+    def _normalize_compact_mode(value: Any) -> CompactMode:
+        if isinstance(value, CompactMode):
+            return value
+        if isinstance(value, int) and not isinstance(value, bool):
+            if value == 0:
+                return CompactMode.NULL
+            if value == 1:
+                return CompactMode.NORMAL
+            if value == 2:
+                return CompactMode.ROW_PLUS_ONE
+        if isinstance(value, str):
+            normalized = value.strip().upper().replace("-", "_")
+            if normalized == "NULL":
+                return CompactMode.NULL
+            if normalized == "NORMAL":
+                return CompactMode.NORMAL
+            if normalized == "ROW_PLUS_ONE":
+                return CompactMode.ROW_PLUS_ONE
+        raise ValueError(f"unsupported TileConfig compact_mode value {value!r}")
+
     @property
     def b_layout(self) -> BLayout:
         value = dict(self.fields).get("b_layout", BLayout.ROW_MAJOR)
@@ -644,6 +676,11 @@ class TileConfig:
         value = dict(self.fields).get("pad_value", PadValue.NULL)
         return self._normalize_pad_value(value)
 
+    @property
+    def compact_mode(self) -> CompactMode:
+        value = dict(self.fields).get("compact_mode", CompactMode.NULL)
+        return self._normalize_compact_mode(value)
+
     @classmethod
     def for_memory_space(cls, memory_space: MemorySpace) -> "TileConfig":
         if not isinstance(memory_space, MemorySpace):
@@ -655,6 +692,7 @@ class TileConfig:
                 "s_layout": SLayout.ROW_MAJOR,
                 "s_fractal_size": 512,
                 "pad_value": PadValue.NULL,
+                "compact_mode": CompactMode.NULL,
             }
         elif memory_space == MemorySpace.RIGHT:
             defaults = {
@@ -662,6 +700,7 @@ class TileConfig:
                 "s_layout": SLayout.COL_MAJOR,
                 "s_fractal_size": 512,
                 "pad_value": PadValue.NULL,
+                "compact_mode": CompactMode.NULL,
             }
         elif memory_space == MemorySpace.ACC:
             defaults = {
@@ -669,6 +708,7 @@ class TileConfig:
                 "s_layout": SLayout.ROW_MAJOR,
                 "s_fractal_size": 1024,
                 "pad_value": PadValue.NULL,
+                "compact_mode": CompactMode.NULL,
             }
         elif memory_space == MemorySpace.BIAS:
             defaults = {
@@ -676,6 +716,7 @@ class TileConfig:
                 "s_layout": SLayout.NONE_BOX,
                 "s_fractal_size": 512,
                 "pad_value": PadValue.NULL,
+                "compact_mode": CompactMode.NULL,
             }
         else:
             defaults = {
@@ -683,6 +724,7 @@ class TileConfig:
                 "s_layout": SLayout.NONE_BOX,
                 "s_fractal_size": 512,
                 "pad_value": PadValue.NULL,
+                "compact_mode": CompactMode.NULL,
             }
         return cls(tuple(sorted(defaults.items())))
 
@@ -841,6 +883,7 @@ __all__ = [
     "PadMode",
     "BLayout",
     "SLayout",
+    "CompactMode",
     "PadValue",
     "DeinterleaveDist",
     "InterleaveDist",
