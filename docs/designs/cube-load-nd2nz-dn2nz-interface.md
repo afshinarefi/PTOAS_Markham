@@ -1,28 +1,28 @@
-# `cube_load_nd2nz` / `cube_load_dn2nz` 接口统一性整理
+# `cube_load_nd2nz` / `cube_load_dn2nz` Interface Unification Notes
 
-## 1. 目标
+## 1. Goal
 
-本文只做一件事：基于 `pto-isa` 的真实 A5 用法，整理 `cube_load_nd2nz` 和 `cube_load_dn2nz` 对应底层接口的参数语义与典型使用场景，评估两者是否可以收敛到同一套上层接口模型。
+This document does one thing: based on the real A5 usage in `pto-isa`, it organizes the parameter semantics and typical usage scenarios of the lower-level interfaces corresponding to `cube_load_nd2nz` and `cube_load_dn2nz`, and evaluates whether the two can converge to the same upper-level interface model.
 
-本文不讨论 release 文档写法，也不讨论 LLVM emitter 细节，只关注：
+This document does not discuss release-document wording or LLVM emitter details. It focuses only on:
 
-- `pto-isa` 里底层 intrinsic 是怎么被调用的
-- 每个场景下每个参数实际表达什么
-- 哪些参数天然共通
-- 哪些差异需要保留为 mode 区分
+- how the lower-level intrinsics are called in `pto-isa`
+- what each parameter actually represents in each scenario
+- which parameters are naturally common
+- which differences need to be preserved as mode distinctions
 
-## 2. 底层接口长什么样
+## 2. Shape of the Lower-Level Interface
 
-在 A5 `pto-isa` 中，这两条路径最终都走 `TLoadCubeInstr`，再分发到底层 intrinsic：
+In A5 `pto-isa`, both paths eventually go through `TLoadCubeInstr`, then dispatch to lower-level intrinsics:
 
-- `ND` 路径: `copy_gm_to_cbuf_multi_nd2nz`
-- `DN` 路径: `copy_gm_to_cbuf_multi_dn2nz`
+- `ND` path: `copy_gm_to_cbuf_multi_nd2nz`
+- `DN` path: `copy_gm_to_cbuf_multi_dn2nz`
 
-参考：
+Reference:
 
 - [`include/pto/npu/a5/TLoad.hpp:235`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L235)
 
-两者在 A5 上的调用形态基本一致：
+The call forms on A5 are basically identical:
 
 ```cpp
 copy_gm_to_cbuf_multi_*d2nz(dst, src,
@@ -35,36 +35,36 @@ copy_gm_to_cbuf_multi_*d2nz(dst, src,
     false /*smallc0_en*/);
 ```
 
-这里有两个重要事实：
+There are two important facts here:
 
-1. `sid` 在 `pto-isa` 的这些场景里固定为 `0`
-2. 目标侧的 NZ 落点结构，并不是通过 intrinsic 参数直接完整表达，而是预先通过 `set_mte2_nz_para(...)` 编程
+1. `sid` is fixed to `0` in these `pto-isa` scenarios.
+2. The NZ landing structure on the destination side is not fully expressed directly through intrinsic parameters; it is programmed ahead of time through `set_mte2_nz_para(...)`.
 
-也就是说，真实语义来自两部分：
+In other words, the real semantics come from two parts:
 
-- intrinsic 实参: 源侧遍历方式 + 一部分搬运形状
-- `MTE2_NZ_PARA`: 目标侧 NZ 存放结构
+- intrinsic arguments: source-side traversal plus part of the movement shape
+- `MTE2_NZ_PARA`: destination-side NZ storage structure
 
-## 3. 统一参数视角
+## 3. Unified Parameter View
 
-虽然底层名字分成 `nd2nz` 和 `dn2nz`，但从 `pto-isa` 的真实使用看，它们可以先抽象成同一组语义参数，并收敛到统一的上层接口 `cube_load_frac`：
+Although the lower-level names are split into `nd2nz` and `dn2nz`, their real usage in `pto-isa` can first be abstracted into one set of semantic parameters and converged into a unified upper-level interface, `cube_load_frac`.
 
-### 3.1 intrinsic 侧参数
+### 3.1 Intrinsic-Side Parameters
 
-| 统一名称 | A5 底层字段 | 语义 |
+| Unified Name | A5 Lower-Level Field | Semantics |
 |---|---|---|
-| `src` | `src` | GM 源指针 |
-| `dst` | `dst` | CBUF/L1 目标指针 |
-| `l2_cache_ctrl` | `l2_cache_ctrl` | L2 cache control 配置位 |
-| `src_inner_stride` | `loop1SrcStride` | 源侧最内层重复单元之间的跨度，单位 byte |
-| `n_value` | `nValue` | 一次连续搬运的内层长度 |
-| `d_value` | `dValue` | 被打包进 NZ/C0 结构的那一维大小，常见是 `C`、`K` 或 `validRow/validCol` 中的一维 |
-| `src_outer_stride` | `loop4SrcStride` | 源侧更外一层重复单元之间的跨度，单位 byte；无外层时通常为 `0` |
-| `smallc0_en` | `smallc0_mode` | small C0 mode 开关；仅在 `D <= 4` 时可开启 |
+| `src` | `src` | GM source pointer |
+| `dst` | `dst` | CBUF/L1 destination pointer |
+| `l2_cache_ctrl` | `l2_cache_ctrl` | L2 cache-control configuration bits |
+| `src_inner_stride` | `loop1SrcStride` | Stride between innermost repeated units on the source side, in bytes |
+| `n_value` | `nValue` | Inner length moved contiguously at a time |
+| `d_value` | `dValue` | Size of the dimension packed into the NZ/C0 structure; commonly one of `C`, `K`, or one dimension of `validRow/validCol` |
+| `src_outer_stride` | `loop4SrcStride` | Stride between one more outer repeated unit on the source side, in bytes; usually `0` when there is no outer layer |
+| `smallc0_en` | `smallc0_mode` | small C0 mode switch; can be enabled only when `D <= 4` |
 
-### 3.2 `MTE2_NZ_PARA` 侧参数
+### 3.2 `MTE2_NZ_PARA`-Side Parameters
 
-`pto-isa` 中目标侧结构通过 `set_mte2_nz_para(...)` 传入：
+In `pto-isa`, the destination-side structure is passed through `set_mte2_nz_para(...)`:
 
 ```text
 MTE2_NZ_PARA[63:48] = loop4DstStride
@@ -73,255 +73,255 @@ MTE2_NZ_PARA[31:16] = loop2DstStride
 MTE2_NZ_PARA[15:0]  = groupCount
 ```
 
-这里的 `loop2/3/4` 目标 stride 单位都不是 byte，而是 `C0_size`。
+The destination `loop2/3/4` stride units are not bytes; they are `C0_size`.
 
-在 A5 上，`C0_size` 是硬件固定的 32B 地址单位。  
-因此：
+On A5, `C0_size` is a hardware-fixed 32B address unit.
+Therefore:
 
-- `dst_loop*_stride = 1` 表示目标地址前进 `32B`
-- `dst_loop*_stride = 4` 表示目标地址前进 `128B`
+- `dst_loop*_stride = 1` means the destination address advances by `32B`.
+- `dst_loop*_stride = 4` means the destination address advances by `128B`.
 
-需要注意，`C0_size` 固定为 32B，但一个 `C0` 中包含多少个元素，取决于元素类型大小：
+Note that `C0_size` is fixed at 32B, but the number of elements contained in one `C0` depends on element type size:
 
-| 元素类型 | 每个 `C0` 可容纳的元素数 |
+| Element Type | Elements per `C0` |
 |---|---|
 | `i8` / `u8` | `32` |
 | `f16` / `i16` | `16` |
 | `f32` / `i32` | `8` |
 
-这里最后 16bit 在不同 mode 下叫法不同：
+The last 16 bits have different names in different modes:
 
-- `nd2nz` 场景里通常叫 `ndNum`
-- `dn2nz` 场景里通常叫 `dnNum`
+- In `nd2nz` scenarios they are usually called `ndNum`.
+- In `dn2nz` scenarios they are usually called `dnNum`.
 
-但从统一建模的角度，它们本质上都可以看成：
+From the unified modeling perspective, however, both can essentially be treated as:
 
-- `group_count`: 目标侧 NZ 排布中，由硬件一次处理的外层组数
+- `group_count`: the number of outer groups in the destination-side NZ layout that are processed by hardware at once
 
-因此目标侧可以统一抽象成：
+Therefore, the destination side can be abstracted uniformly as:
 
-| 统一名称 | A5 底层字段 | 语义 |
+| Unified Name | A5 Lower-Level Field | Semantics |
 |---|---|---|
-| `group_count` | `MTE2_NZ_PARA[15:0]` | 最内层之上的目标分组数；在不同场景里具体映射为 `ndNum` 或 `dnNum` |
-| `dst_loop2_stride` | `MTE2_NZ_PARA[31:16]` | 目标 NZ 结构的 loop2 步长 |
-| `dst_loop3_stride` | `MTE2_NZ_PARA[47:32]` | 目标 NZ 结构的 loop3 步长 |
-| `dst_loop4_stride` | `MTE2_NZ_PARA[63:48]` | 目标 NZ 结构的 loop4 步长 |
+| `group_count` | `MTE2_NZ_PARA[15:0]` | Number of destination groups above the innermost layer; mapped to `ndNum` or `dnNum` in different scenarios |
+| `dst_loop2_stride` | `MTE2_NZ_PARA[31:16]` | loop2 stride of the destination NZ structure |
+| `dst_loop3_stride` | `MTE2_NZ_PARA[47:32]` | loop3 stride of the destination NZ structure |
+| `dst_loop4_stride` | `MTE2_NZ_PARA[63:48]` | loop4 stride of the destination NZ structure |
 
-## 4. `nd2nz` 的真实使用场景
+## 4. Real `nd2nz` Usage Scenarios
 
-### 4.1 场景 A: `MX_A_ND -> ZZ`
+### 4.1 Scenario A: `MX_A_ND -> ZZ`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadMxCubeADN2ZZ`
 - [`include/pto/npu/a5/TLoad.hpp:723`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L723)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `n_value` | `validCol >> 1` | 每次搬运的列向长度 |
-| `d_value` | `validRow` | 每次搬运的行向长度 |
-| `src_inner_stride` | `GetByteSize(dtype, gStride4) * sizeof(uint16_t)` | 源内层相邻片段跨度 |
-| `src_outer_stride` | `0` | 该场景无更外一层源重复 |
-| `group_count` | `1` | 单组 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `TileData::Cols >> 1` | 目标列方向 NZ 布局步长 |
-| `dst_loop4_stride` | `0` | 无更外层目标重复 |
+| `n_value` | `validCol >> 1` | Column-direction length moved each time |
+| `d_value` | `validRow` | Row-direction length moved each time |
+| `src_inner_stride` | `GetByteSize(dtype, gStride4) * sizeof(uint16_t)` | Stride between adjacent inner source fragments |
+| `src_outer_stride` | `0` | No further outer source repetition in this scenario |
+| `group_count` | `1` | Single group |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `TileData::Cols >> 1` | NZ-layout stride in the destination column direction |
+| `dst_loop4_stride` | `0` | No further outer destination repetition |
 
-这个场景本质上是：
+This scenario essentially means:
 
-- 源是 ND 风格遍历
-- 目标写入左矩阵使用的 ZZ 型 NZ 布局
+- The source is traversed in ND style.
+- The destination writes into the ZZ-style NZ layout used by the left matrix.
 
-### 4.2 场景 B: `MX_B_ND -> NN`
+### 4.2 Scenario B: `MX_B_ND -> NN`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadMxCubeBND2NN`
 - [`include/pto/npu/a5/TLoad.hpp:744`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L744)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `n_value` | `validRow >> 1` | 每次搬运的行向长度 |
-| `d_value` | `validCol` | 每次搬运的列向长度 |
-| `src_inner_stride` | `GetByteSize(dtype, gStride3) * sizeof(uint16_t)` | 源内层相邻片段跨度 |
-| `src_outer_stride` | `0` | 无更外层源重复 |
-| `group_count` | `1` | 单组 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `TileData::Rows >> 1` | 目标行方向 NZ 布局步长 |
-| `dst_loop4_stride` | `0` | 无更外层目标重复 |
+| `n_value` | `validRow >> 1` | Row-direction length moved each time |
+| `d_value` | `validCol` | Column-direction length moved each time |
+| `src_inner_stride` | `GetByteSize(dtype, gStride3) * sizeof(uint16_t)` | Stride between adjacent inner source fragments |
+| `src_outer_stride` | `0` | No further outer source repetition |
+| `group_count` | `1` | Single group |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `TileData::Rows >> 1` | NZ-layout stride in the destination row direction |
+| `dst_loop4_stride` | `0` | No further outer destination repetition |
 
-这个场景和上一条基本同构，只是 `A/B` 左右矩阵语义不同，导致 `n_value` / `d_value` 与目标 stride 的映射不同。
+This scenario is mostly isomorphic to the previous one; only the `A/B` left/right matrix semantics differ, which changes the mapping of `n_value` / `d_value` and destination stride.
 
-### 4.3 场景 C: 通用 `ND -> [N,C1,H,W,C0]`
+### 4.3 Scenario C: Generic `ND -> [N,C1,H,W,C0]`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
-- 通用 ND 到卷积 tile 的路径
+- Generic path from ND to convolution tile
 - [`include/pto/npu/a5/TLoad.hpp:1000`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L1000)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `group_count` | `srcShape2` | 这里就是 `ndNum = H` |
-| `n_value` | `srcShape3` | 这里是 `W` |
-| `d_value` | `srcShape4` | 这里是 `C` |
-| `src_inner_stride` | `bytes(gStride3)` | W 维相邻行组跨度 |
-| `src_outer_stride` | `bytes(gStride2)` | H 维相邻组跨度 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `dstShape2 * dstShape3` | 目标 `H*W` 组跨度 |
-| `dst_loop4_stride` | `dstShape3` | 目标 `W` 步长 |
+| `group_count` | `srcShape2` | This is `ndNum = H` |
+| `n_value` | `srcShape3` | This is `W` |
+| `d_value` | `srcShape4` | This is `C` |
+| `src_inner_stride` | `bytes(gStride3)` | Stride between adjacent row groups along W |
+| `src_outer_stride` | `bytes(gStride2)` | Stride between adjacent groups along H |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `dstShape2 * dstShape3` | Destination `H*W` group stride |
+| `dst_loop4_stride` | `dstShape3` | Destination W stride |
 
-这个场景最能体现 `nd2nz` 的共性：
+This scenario best shows the commonality of `nd2nz`:
 
-- `group_count` 真正承担的是一个外层 ND 组数
-- `src_outer_stride` 在这里是真实有意义的，不是所有场景都能省掉
+- `group_count` really represents an outer ND group count.
+- `src_outer_stride` is truly meaningful here and cannot be omitted in every scenario.
 
-## 5. `dn2nz` 的真实使用场景
+## 5. Real `dn2nz` Usage Scenarios
 
-### 5.1 场景 A: `MX_A_DN -> ZZ`
+### 5.1 Scenario A: `MX_A_DN -> ZZ`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadMxCubeAND2ZZ`
 - [`include/pto/npu/a5/TLoad.hpp:664`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L664)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `n_value` | `validCol >> 1` | 每次搬运的列向长度 |
-| `d_value` | `validRow` | 每次搬运的行向长度 |
-| `src_inner_stride` | `bytes(gStride3)` | 源内层相邻片段跨度 |
-| `src_outer_stride` | `0` | 无更外层源重复 |
-| `group_count` | `1` | 这里就是 `dnNum = 1` |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `TileData::Cols >> 1` | 目标列方向 NZ 布局步长 |
-| `dst_loop4_stride` | `0` | 无更外层目标重复 |
+| `n_value` | `validCol >> 1` | Column-direction length moved each time |
+| `d_value` | `validRow` | Row-direction length moved each time |
+| `src_inner_stride` | `bytes(gStride3)` | Stride between adjacent inner source fragments |
+| `src_outer_stride` | `0` | No further outer source repetition |
+| `group_count` | `1` | This is `dnNum = 1` |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `TileData::Cols >> 1` | NZ-layout stride in the destination column direction |
+| `dst_loop4_stride` | `0` | No further outer destination repetition |
 
-### 5.2 场景 B: `MX_B_DN -> NN`
+### 5.2 Scenario B: `MX_B_DN -> NN`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadMxCubeBDN2NN`
 - [`include/pto/npu/a5/TLoad.hpp:765`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L765)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `n_value` | `validRow >> 1` | 每次搬运的行向长度 |
-| `d_value` | `validCol` | 每次搬运的列向长度 |
-| `src_inner_stride` | `bytes(gStride4)` | 源内层相邻片段跨度 |
-| `src_outer_stride` | `0` | 无更外层源重复 |
-| `group_count` | `1` | 单组 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `TileData::Rows >> 1` | 目标行方向 NZ 布局步长 |
-| `dst_loop4_stride` | `0` | 无更外层目标重复 |
+| `n_value` | `validRow >> 1` | Row-direction length moved each time |
+| `d_value` | `validCol` | Column-direction length moved each time |
+| `src_inner_stride` | `bytes(gStride4)` | Stride between adjacent inner source fragments |
+| `src_outer_stride` | `0` | No further outer source repetition |
+| `group_count` | `1` | Single group |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `TileData::Rows >> 1` | NZ-layout stride in the destination row direction |
+| `dst_loop4_stride` | `0` | No further outer destination repetition |
 
-### 5.3 场景 C: `NCHW -> [N,C1,H,W,C0]`
+### 5.3 Scenario C: `NCHW -> [N,C1,H,W,C0]`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadNCHW`
 - [`include/pto/npu/a5/TLoad.hpp:1027`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L1027)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `group_count` | `1` | 这里固定 `dnNum = 1` |
-| `n_value` | `srcW` 或 `srcH * srcW` | 内层搬运单元；W 连续时可并成 `H*W` |
-| `d_value` | `srcC` | 被 pack 进 `C0` 的通道数 |
-| `src_inner_stride` | `bytes(gStride2)` | 相邻 `C` 分片对应的源跨度 |
-| `src_outer_stride` | `0` | 该路径外层循环通常软件展开在外面 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `dstH * dstW` | 目标 HW 组跨度 |
-| `dst_loop4_stride` | `dstW` | 目标 W 步长 |
+| `group_count` | `1` | Here `dnNum = 1` is fixed |
+| `n_value` | `srcW` or `srcH * srcW` | Inner movement unit; if W is contiguous, this can be combined into `H*W` |
+| `d_value` | `srcC` | Number of channels packed into `C0` |
+| `src_inner_stride` | `bytes(gStride2)` | Source stride corresponding to adjacent `C` fragments |
+| `src_outer_stride` | `0` | The outer loop for this path is usually expanded in software outside the intrinsic |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `dstH * dstW` | Destination HW group stride |
+| `dst_loop4_stride` | `dstW` | Destination W stride |
 
-这里 `dn2nz` 的特点是：
+Characteristics of `dn2nz` here:
 
-- `group_count` 往往不是 `H` / `D` 这种大维度
-- 外层 `H` 或 `N` 的重复，很多时候不是塞进 intrinsic，而是由外层 for 循环包住
+- `group_count` is often not a large dimension such as `H` / `D`.
+- Outer repetitions over `H` or `N` are often wrapped by an outer `for` loop rather than put into the intrinsic.
 
-### 5.4 场景 D: `NCDHW -> [N,D,C1,H,W,C0]`
+### 5.4 Scenario D: `NCDHW -> [N,D,C1,H,W,C0]`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadNCDHW2NDC1HWC0`
 - [`include/pto/npu/a5/TLoad.hpp:1128`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L1128)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `group_count` | `1` | 这里固定 `dnNum = 1` |
-| `n_value` | `srcH * srcW` 或退化为 `srcW` | H/W 是否连续决定内层搬运长度 |
-| `d_value` | `srcC` | 被 pack 进 `C0` 的通道数 |
-| `src_inner_stride` | `bytes(gStride1)` | 相邻 `C` 分片的源跨度 |
-| `src_outer_stride` | `0` | `D` / `H` 外层重复通常由外部循环承担 |
-| `dst_loop2_stride` | `1` | 固定 |
-| `dst_loop3_stride` | `dstH * dstW` | 目标 HW 组跨度 |
-| `dst_loop4_stride` | `dstW` | 目标 W 步长 |
+| `group_count` | `1` | Here `dnNum = 1` is fixed |
+| `n_value` | `srcH * srcW` or degraded to `srcW` | Whether H/W are contiguous determines the inner movement length |
+| `d_value` | `srcC` | Number of channels packed into `C0` |
+| `src_inner_stride` | `bytes(gStride1)` | Source stride for adjacent `C` fragments |
+| `src_outer_stride` | `0` | Outer repetitions over `D` / `H` are usually handled by external loops |
+| `dst_loop2_stride` | `1` | Fixed |
+| `dst_loop3_stride` | `dstH * dstW` | Destination HW group stride |
+| `dst_loop4_stride` | `dstW` | Destination W stride |
 
-### 5.5 场景 E: `NCHW -> FractalZ`
+### 5.5 Scenario E: `NCHW -> FractalZ`
 
-对应 `pto-isa`：
+Corresponding `pto-isa`:
 
 - `TLoadNCHW2FractalZ`
 - [`include/pto/npu/a5/TLoad.hpp:1085`](../../../../gitlab.com/cann/pto-isa/include/pto/npu/a5/TLoad.hpp#L1085)
 
-参数映射：
+Parameter mapping:
 
-| 参数 | 取值方式 | 含义 |
+| Parameter | Value | Meaning |
 |---|---|---|
-| `group_count` | `srcShape1` | 这里 `dnNum = N` |
-| `n_value` | `gStride2` | 一次搬完整个 `H*W` |
-| `d_value` | `srcShape2` | 这里是 `C` |
-| `src_inner_stride` | `bytes(gStride2)` | 一个 `N` 组对应的源跨度 |
-| `src_outer_stride` | `bytes(gStride1)` | 相邻更外层组跨度 |
-| `dst_loop2_stride` | `dstShape1 * dstShape2` | 目标 loop2 步长 |
-| `dst_loop3_stride` | `loop2DstStride * dstHW` | 目标 loop3 步长 |
-| `dst_loop4_stride` | `1` | 连续存放 |
+| `group_count` | `srcShape1` | Here `dnNum = N` |
+| `n_value` | `gStride2` | Move the whole `H*W` at once |
+| `d_value` | `srcShape2` | This is `C` |
+| `src_inner_stride` | `bytes(gStride2)` | Source stride for one `N` group |
+| `src_outer_stride` | `bytes(gStride1)` | Stride between adjacent outer groups |
+| `dst_loop2_stride` | `dstShape1 * dstShape2` | Destination loop2 stride |
+| `dst_loop3_stride` | `loop2DstStride * dstHW` | Destination loop3 stride |
+| `dst_loop4_stride` | `1` | Contiguous storage |
 
-这个场景说明：
+This scenario shows:
 
-- `dn2nz` 也不是只能处理 `group_count = 1`
-- `src_outer_stride` 也不是 `dn2nz` 专属的无效参数
+- `dn2nz` is not limited to `group_count = 1`.
+- `src_outer_stride` is also not an invalid parameter exclusive to `dn2nz`.
 
-## 6. 对比结论
+## 6. Comparison Conclusion
 
-从 `pto-isa` 的真实使用看，`nd2nz` 和 `dn2nz` 的差异并不在于“参数种类不同”，而在于“同一组参数对应的源布局遍历语义不同”。
+From real `pto-isa` usage, the difference between `nd2nz` and `dn2nz` is not "different parameter kinds"; it is "different source-layout traversal semantics for the same set of parameters".
 
-两者共通点：
+Common points:
 
-- 都需要 `src_inner_stride`
-- 都需要 `n_value`
-- 都需要 `d_value`
-- 都可能需要 `src_outer_stride`
-- 都需要目标侧 `group_count / dst_loop2_stride / dst_loop3_stride / dst_loop4_stride`
-- 都经常配合外层软件循环使用
+- Both need `src_inner_stride`.
+- Both need `n_value`.
+- Both need `d_value`.
+- Both may need `src_outer_stride`.
+- Both need destination-side `group_count / dst_loop2_stride / dst_loop3_stride / dst_loop4_stride`.
+- Both are often used with outer software loops.
 
-两者核心差异：
+Core differences:
 
-- `group_count` 在 `nd2nz` 中更像 ND 分组数，在 `dn2nz` 中更像 DN 分组数
-- 源张量哪一维映射到 `n_value` / `d_value` / `src_inner_stride`，取决于源布局模式
-- 某些 `dn2nz` 场景会把 `H` / `D` 外层维度拆到软件循环，而不是塞进 `group_count`
+- In `nd2nz`, `group_count` is more like an ND group count; in `dn2nz`, it is more like a DN group count.
+- Which source-tensor dimension maps to `n_value` / `d_value` / `src_inner_stride` depends on the source layout mode.
+- Some `dn2nz` scenarios split outer dimensions such as `H` / `D` into software loops instead of putting them into `group_count`.
 
-因此，如果只从“参数列表”看，这两条接口是可以统一的；真正需要保留差异的是：
+Therefore, if we look only at the parameter list, the two interfaces can be unified. The differences that truly need to be preserved are:
 
-- 一个显式 `nd2nz | dn2nz` mode keyword
-- 每个 mode 自己的 shape-to-parameter 映射规则
+- an explicit `nd2nz | dn2nz` mode keyword
+- each mode's own shape-to-parameter mapping rules
 
-## 7. 一个最小搬移示意
+## 7. Minimal Movement Example
 
-这里用一个最小例子，把这些参数如何驱动“多组 2D 矩阵 -> 多组 NZ 分形”的搬移过程画出来。
+This section uses a minimal example to show how these parameters drive the movement process from "multiple groups of 2D matrices" to "multiple groups of NZ fractals".
 
-设：
+Assume:
 
 - `group_count = 2`
 - `n_value = 3`
@@ -332,30 +332,30 @@ MTE2_NZ_PARA[15:0]  = groupCount
 - `dst_loop3_stride = 4`
 - `dst_loop4_stride = 20`
 
-这里可以把源理解成两组逻辑 2D 矩阵，每组都是 `N x D = 3 x 5`。
+The source can be understood as two logical 2D matrix groups, each with `N x D = 3 x 5`.
 
-### 7.1 源侧视角
+### 7.1 Source-Side View
 
-先不区分 `nd2nz` / `dn2nz` 的地址解释差异，只看统一抽象下的“分组 + 内层步长”：
+First ignore the address-interpretation difference between `nd2nz` and `dn2nz`; only look at the unified abstraction of "groups plus inner stride":
 
 ```text
 group 0 base = src + 0 * src_outer_stride
 group 1 base = src + 1 * src_outer_stride
 
-group g 内部有 3 个 N 单元：
+group g contains 3 N units:
 
 N0 base = group_base + 0 * src_inner_stride
 N1 base = group_base + 1 * src_inner_stride
 N2 base = group_base + 2 * src_inner_stride
 
-每个 N 单元里有 D=5 个元素：
+Each N unit contains D=5 elements:
 
 N0: [d0 d1 d2 d3 d4]
 N1: [d0 d1 d2 d3 d4]
 N2: [d0 d1 d2 d3 d4]
 ```
 
-如果画成两组源矩阵，可以看成：
+Drawn as two source matrix groups:
 
 ```text
 group 0:
@@ -369,34 +369,34 @@ group 1:
   N2 -> [50 51 52 53 54]
 ```
 
-这里：
+Here:
 
-- `src_inner_stride` 决定 `N0 -> N1 -> N2` 怎么跳
-- `src_outer_stride` 决定 `group 0 -> group 1` 怎么跳
-- `n_value = 3` 决定每组取 3 条 N
-- `d_value = 5` 决定每条 N 上取 5 个 D 元素
+- `src_inner_stride` decides how to step from `N0 -> N1 -> N2`.
+- `src_outer_stride` decides how to step from `group 0 -> group 1`.
+- `n_value = 3` decides that each group takes 3 N lines.
+- `d_value = 5` decides that each N line takes 5 D elements.
 
-### 7.2 目标 NZ 视角
+### 7.2 Destination NZ View
 
-目标不是平铺成普通二维矩阵，而是按 NZ 分形排布到 L1。
+The destination is not flattened into an ordinary 2D matrix; it is laid out into L1 as an NZ fractal.
 
-可以先把它抽象成：
+It can first be abstracted as:
 
 ```text
-group g 的目标基址 = dst + g * dst_loop4_stride * C0_size
+destination base for group g = dst + g * dst_loop4_stride * C0_size
 
-group 内部：
-  第 i 个 D-block 的目标基址 = group_dst_base + i * dst_loop3_stride * C0_size
-  第 j 个 N 单元的目标基址 = d_block_dst_base + j * dst_loop2_stride * C0_size
+inside the group:
+  destination base for D-block i = group_dst_base + i * dst_loop3_stride * C0_size
+  destination base for N unit j = d_block_dst_base + j * dst_loop2_stride * C0_size
 ```
 
-在这个例子里：
+In this example:
 
-- `dst_loop2_stride = 1` 表示相邻 N 单元在目标上紧邻排布
-- `dst_loop3_stride = 4` 表示相邻 D-block 之间隔 4 个 `C0_size`
-- `dst_loop4_stride = 20` 表示相邻 group 的整块矩阵在目标上隔 20 个 `C0_size`
+- `dst_loop2_stride = 1` means adjacent N units are placed contiguously in the destination.
+- `dst_loop3_stride = 4` means adjacent D-blocks are separated by 4 `C0_size` units.
+- `dst_loop4_stride = 20` means adjacent groups' whole matrices are separated by 20 `C0_size` units in the destination.
 
-如果只画逻辑落点关系，不展开完整 `C0`，可以看成：
+If we draw only logical landing relationships without expanding the full `C0`, it looks like:
 
 ```text
 group 0 NZ:
@@ -420,46 +420,46 @@ group 1 NZ:
     N2 <- [54 pad pad pad ...]
 ```
 
-这里故意选 `d_value = 5`，就是为了看出尾块不满时的行为：
+`d_value = 5` is chosen deliberately to expose tail-block behavior:
 
-- 第一块装下前 4 个 D 元素
-- 第二块只剩第 5 个元素
-- 尾部由硬件补 pad
+- The first block holds the first 4 D elements.
+- The second block has only the 5th element left.
+- The tail is padded by hardware.
 
-### 7.3 参数到底在控制什么
+### 7.3 What Each Parameter Controls
 
-把这个例子压缩成一句话：
+Compressed into one sentence:
 
-- `n_value` 决定每组有多少条 N 线要搬
-- `d_value` 决定每条 N 线上有多少个 D 元素要 pack 进分形
-- `src_inner_stride` 决定源上相邻两条 N 线怎么跳
-- `src_outer_stride` 决定源上相邻两组矩阵怎么跳
-- `dst_loop2_stride` 决定目标上相邻 N 线怎么摆
-- `dst_loop3_stride` 决定目标上相邻 D-block 怎么摆
-- `dst_loop4_stride` 决定目标上相邻 group 怎么摆
+- `n_value` decides how many N lines each group moves.
+- `d_value` decides how many D elements on each N line are packed into the fractal.
+- `src_inner_stride` decides how adjacent N lines are stepped through on the source.
+- `src_outer_stride` decides how adjacent matrix groups are stepped through on the source.
+- `dst_loop2_stride` decides how adjacent N lines are placed on the destination.
+- `dst_loop3_stride` decides how adjacent D-blocks are placed on the destination.
+- `dst_loop4_stride` decides how adjacent groups are placed on the destination.
 
-### 7.4 `nd2nz` 和 `dn2nz` 真正差在哪
+### 7.4 The Real Difference Between `nd2nz` and `dn2nz`
 
-上面的图故意只画了统一抽象，因为两条指令的参数框架本身是一样的。
+The diagram above intentionally shows only the unified abstraction, because the parameter framework itself is the same for both instructions.
 
-真正的差异在于：源侧地址解释顺序不同。
+The real difference is the source-side address interpretation order.
 
-- `nd2nz`: 更像把源看成 ND 矩阵，再按 `N x D` 逻辑去取数
-- `dn2nz`: 更像把源看成 DN 矩阵，再按另一套源地址递推顺序去取数
+- `nd2nz`: more like treating the source as an ND matrix, then reading by `N x D` logic.
+- `dn2nz`: more like treating the source as a DN matrix, then reading by another source-address recurrence order.
 
-但无论哪一种：
+But in either case:
 
-- `n_value` / `d_value` 仍然定义“这一组搬多大”
-- `src_inner_stride` / `src_outer_stride` 仍然定义“源怎么走”
-- `dst_loop2/3/4_stride` 仍然定义“NZ 分形怎么落”
+- `n_value` / `d_value` still define "how large this group movement is".
+- `src_inner_stride` / `src_outer_stride` still define "how to walk the source".
+- `dst_loop2/3/4_stride` still define "where the NZ fractal lands".
 
-因此从上层接口看，它们完全可以共享同一组参数模型，只在 `mode` 上区分源布局解释规则。
+Therefore, from the upper-level interface perspective, they can fully share the same parameter model and differ only in `mode`, which selects the source-layout interpretation rule.
 
-## 8. 建议的统一抽象
+## 8. Recommended Unified Abstraction
 
-如果上层想统一接口，建议先统一成“参数语义层”，而不是强行复用现有底层名字。
+If the upper layer wants a unified interface, first unify it at the "parameter semantic layer" rather than forcibly reusing existing lower-level names.
 
-可以考虑的统一抽象如下：
+One possible unified abstraction is:
 
 ```text
 cube_load_frac(
@@ -473,28 +473,29 @@ cube_load_frac(
 )
 ```
 
-其中：
+Where:
 
-- `shape(...)` 只描述一次分形搬移的逻辑 `N x D` 大小
-- `src_layout(...)` 只描述源侧地址递推
-- `dst_group(...)` 只描述目标 NZ 分形排布
-- `ctrl(...)` 只描述底层控制位
+- `shape(...)` describes only the logical `N x D` size of one fractal movement.
+- `src_layout(...)` describes only source-side address recurrence.
+- `dst_group(...)` describes only destination NZ fractal layout.
+- `ctrl(...)` describes only lower-level control bits.
 
-如果 `src_outer_stride` 不提供，则默认按 `0` 处理。
+If `src_outer_stride` is not provided, treat it as `0` by default.
 
-这套抽象的好处：
+Benefits of this abstraction:
 
-- `nd2nz` / `dn2nz` 共享同一组结构化参数
-- 底层是否走 `copy_gm_to_cbuf_multi_nd2nz` 还是 `copy_gm_to_cbuf_multi_dn2nz`，由 `mode` 决定
-- `MTE2_NZ_PARA` 的 4 个字段可以原样保留，不需要再隐式推导
-这类接口不单独暴露 `padding` 参数。
+- `nd2nz` / `dn2nz` share the same structured parameters.
+- Whether the lower layer uses `copy_gm_to_cbuf_multi_nd2nz` or `copy_gm_to_cbuf_multi_dn2nz` is decided by `mode`.
+- The four `MTE2_NZ_PARA` fields can be preserved as-is, with no need for implicit inference.
 
-- 当 `d_value` 不能完整填满目标分形时，尾部补齐由硬件按 zero padding 完成
-- 当 `smallc0_en = true` 时，small C0 mode 会改变补齐与对齐方式，但仍然不是用户可配置的 pad value
+This kind of interface does not expose a separate `padding` parameter.
 
-因此，这里的 padding 语义属于指令内建行为，而不是像 `dma_load` 那样的显式接口参数。
+- When `d_value` cannot fully fill the destination fractal, tail padding is completed by hardware as zero padding.
+- When `smallc0_en = true`, small C0 mode changes padding and alignment behavior, but it still is not a user-configurable pad value.
 
-如果直接写成接近 VPTO 的 syntax 草案，可以是：
+Therefore, the padding semantics here are built-in instruction behavior, not an explicit interface parameter like in `dma_load`.
+
+If written directly as a VPTO-like syntax draft, it could be:
 
 ```text
 pto.mte_gm_l1_frac %src, %dst,
@@ -511,7 +512,7 @@ pto.mte_gm_l1_frac %src, %dst,
     ctrl i64, i1
 ```
 
-推荐的 builder 视角也和语法保持一致：
+The recommended builder view should stay consistent with the syntax:
 
 ```text
 cube_load_frac(
@@ -524,17 +525,17 @@ cube_load_frac(
 )
 ```
 
-## 9. 哪些参数可以默认，哪些最好显式暴露
+## 9. Which Parameters Can Default and Which Should Be Explicit
 
-从 `pto-isa` 的现状看：
+Based on the current `pto-isa` status:
 
-### 9.1 可以默认的
+### 9.1 Can Default
 
 - `sid = 0`
 
-`sid` 在当前调研到的 A5 `pto-isa` 使用点里都是固定值。
+`sid` is fixed at every investigated A5 `pto-isa` usage point.
 
-### 9.2 建议显式暴露的
+### 9.2 Recommended to Expose Explicitly
 
 - `mode`
 - `shape(n_value, d_value)`
@@ -542,31 +543,31 @@ cube_load_frac(
 - `dst_group(group_count, dst_loop2_stride, dst_loop3_stride, dst_loop4_stride)`
 - `ctrl(l2_cache_ctrl, smallc0_en)`
 
-这些都是底层接口真实存在、并且会影响行为或未来扩展空间的参数。其中：
+These all truly exist in the lower-level interface and affect behavior or future extension space. In particular:
 
-- `l2_cache_ctrl` 当前 `pto-isa` A5 用法里固定传 `0`
-- `smallc0_en` 当前 `pto-isa` A5 用法里固定传 `false`
-- 但从 `disa-cube.json` 看，这两个字段都属于原始接口语义的一部分，不应在统一接口里直接消失
+- `l2_cache_ctrl` is currently passed as `0` in A5 `pto-isa` usage.
+- `smallc0_en` is currently passed as `false` in A5 `pto-isa` usage.
+- But according to `disa-cube.json`, both fields are part of the original interface semantics and should not simply disappear from the unified interface.
 
-### 9.3 可选暴露的
+### 9.3 Optional Exposure
 
 - `src_outer_stride`
 
-这个参数不是每个场景都需要，但一旦做通用接口，最好保留。  
-在结构化接口里，`src_outer_stride` 仍属于 `src_layout(...)` 的一部分，只是允许省略。
+This parameter is not needed in every scenario, but once a generic interface is built, it is better to preserve it.
+In the structured interface, `src_outer_stride` still belongs to `src_layout(...)`; it is only allowed to be omitted.
 
-## 10. 初步判断
+## 10. Preliminary Judgment
 
-结论很直接：
+The conclusion is direct:
 
-- `cube_load_nd2nz` 和 `cube_load_dn2nz` 在参数语义层是可以统一的
-- 不能统一掉的不是参数列表，而是 `mode` 对源布局遍历规则的解释
-- 如果后续要做 VPTO 新接口，建议抽象成一个统一的 `cube_load_frac` 接口，再保留 `nd2nz | dn2nz` 这两个 mode keyword
-- 这套统一接口更适合使用结构化分组：
+- `cube_load_nd2nz` and `cube_load_dn2nz` can be unified at the parameter semantic layer.
+- The part that cannot be unified away is not the parameter list, but the interpretation of source-layout traversal rules by `mode`.
+- If a new VPTO interface is added later, it should be abstracted as one unified `cube_load_frac` interface while preserving the two mode keywords `nd2nz | dn2nz`.
+- This unified interface is better expressed with structured groups:
   - `shape(...)`
   - `src_layout(...)`
   - `dst_group(...)`
   - `ctrl(...)`
-- 在这套统一接口里，`l2_cache_ctrl` 和 `smallc0_en` 也应保留为显式参数；只有 `sid` 可以继续固定隐藏
+- In this unified interface, `l2_cache_ctrl` and `smallc0_en` should remain explicit parameters; only `sid` can continue to be fixed and hidden.
 
-如果下一步需要，我可以继续把这份设计文档再往前推进一层，直接写成一版面向 VPTO op 设计的 syntax 草案和 verifier 约束。 
+If a next step is needed, this design document can be advanced one level further into a VPTO-op-oriented syntax draft and verifier constraints.

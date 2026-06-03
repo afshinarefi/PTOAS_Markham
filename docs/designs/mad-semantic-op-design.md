@@ -1,26 +1,26 @@
-# `mad` 族语义化 op 设计
+# Semantic Op Design for the `mad` Family
 
-## 目标
+## Goals
 
-把 `pto.mad*` / `pto.mad_mx*` 从“按 ISA 位域拼装”收敛成“语义自描述” op。
+Converge `pto.mad*` / `pto.mad_mx*` from "assembled by ISA bit fields" into "semantically self-describing" ops.
 
-设计原则：
+Design principles:
 
-- op 直接表达计算语义
-- 影响结果的因素必须可见
-- 能从类型推导的，不再单独暴露
-- 不能从类型推导的，必须显式成 clause
-- target profile 先做闭包，不把 profile1 / reserved 字段混进来
+- Ops directly express computation semantics
+- Factors that affect results must be visible
+- Values that can be inferred from types are no longer exposed separately
+- Values that cannot be inferred from types must be explicit clauses
+- Close over the target profile first, without mixing in profile1 / reserved fields
 
-这里讨论的是 `disa-cube.json` 对应的 target profile 语义。
+This discusses the target-profile semantics corresponding to `disa-cube.json`.
 
-## 1. 语义来源
+## 1. Semantic Sources
 
-### 1.1 从指针类型推导
+### 1.1 Inferred from Pointer Types
 
-`mad` / `mad_mx` 的矩阵类型应由指针元素类型推导，而不是再单独放一个 `type` 参数。
+The matrix type of `mad` / `mad_mx` should be inferred from pointer element types, instead of carrying a separate `type` parameter.
 
-### 1.2 必须显式表达
+### 1.2 Must Be Expressed Explicitly
 
 - `unit_flag`
 - `disable_gemv`
@@ -29,19 +29,19 @@
 - `n_dir`
 - `bias`
 
-`C` 的初值语义不单独做成 clause，而是由 op 本身区分：
+The initial-value semantics of `C` are not modeled as a separate clause, but are distinguished by the op itself:
 
-- `pto.mad`：zero-init
-- `pto.mad_acc`：accumulate-init
-- `pto.mad_bias`：bias-init
+- `pto.mad`: zero-init
+- `pto.mad_acc`: accumulate-init
+- `pto.mad_bias`: bias-init
 
-### 1.3 通过规则约束，不作为独立 operand
+### 1.3 Constrained by Rules, Not as Independent Operands
 
-- `mad_mx` 的 scale 地址
-- 对齐 / fractal / layout 约束
-- GEMV 条件
+- Scale addresses for `mad_mx`
+- Alignment / fractal / layout constraints
+- GEMV conditions
 
-## 2. `mad` 族完整 op 集
+## 2. Complete Op Set for the `mad` Family
 
 ### 2.1 `pto.mad`
 
@@ -55,7 +55,7 @@ pto.mad %lhs, %rhs, %dst, %m, %n, %k
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = lhs * rhs
@@ -73,7 +73,7 @@ pto.mad_acc %lhs, %rhs, %dst, %m, %n, %k
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = dst + lhs * rhs
@@ -92,7 +92,7 @@ pto.mad_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
     !pto.ptr<..., bt>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = bias + lhs * rhs
@@ -109,17 +109,17 @@ pto.mad_mx %lhs, %rhs, %dst, %m, %n, %k
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = (ScaleA * lhs) * (ScaleB * rhs)
 ```
 
-说明：
+Notes:
 
-- `ScaleA` / `ScaleB` 不作为显式 operand
-- 它们通过 `lhs` / `rhs` 的地址派生到 `L0A_MX / L0B_MX`
-- `lhs` 与 `rhs` 的 MX scale 存储必须已被外部加载并与 data tile 对齐
+- `ScaleA` / `ScaleB` are not explicit operands
+- They are derived through the `lhs` / `rhs` addresses to `L0A_MX / L0B_MX`
+- MX scale storage for `lhs` and `rhs` must already have been loaded externally and aligned with the data tile
 
 ### 2.5 `pto.mad_mx_acc`
 
@@ -132,7 +132,7 @@ pto.mad_mx_acc %lhs, %rhs, %dst, %m, %n, %k
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = dst + (ScaleA * lhs) * (ScaleB * rhs)
@@ -150,26 +150,25 @@ pto.mad_mx_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
     !pto.ptr<..., bt>, i64, i64, i64
 ```
 
-语义：
+Semantics:
 
 ```text
 dst = bias + (ScaleA * lhs) * (ScaleB * rhs)
 ```
 
-## 3. raw op 接口
+## 3. Raw Op Interface
 
-semantic `mad` 族会展开成：
+The semantic `mad` family expands to:
 
 ```text
 CTRL update + raw MAD/MMAD op
 ```
 
-raw op 只承载底层 MAD/MMAD 指令本身，不承载 `CTRL` 语义。
+Raw ops only carry the underlying MAD/MMAD instruction itself, not `CTRL` semantics.
 
-### 3.1 raw op 集合
+### 3.1 Raw Op Set
 
-为了保留 typed pointer 和 memory effect 信息，raw 层不直接做成全寄存器
-`i64, i64, i64, i64` 形式，而是使用 typed pointer 加 packed `X_t`：
+To preserve typed pointer and memory effect information, the raw layer is not directly represented as an all-register `i64, i64, i64, i64` form. Instead, it uses typed pointers plus packed `X_t`:
 
 ```mlir
 pto.mad_raw %lhs, %rhs, %dst, %xt
@@ -187,18 +186,17 @@ pto.mad_mx_bias_raw %lhs, %rhs, %dst, %bias, %xt
     !pto.ptr<..., bt>, i64
 ```
 
-`mad_acc` 和 `mad_mx_acc` 不需要单独 raw op；它们使用
-`pto.mad_raw` / `pto.mad_mx_raw`，区别只在 `%xt` 里的 `c_init` 位。
+`mad_acc` and `mad_mx_acc` do not need separate raw ops. They use `pto.mad_raw` / `pto.mad_mx_raw`; the only difference is the `c_init` bit in `%xt`.
 
-### 3.2 raw operand 语义
+### 3.2 Raw Operand Semantics
 
-- `%lhs`：底层 `[X_n]`，Matrix A，必须是 `left`
-- `%rhs`：底层 `[X_m]`，Matrix B，必须是 `right`
-- `%dst`：底层 `[X_d[31:0]]`，Matrix C in L0C，必须是 `acc`
-- `%bias`：底层 `[X_d[63:32]]`，bias table buffer，必须是 `bias`
-- `%xt`：已经 packed 的 `X_t`，类型必须是 `i64`
+- `%lhs`: underlying `[X_n]`, Matrix A, must be `left`
+- `%rhs`: underlying `[X_m]`, Matrix B, must be `right`
+- `%dst`: underlying `[X_d[31:0]]`, Matrix C in L0C, must be `acc`
+- `%bias`: underlying `[X_d[63:32]]`, bias table buffer, must be `bias`
+- `%xt`: packed `X_t`, type must be `i64`
 
-raw op 不再接收：
+Raw ops no longer receive:
 
 - `unit_flag(...)`
 - `disable_gemv`
@@ -207,21 +205,21 @@ raw op 不再接收：
 - `n_dir`
 - `m / n / k`
 
-这些都必须在 semantic-to-raw 展开之前完成编码。
+All of these must be encoded before semantic-to-raw expansion.
 
-### 3.3 `%xt` packed bit 约定
+### 3.3 `%xt` Packed Bit Convention
 
-`%xt` 是底层 `X_t`：
+`%xt` is the underlying `X_t`:
 
-- `[11:0]`：M
-- `[23:12]`：K
-- `[35:24]`：N
-- `[56:55]`：unit-flag control bits，合法值 `0 / 2 / 3`
-- `[61]`：GEMV disable
-- `[62]`：C source，`0` 表示 L0C，`1` 表示 bias table
-- `[63]`：C init，`1` 表示 C 初值为 0，`0` 表示读取 C
+- `[11:0]`: M
+- `[23:12]`: K
+- `[35:24]`: N
+- `[56:55]`: unit-flag control bits, legal values `0 / 2 / 3`
+- `[61]`: GEMV disable
+- `[62]`: C source, `0` means L0C, `1` means bias table
+- `[63]`: C init, `1` means the C initial value is 0, `0` means read C
 
-semantic op 到 raw op 的 `%xt` 生成规则：
+Rules for generating `%xt` from semantic op to raw op:
 
 | semantic op | raw op | `X_t[62] / c_src` | `X_t[63] / c_init` |
 |---|---|---:|---:|
@@ -232,169 +230,165 @@ semantic op 到 raw op 的 `%xt` 生成规则：
 | `pto.mad_mx_acc` | `pto.mad_mx_raw` | `0` | `0` |
 | `pto.mad_mx_bias` | `pto.mad_mx_bias_raw` | `1` | `0` |
 
-### 3.4 raw op 不负责的内容
+### 3.4 What Raw Ops Are Not Responsible For
 
-raw op 不配置 `SPR.CTRL`。下面这些语义必须由 semantic-to-raw 展开显式插入
-`get_ctrl / sbitset0 / sbitset1 / set_ctrl`：
+Raw ops do not configure `SPR.CTRL`. The following semantics must be explicitly inserted by semantic-to-raw expansion through `get_ctrl / sbitset0 / sbitset1 / set_ctrl`:
 
 - `hif8` ptr element type -> `CTRL[45]`
 - `tf32_mode(...)` -> `CTRL[46] / CTRL[47]`
 - `sat` / `nosat` -> `CTRL[48]`
 - `n_dir` -> `CTRL[51]`
 
-其中 `hif8 / tf32_mode / n_dir` 有明确的 off/on 语义，所以 semantic-to-raw
-不能只在开启时置 1，也要在关闭时置 0：
+Because `hif8 / tf32_mode / n_dir` have explicit off/on semantics, semantic-to-raw must not only set 1 when enabled, but also set 0 when disabled:
 
-- 普通 `fp8_e4m3` -> `CTRL[45] = 0`
+- ordinary `fp8_e4m3` -> `CTRL[45] = 0`
 - `hif8` -> `CTRL[45] = 1`
-- 普通 `f322f32` -> `CTRL[46] = 0`
+- ordinary `f322f32` -> `CTRL[46] = 0`
 - `tf32_mode(round_even)` -> `CTRL[46] = 1, CTRL[47] = 0`
 - `tf32_mode(round_away)` -> `CTRL[46] = 1, CTRL[47] = 1`
-- 不写 `n_dir` -> `CTRL[51] = 0`
-- 写 `n_dir` -> `CTRL[51] = 1`
+- omitted `n_dir` -> `CTRL[51] = 0`
+- written `n_dir` -> `CTRL[51] = 1`
 
-`sat` / `nosat` 当前仍是显式 flag：写 `sat` 生成饱和语义配置，写 `nosat`
-生成非饱和语义配置；不写不覆盖 `CTRL[48]`。
+`sat` / `nosat` are still explicit flags: writing `sat` generates saturated-semantics configuration, writing `nosat` generates non-saturated-semantics configuration, and omitting both does not overwrite `CTRL[48]`.
 
-raw op 也不负责 MX scale 地址组织；`mad_mx_raw` 仍然按 `lhs / rhs` 地址派生
-`L0A_MX / L0B_MX`，并通过 verifier 约束 scale 布局。
+Raw ops are also not responsible for MX scale address organization. `mad_mx_raw` still derives `L0A_MX / L0B_MX` from `lhs / rhs` addresses, and the verifier constrains the scale layout.
 
-### 3.5 raw verifier 规则
+### 3.5 Raw Verifier Rules
 
-- raw op 不允许出现任何 semantic clause
-- `%lhs / %rhs / %dst` 必须是 typed `!pto.ptr`
-- `%lhs` 地址空间必须是 `left`
-- `%rhs` 地址空间必须是 `right`
-- `%dst` 地址空间必须是 `acc`
-- bias raw op 的 `%bias` 地址空间必须是 `bias`
-- bias raw op 的 `%bias` 元素类型必须和 `%dst` 元素类型一致
-- `%xt` 必须是 `i64`
-- 如果 `%xt` 是常量：
-  - raw non-bias op 要求 `X_t[62] = 0`
-  - raw bias op 要求 `X_t[62] = 1`
-  - `X_t[56:55]` 只能是 `0 / 2 / 3`
+- Raw ops may not contain any semantic clauses
+- `%lhs / %rhs / %dst` must be typed `!pto.ptr`
+- The `%lhs` address space must be `left`
+- The `%rhs` address space must be `right`
+- The `%dst` address space must be `acc`
+- For bias raw ops, the `%bias` address space must be `bias`
+- For bias raw ops, the `%bias` element type must match the `%dst` element type
+- `%xt` must be `i64`
+- If `%xt` is a constant:
+  - raw non-bias ops require `X_t[62] = 0`
+  - raw bias ops require `X_t[62] = 1`
+  - `X_t[56:55]` can only be `0 / 2 / 3`
 
-## 4. Type 语义
+## 4. Type Semantics
 
-### 4.1 `mad` 家族 target profile 可用类型
+### 4.1 Target-Profile Available Types for the `mad` Family
 
-| Family | lhs/rhs | dst | 备注 |
+| Family | lhs/rhs | dst | Notes |
 |---|---|---|---|
-| `s8` | `s8` | `s32` | 可由 ptr 元素类型推导 |
-| `f162f32` | `f16` | `f32` | 可由 ptr 元素类型推导 |
-| `bf162f32` | `bf16` | `f32` | 可由 ptr 元素类型推导 |
-| `f322f32` | `f32` | `f32` | 普通 FP32 可由 ptr 元素类型推导；TF32 需要显式 `tf32_mode(...)` |
-| `e4m3e4m3` | `fp8_e4m3` / `hif8` | `f32` | 普通 FP8 和 HiF8 由 ptr 元素类型区分 |
-| `e4m3e5m2` | `fp8_e4m3` / `fp8_e5m2` | `f32` | 可由 ptr 元素类型推导 |
-| `e5m2e4m3` | `fp8_e5m2` / `fp8_e4m3` | `f32` | 可由 ptr 元素类型推导 |
-| `e5m2e5m2` | `fp8_e5m2` | `f32` | 可由 ptr 元素类型推导 |
+| `s8` | `s8` | `s32` | Inferred from ptr element types |
+| `f162f32` | `f16` | `f32` | Inferred from ptr element types |
+| `bf162f32` | `bf16` | `f32` | Inferred from ptr element types |
+| `f322f32` | `f32` | `f32` | ordinary FP32 can be inferred from ptr element types; TF32 requires explicit `tf32_mode(...)` |
+| `e4m3e4m3` | `fp8_e4m3` / `hif8` | `f32` | ordinary FP8 and HiF8 are distinguished by ptr element types |
+| `e4m3e5m2` | `fp8_e4m3` / `fp8_e5m2` | `f32` | Inferred from ptr element types |
+| `e5m2e4m3` | `fp8_e5m2` / `fp8_e4m3` | `f32` | Inferred from ptr element types |
+| `e5m2e5m2` | `fp8_e5m2` | `f32` | Inferred from ptr element types |
 
-`u8`、`s4`、`s16s8`、`f162f16`、`f16u2`、`u8s8`、`b8u2`、`MMAD_SP` 不纳入 target-profile 设计。
+`u8`, `s4`, `s16s8`, `f162f16`, `f16u2`, `u8s8`, `b8u2`, and `MMAD_SP` are not included in the target-profile design.
 
-### 4.2 `mad_mx` 家族 target profile 可用类型
+### 4.2 Target-Profile Available Types for the `mad_mx` Family
 
-| Family | lhs/rhs | dst | 备注 |
+| Family | lhs/rhs | dst | Notes |
 |---|---|---|---|
-| `e1m2e1m2` | `fp4_e1m2` | `f32` | 可由 ptr 元素类型推导 |
-| `e1m2e2m1` | `fp4_e1m2` / `fp4_e2m1` | `f32` | 可由 ptr 元素类型推导 |
-| `e2m1e1m2` | `fp4_e2m1` / `fp4_e1m2` | `f32` | 可由 ptr 元素类型推导 |
-| `e2m1e2m1` | `fp4_e2m1` | `f32` | 可由 ptr 元素类型推导 |
-| `e4m3e4m3` | `fp8_e4m3` | `f32` | 可由 ptr 元素类型推导 |
-| `e4m3e5m2` | `fp8_e4m3` / `fp8_e5m2` | `f32` | 可由 ptr 元素类型推导 |
-| `e5m2e4m3` | `fp8_e5m2` / `fp8_e4m3` | `f32` | 可由 ptr 元素类型推导 |
-| `e5m2e5m2` | `fp8_e5m2` | `f32` | 可由 ptr 元素类型推导 |
+| `e1m2e1m2` | `fp4_e1m2` | `f32` | Inferred from ptr element types |
+| `e1m2e2m1` | `fp4_e1m2` / `fp4_e2m1` | `f32` | Inferred from ptr element types |
+| `e2m1e1m2` | `fp4_e2m1` / `fp4_e1m2` | `f32` | Inferred from ptr element types |
+| `e2m1e2m1` | `fp4_e2m1` | `f32` | Inferred from ptr element types |
+| `e4m3e4m3` | `fp8_e4m3` | `f32` | Inferred from ptr element types |
+| `e4m3e5m2` | `fp8_e4m3` / `fp8_e5m2` | `f32` | Inferred from ptr element types |
+| `e5m2e4m3` | `fp8_e5m2` / `fp8_e4m3` | `f32` | Inferred from ptr element types |
+| `e5m2e5m2` | `fp8_e5m2` | `f32` | Inferred from ptr element types |
 
-## 5. Clause 语义
+## 5. Clause Semantics
 
 ### 5.1 `unit_flag(...)`
 
-这是 producer 侧的 L0C block 语义。
+This is the producer-side L0C block semantics.
 
-- 不写 `unit_flag(...)`：关闭
-- `unit_flag(check_only)`：检查，不设置
-- `unit_flag(check_and_set)`：检查并设置
+- Omitted `unit_flag(...)`: disabled
+- `unit_flag(check_only)`: check, do not set
+- `unit_flag(check_and_set)`: check and set
 
-`check_and_set` 是 `mad` 侧对应语义；consumer 侧 `acc_store` 才使用 `check_and_clear`。
+`check_and_set` is the corresponding semantic on the `mad` side; the consumer-side `acc_store` uses `check_and_clear`.
 
 ### 5.2 `disable_gemv?`
 
-- 不写：允许 GEMV
-- 写：禁止 GEMV
+- Omitted: allow GEMV
+- Written: disable GEMV
 
 ### 5.3 `sat?` / `nosat?`
 
-表示 CUBE 的饱和/传播语义。
+Represents CUBE saturation/propagation semantics.
 
-- 不写：保留 target-profile 下的默认 numeric policy
-- 写：显式请求 saturate 语义
-- 写 `nosat`：显式请求 non-saturate 语义
+- Omitted: preserve the default numeric policy under the target profile
+- Written: explicitly request saturate semantics
+- Written `nosat`: explicitly request non-saturate semantics
 
 ### 5.4 `tf32_mode(...)`
 
-只对不能从指针元素类型推导的执行模式出现：
+Only appears for execution modes that cannot be inferred from pointer element types:
 
-- `tf32_mode(round_even | round_away)`：只对 `f322f32` 有意义
+- `tf32_mode(round_even | round_away)`: only meaningful for `f322f32`
 
-`hif8` 不放进 `tf32_mode(...)`。后续引入独立 HiF8 元素类型后，`hif8` 语义由 `lhs / rhs` 的 ptr 元素类型推导；普通 `fp8_e4m3` 仍表示普通 E4M3 解释。
+`hif8` is not placed in `tf32_mode(...)`. After an independent HiF8 element type is introduced, `hif8` semantics are inferred from the ptr element types of `lhs / rhs`; ordinary `fp8_e4m3` still means ordinary E4M3 interpretation.
 
-其他 family 不应携带 `tf32_mode(...)`。
+Other families should not carry `tf32_mode(...)`.
 
 ### 5.5 `n_dir?`
 
-这是 `CTRL[51]` 的语义化表达，用来约束 CUBE 输出 L0C 的方向顺序。
+This is the semantic expression of `CTRL[51]`, used to constrain the direction order of CUBE output to L0C.
 
-- 不写：`CTRL[51] = 1'b0`，先 M 后 N
-- 写 `n_dir`：`CTRL[51] = 1'b1`，先 N 后 M
+- Omitted: `CTRL[51] = 1'b0`, M first then N
+- Written `n_dir`: `CTRL[51] = 1'b1`, N first then M
 
-这个 clause 主要和后续 `acc_store*` 的 layout transform / unit-flag 语义配合，不改变数学结果。
+This clause mainly works with later `acc_store*` layout transform / unit-flag semantics and does not change the mathematical result.
 
-## 6. `mad_mx` 的 scale 规则
+## 6. Scale Rules for `mad_mx`
 
-`mad_mx` 不提供 scale pointer operand。
+`mad_mx` does not provide scale pointer operands.
 
-scale 通过输入地址派生：
+Scale is derived from input addresses:
 
-- `lhs` 对应 `L0A_MX`
-- `rhs` 对应 `L0B_MX`
-- scale 基址由 data tile 地址派生，形如 `addr / 16`
+- `lhs` corresponds to `L0A_MX`
+- `rhs` corresponds to `L0B_MX`
+- The scale base address is derived from the data tile address, in the form `addr / 16`
 
-也就是说，`mad_mx` 只负责声明“我要做 MX 语义”，不负责再把 scale 地址作为独立数据流传进来。
+In other words, `mad_mx` only declares "I want MX semantics" and is not responsible for passing scale addresses as independent data flows.
 
-### 6.1 约束
+### 6.1 Constraints
 
-- scale dtype 固定为 `e8m0`
-- MX-fp4 家族的 data tile 为 `K0 = 64`，对应 scale tile 为 `16 x 2`
-- MX-fp8 家族的 data tile 为 `K0 = 32`，对应 scale tile 为 `16 x 2`
-- 每 32 个 K 元素共享同一个 scale
-- `L0A_MX / L0B_MX` 必须和 `L0A / L0B` 地址对齐
-- MX-fp4 / MX-fp8 的 K0 和 fractal 布局必须满足 target-profile 约束
+- The scale dtype is fixed to `e8m0`
+- For the MX-fp4 family, the data tile is `K0 = 64`, corresponding to a scale tile of `16 x 2`
+- For the MX-fp8 family, the data tile is `K0 = 32`, corresponding to a scale tile of `16 x 2`
+- Every 32 K elements share one scale
+- `L0A_MX / L0B_MX` must be address-aligned with `L0A / L0B`
+- The K0 and fractal layout of MX-fp4 / MX-fp8 must satisfy target-profile constraints
 
-## 7. 设计约束
+## 7. Design Constraints
 
 ### 7.1 `mad_bias`
 
-- `bias` 必须是 `BIAS` 地址空间
-- `bias` 元素类型与 `dst` 一致
+- `bias` must be in the `BIAS` address space
+- The `bias` element type must match `dst`
 
 ### 7.2 `mad_mx`
 
-- 不能把 scale 当作独立 operand
-- scale 必须通过派生规则和 verifier 约束表达
+- Scale must not be modeled as an independent operand
+- Scale must be expressed through derivation rules and verifier constraints
 
 ### 7.3 `tf32_mode`
 
-- `f322f32` 不能只靠 ptr 类型表达
-- 必须显式带 `tf32_mode(...)`
+- `f322f32` cannot be expressed by ptr type alone
+- It must explicitly carry `tf32_mode(...)`
 
 ### 7.4 `hif8`
 
-- `hif8` 由指针元素类型表达，不作为独立 clause
-- `hif8` 只允许用于 `e4m3e4m3` family
-- `lhs / rhs` 必须同时是普通 `fp8_e4m3` 或同时是 `hif8`；不允许一边普通 E4M3、一边 HiF8
+- `hif8` is expressed by pointer element types, not as an independent clause
+- `hif8` is only allowed for the `e4m3e4m3` family
+- `lhs / rhs` must both be ordinary `fp8_e4m3` or both be `hif8`; ordinary E4M3 on one side and HiF8 on the other is not allowed
 
-### 7.5 `CTRL` 派生枚举
+### 7.5 `CTRL` Derived Enums
 
-这部分是 verifier / lowering 需要固定住的关键词，不直接暴露 bit 编码：
+These are the keywords that the verifier / lowering must fix, without directly exposing bit encodings:
 
 - `unit_flag`
   - `check_only` -> `2'b10`
@@ -416,41 +410,41 @@ scale 通过输入地址派生：
 
 ### 7.6 `sat` / `nosat`
 
-- `sat` 和 `nosat` 是互斥的显式语义开关
-- 不写时保留 target-profile 默认行为
-- 写时表示希望显式控制饱和语义，不要依赖隐式约定
+- `sat` and `nosat` are mutually exclusive explicit semantic switches
+- When omitted, preserve the target-profile default behavior
+- When written, they mean the user wants to explicitly control saturation semantics instead of relying on implicit conventions
 
 ### 7.7 `n_dir`
 
-- `n_dir` 只表达输出方向
-- 不改变数值含义
-- 需要和 `acc_store*` 的 layout 设计一致
+- `n_dir` only expresses output direction
+- It does not change numeric meaning
+- It needs to stay consistent with the layout design of `acc_store*`
 
-## 8. 推荐 verifier 规则
+## 8. Recommended Verifier Rules
 
-### 8.1 通用
+### 8.1 General
 
-- `lhs / rhs / dst` 必须是 typed `!pto.ptr`
-- `m / n / k` 必须是可转成 i64 的整型值
-- `unit_flag(...)` 只能是 `check_only` 或 `check_and_set`
-- `disable_gemv` 只能作为 flag 出现
-- `n_dir` 只能作为 flag 出现
+- `lhs / rhs / dst` must be typed `!pto.ptr`
+- `m / n / k` must be integer values convertible to i64
+- `unit_flag(...)` can only be `check_only` or `check_and_set`
+- `disable_gemv` can only appear as a flag
+- `n_dir` can only appear as a flag
 
 ### 8.2 `mad_bias`
 
-- `bias` 必须是 `BIAS` 地址空间
-- `bias` 元素类型和 `dst` 一致
+- `bias` must be in the `BIAS` address space
+- The `bias` element type must match `dst`
 
 ### 8.3 `mad_mx`
 
-- `lhs` / `rhs` 需满足 MX family 类型表
-- `dst` 必须是 `f32`
-- scale 派生地址必须与 data tile 地址匹配
-- scale 布局和 K0 规则必须满足 MX family 约束
+- `lhs` / `rhs` must satisfy the MX family type table
+- `dst` must be `f32`
+- The derived scale address must match the data tile address
+- The scale layout and K0 rules must satisfy MX family constraints
 
-## 9. target profile 排除项
+## 9. Target Profile Exclusions
 
-以下不纳入本版设计：
+The following are not included in this version of the design:
 
 - `Feature Map Offset` / `fm_offset`
 - `Weight Matrix Offset` / `wt_offset`
@@ -458,11 +452,11 @@ scale 通过输入地址派生：
 - `sub_dtype`
 - `right_shift_en`
 - `MMAD_SP`
-- 其他 reserved / profile1-only 字段
+- Other reserved / profile1-only fields
 
-## 10. 最终接口形状
+## 10. Final Interface Shape
 
-semantic op：
+semantic op:
 
 ```mlir
 pto.mad %lhs, %rhs, %dst, %m, %n, %k
@@ -511,7 +505,7 @@ pto.mad_mx_bias %lhs, %rhs, %dst, %bias, %m, %n, %k
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, !pto.ptr<..., bt>, i64, i64, i64
 ```
 
-raw op：
+raw op:
 
 ```mlir
 pto.mad_raw %lhs, %rhs, %dst, %xt
@@ -527,13 +521,13 @@ pto.mad_mx_bias_raw %lhs, %rhs, %dst, %bias, %xt
   : !pto.ptr<..., l0a>, !pto.ptr<..., l0b>, !pto.ptr<..., l0c>, !pto.ptr<..., bt>, i64
 ```
 
-这版设计的核心变化是：
+The core changes in this design are:
 
-- type 由指针推导
-- `unit_flag` 改成 producer 语义 `check_only` / `check_and_set`，不再混入 `check_and_clear`
-- `disable_gemv` 改成 flag
-- 新增 raw op 层，semantic op 不再直接 lowered 到 HIVM intrinsic
-- raw op 只消费 typed pointer 和 packed `%xt`
-- `mad_mx` 不再把 scale 当成独立 operand
-- `sat`、`tf32_mode(...)`、`n_dir` 作为显式语义 clause
-- `hif8` 从指针元素类型推导，不作为独立 clause
+- type is inferred from pointers
+- `unit_flag` becomes producer semantics `check_only` / `check_and_set`, without mixing in `check_and_clear`
+- `disable_gemv` becomes a flag
+- A raw op layer is added, so semantic ops are no longer lowered directly to HIVM intrinsics
+- Raw ops only consume typed pointers and packed `%xt`
+- `mad_mx` no longer models scale as an independent operand
+- `sat`, `tf32_mode(...)`, and `n_dir` are explicit semantic clauses
+- `hif8` is inferred from pointer element types, not modeled as an independent clause
