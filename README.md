@@ -1,72 +1,72 @@
 # ptoas (PTO Assembler & Optimizer)
 
-## 1. 项目简介 (Introduction)
+## 1. Introduction
 
-**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**ptoas** (`ptoas`) is a specialized compiler toolchain built on **LLVM/MLIR (llvmorg-19.1.7)** *(commit cd708029e0b2869e80abe31ddb175f7c35361f90)* for **PTO Bytecode** (Programming Tiling Operator Bytecode).
 
-作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
+As the bridge between upper-level AI frameworks and NPU/GPGPU/CPU hardware backends, `ptoas` is built as an **out-of-tree** project and provides complete C++ and Python interfaces. Its main responsibilities are:
 
-1. **IR 解析与验证**：解析 `.pto` 输入文件，验证 PTO Dialect 操作（Ops）的语义正确性。
-2. **编译优化 (Passes)**：执行针对达芬奇架构（Da Vinci Architecture）的特定优化 Pass，如算子融合、自动同步插入策略等。
-3. **代码生成 (Lowering)**：支持将 PTO IR 下降（Lowering）到 `EmitC` / `Linalg` Dialect，最终生成可调用 `pto-isa` C++ 库的代码。
-4. **Python 绑定 (Python Bindings)**：提供无缝集成的 Python 模块。通过与 MLIR Core 绑定集成，支持 **PyPTO**、**TileLang**、**CuTile** 等框架在 Python 端直接构建、操作和编译 PTO Bytecode。
+1. **IR parsing and verification**: parses `.pto` input files and verifies the semantic correctness of PTO Dialect operations.
+2. **Compiler optimizations (passes)**: runs Da Vinci architecture-specific optimization passes, such as operator fusion and automatic synchronization insertion.
+3. **Code generation (lowering)**: lowers PTO IR to the `EmitC` / `Linalg` dialects and eventually emits code that can call the `pto-isa` C++ library.
+4. **Python bindings**: provides seamlessly integrated Python modules. By integrating with MLIR Core bindings, frameworks such as **PyPTO**, **TileLang**, and **CuTile** can build, manipulate, and compile PTO Bytecode directly from Python.
 
 ---
 
-## 2. 目录结构 (Directory Structure)
+## 2. Directory Structure
 
 ```text
 PTOAS/
 ├── include/
-│   └── PTO/               # PTO Dialect 的头文件与 TableGen 定义 (.td)
+│   └── PTO/               # PTO Dialect headers and TableGen definitions (.td)
 ├── lib/
-│   ├── PTO/               # Dialect 核心实现 (IR) 与 Pass 逻辑 (Transforms)
-│   ├── CAPI/              # C 语言接口暴露
-│   └── Bindings/Python/   # Python Binding C++ 实现 (Pybind11)
-├── python/                # Python 模块构建脚本与辅助代码
+│   ├── PTO/               # Dialect core implementation (IR) and pass logic (Transforms)
+│   ├── CAPI/              # C language API exposure
+│   └── Bindings/Python/   # Python binding C++ implementation (pybind11)
+├── python/                # Python module build scripts and helper code
 ├── test/
-│   └── samples/           # 测试用例
+│   └── samples/           # Test cases
 ├── tools/
-│   ├── ptoas/             # ptoas 命令行工具入口 (Output: ptoas)
-│   └── ptobc/             # ptobc 命令行工具入口 (Output: ptobc)
-└── CMakeLists.txt         # 顶级构建配置
+│   ├── ptoas/             # ptoas command-line tool entry point (output: ptoas)
+│   └── ptobc/             # ptobc command-line tool entry point (output: ptobc)
+└── CMakeLists.txt         # Top-level build configuration
 
 ```
 
 ---
 
-## 3. 构建指南 (Build Instructions)
+## 3. Build Instructions
 
-⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-19.1.7** 版本。
+**Important**: this project strictly depends on **LLVM llvmorg-19.1.7**.
 
 
-### 3.0 环境变量配置 (Configuration)
+### 3.0 Configuration
 
-为了简化构建流程，**请首先根据您的实际环境修改并运行以下命令**。后续步骤将直接引用这些变量。
+To simplify the build flow, **first adjust and run the following commands for your local environment**. Later steps refer to these variables directly.
 
 ```bash
-# ================= 配置区域 (请修改这里) =================
-# 设置您的工作根目录 (建议创建一个专门的目录存放 LLVM 和 PTOAS)
+# ================= Configuration area (edit this section) =================
+# Set your workspace root. Creating a dedicated directory for LLVM and PTOAS is recommended.
 export WORKSPACE_DIR=$HOME/llvm-workspace
 
-# LLVM 源码与构建路径
+# LLVM source and build paths
 export LLVM_SOURCE_DIR=$WORKSPACE_DIR/llvm-project
 export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared
 
-# PTOAS 源码与安装路径
+# PTOAS source and install paths
 export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
 export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
 # =======================================================
 
-# 创建工作目录
+# Create the workspace directory
 mkdir -p $WORKSPACE_DIR
 
 ```
 
-### 3.1 环境准备 (Prerequisites)
+### 3.1 Prerequisites
 
-* **OS**: Linux (Ubuntu 20.04+ 推荐)
-* **Compiler**: GCC >= 9 或 Clang (支持 C++17)
+* **OS**: Linux (Ubuntu 20.04+ recommended)
+* **Compiler**: GCC >= 9 or Clang (with C++17 support)
 * **Build System**: CMake >= 3.20, Ninja
 * **Python**: 3.8+
 * **Python Packages**: `pybind11`, `numpy`
@@ -75,26 +75,26 @@ python3 -m pip install pybind11==2.12.0 numpy
 
 ```
 
-> 说明：当前 LLVM/MLIR Python 绑定与 `pybind11` 3.x 不兼容。
-> 如果编译 LLVM 时遇到 `def_property family does not currently support keep_alive` 等报错，
-> 请先执行上面的降级命令。
+> Note: the current LLVM/MLIR Python bindings are not compatible with `pybind11` 3.x.
+> If LLVM compilation reports errors such as `def_property family does not currently support keep_alive`,
+> run the downgrade command above first.
 
 
 
-### 3.2 第一步：构建 LLVM/MLIR (Dependency)
+### 3.2 Step 1: Build LLVM/MLIR (Dependency)
 
-我们需要下载 LLVM 源码，切换到 `llvmorg-19.1.7` 标签，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
+Download the LLVM source, check out the `llvmorg-19.1.7` tag, and build it in **shared library** mode so the Python bindings link correctly.
 
 ```bash
-# 1. 下载 LLVM 源码
+# 1. Download LLVM source
 cd $WORKSPACE_DIR
 git clone https://github.com/llvm/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [关键] 切换到 llvmorg-19.1.7
+# 2. [Important] Check out llvmorg-19.1.7
 git checkout llvmorg-19.1.7
 
-# 3. 配置 CMake (构建动态库并启用 Python 绑定)
+# 3. Configure CMake (build shared libraries and enable Python bindings)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DLLVM_ENABLE_PROJECTS="mlir;clang" \
     -DBUILD_SHARED_LIBS=ON \
@@ -103,26 +103,26 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="host"
 
-# 4. 编译 LLVM (这一步耗时较长)
+# 4. Build LLVM. This step takes a while.
 ninja -C $LLVM_BUILD_DIR
 
 ```
 
-### 3.3 第二步：构建 PTOAS (Out-of-Tree)
+### 3.3 Step 2: Build PTOAS (Out-of-Tree)
 
-下载 PTOAS 源码并基于刚刚编译好的 LLVM 19 进行构建。
+Download the PTOAS source and build it against the LLVM 19 build created above.
 
 ```bash
-# 1. 下载 PTOAS 源码
+# 1. Download PTOAS source
 cd $WORKSPACE_DIR
 git clone https://gitcode.com/cann/pto-as.git PTOAS
 cd $PTO_SOURCE_DIR
 
-# 2. 获取 pybind11 的 CMake 路径
+# 2. Get the pybind11 CMake path
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 
-# 3. 配置 CMake
-# 注意：此处直接使用了 3.0 章节中定义的变量，无需手动修改
+# 3. Configure CMake
+# Note: this uses the variables defined in section 3.0, so no manual edits are needed here.
 cmake -G Ninja \
     -S . \
     -B build \
@@ -135,12 +135,12 @@ cmake -G Ninja \
     -DMLIR_PYTHON_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core \
     -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
 
-# 4. 编译并安装
+# 4. Build and install
 ninja -C build
 ninja -C build install
 
-# 5. 检查构建产物
-# build 输出（便于本地开发/调试）
+# 5. Inspect build artifacts
+# Build output, useful for local development and debugging
 $PTO_SOURCE_DIR/build/python/
 ├── mlir
 │   ├── _mlir_libs
@@ -149,7 +149,7 @@ $PTO_SOURCE_DIR/build/python/
 │       ├── pto.py
 │       └── _pto_ops_gen.py
 
-# install 输出（Python 方言文件和原生扩展）
+# Install output, including Python dialect files and the native extension
 $PTO_INSTALL_DIR/
 └── mlir
     ├── dialects
@@ -158,7 +158,7 @@ $PTO_INSTALL_DIR/
     └── _mlir_libs
         └── _pto.cpython-*.so
 
-# CLI 工具
+# CLI tools
 $PTO_SOURCE_DIR/build/tools/ptoas/ptoas
 $PTO_SOURCE_DIR/build/tools/ptobc/ptobc
 
@@ -166,58 +166,58 @@ $PTO_SOURCE_DIR/build/tools/ptobc/ptobc
 
 ---
 
-## 4. 运行环境配置 (Runtime Environment)
+## 4. Runtime Environment
 
-构建完成后，需要配置环境变量以便系统能找到 Python 包和动态库。您可以将以下命令添加到 `.bashrc` 或启动脚本中。
+After the build completes, configure environment variables so the system can find the Python packages and dynamic libraries. You can add the following commands to `.bashrc` or a startup script.
 
 ```bash
-# --- 运行时变量配置 (基于之前定义的路径) ---
+# --- Runtime variable configuration, based on the paths defined above ---
 
-# 1. Python Path: 拼接 MLIR Core 和 PTO Core
-#    这样在 python 中 import mlir.dialects.pto 时能正确找到
+# 1. Python path: combine MLIR Core and PTO Core
+#    This lets Python find mlir.dialects.pto correctly during import.
 export MLIR_PYTHON_ROOT=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
 export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/
 export PYTHONPATH=$PTO_PYTHON_ROOT:$MLIR_PYTHON_ROOT:$PYTHONPATH
 
-# 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库
+# 2. Library path: make sure LLVM and PTO dynamic libraries can be loaded.
 export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
 
-# 3. PATH: 将 ptoas / ptobc 添加到命令行路径
+# 3. PATH: add ptoas / ptobc to the command-line path.
 export PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PTO_SOURCE_DIR/build/tools/ptobc:$PATH
 
 ```
 
 ---
 
-## 5. 使用方法 (Usage)
+## 5. Usage
 
-### 5.1 命令行工具 (CLI)
+### 5.1 Command-Line Tools (CLI)
 
 ```bash
-# 解析并打印 PTO IR
+# Parse and print PTO IR
 ptoas test/lit/pto/empty_func.pto
 
-# 运行 AutoSyncInsert Pass
+# Run the AutoSyncInsert pass
 ptoas test/lit/pto/empty_func.pto --enable-insert-sync -o outputfile.cpp
 
-# 指定目标硬件架构（A3 / A5）
+# Select target hardware architecture (A3 / A5)
 ptoas test/lit/pto/empty_func.pto --pto-arch=a5 -o outputfile.cpp
 
-# 指定构建 Level（level3 会禁用 PlanMemory/InsertSync）
+# Select build level. level3 disables PlanMemory/InsertSync.
 ptoas test/lit/pto/empty_func.pto --pto-level=level3 -o outputfile.cpp
 
-# 查看当前 ptoas release 版本号
+# Show the current ptoas release version
 ptoas --version
 
 ```
 
-### 5.2 Python 接口 (Python API)
+### 5.2 Python API
 
-配置好环境变量后，PTO Dialect 将作为 `mlir.dialects` 的一部分被加载。
+After the environment variables are configured, the PTO Dialect is loaded as part of `mlir.dialects`.
 
 ```python
 from mlir.ir import Context, Module, Location
-# [关键] 从 mlir.dialects 导入 pto，这是 Out-of-tree 绑定的标准用法
+# [Important] Import pto from mlir.dialects. This is the standard out-of-tree binding pattern.
 from mlir.dialects import pto
 
 with Context() as ctx, Location.unknown():
@@ -227,45 +227,45 @@ with Context() as ctx, Location.unknown():
 
 ```
 
-### 5.3 运行测试
+### 5.3 Run Tests
 
 ```bash
-# 运行python binding 测试
+# Run the Python binding test
 cd $PTO_SOURCE_DIR/test/samples/MatMul/
 python3 ./tmatmulk.py > ./tmatmulk.pto
 
-# 运行ptoas 测试
+# Run the ptoas test
 $PTO_SOURCE_DIR/build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
-### 5.4 上板验证
+### 5.4 Board Validation
 
-该流程用于将 `test/samples` 下生成的 `.cpp`（ptoas 输出）自动生成 NPU 验证用例，并在 NPU 上运行。下面示例直接复用 5.3 里生成的 `MatMul/tmatmulk.cpp`。
+This flow automatically generates an NPU validation case from the `.cpp` output produced by `ptoas` under `test/samples`, then runs it on an NPU. The example below reuses `MatMul/tmatmulk.cpp` generated in section 5.3.
 
-> 只想在无卡机器上做 host-side compile-only，请先看 [docs/no_npu_compile_only_guide_zh.md](docs/no_npu_compile_only_guide_zh.md)。
+> For host-side compile-only validation on a machine without an NPU card, see [docs/no_npu_compile_only_guide_zh.md](docs/no_npu_compile_only_guide_zh.md).
 
 
 ```bash
-# 1) 生成 npu_validation 测试目录（会在当前 sample 目录下创建 npu_validation/）
-# A2/A3 示例：
+# 1) Generate the npu_validation test directory. This creates npu_validation/ under the current sample directory.
+# A2/A3 example:
 python3 test/npu_validation/scripts/generate_testcase.py \
   --input test/samples/MatMul/tmatmulk.cpp \
   --run-mode npu \
   --soc-version Ascend910B1
 
-# A5 示例:
+# A5 example:
 python3 test/npu_validation/scripts/generate_testcase.py \
   --input test/samples/MatMul/tmatmulk.cpp \
   --run-mode npu \
   --soc-version Ascend950
 
-# 2) 运行验证（run.sh 无需额外参数）
+# 2) Run validation. run.sh does not require extra arguments.
 test/samples/MatMul/npu_validation/tmatmulk/run.sh
 ```
 
-说明：
-- `test/samples/MatMul/npu_validation/tmatmulk/` 下会生成 `tmatmulk_kernel.cpp / main.cpp / golden.py / compare.py / run.sh / CMakeLists.txt`
-- `golden.py` 默认生成随机输入，输出默认全零（只保证输入/输出数量、shape、datatype 与 kernel 参数一致）
-- `compare.py` 负责对比 `golden*.bin` 与 `output*.bin`，不一致时会报错
+Notes:
+- `tmatmulk_kernel.cpp / main.cpp / golden.py / compare.py / run.sh / CMakeLists.txt` are generated under `test/samples/MatMul/npu_validation/tmatmulk/`.
+- `golden.py` generates random inputs by default and defaults outputs to all zeros. It only guarantees that input/output counts, shapes, data types, and kernel parameters match.
+- `compare.py` compares `golden*.bin` with `output*.bin` and reports an error on mismatch.
 
 ---
