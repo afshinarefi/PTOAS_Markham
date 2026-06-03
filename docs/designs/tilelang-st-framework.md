@@ -1,57 +1,57 @@
-# TileLang ST 精度验证框架
+# TileLang ST Accuracy Validation Framework
 
-## 1. 文档目标
+## 1. Document Goal
 
-本文从 TileLang 库开发者的视角介绍当前 `test/tilelang_st` 框架的使用方式。
+This document describes how to use the current `test/tilelang_st` framework from the perspective of a TileLang library developer.
 
-这份框架的目标不是做单纯的 IR 回归，而是回答下面两个更贴近开发的问题：
+The goal of this framework is not simple IR regression. Instead, it answers two development-oriented questions:
 
-1. 我新写的 TileLang 模板库实现，展开到 PTO / VPTO / LLVM IR 之后，最终在 simulator 或 NPU 上跑出来的数值是否正确。
-2. 如果我要为一个新 op 增加 ST 用例，最少需要准备哪些文件，运行链路会经过哪些阶段。
+1. After a newly written TileLang template-library implementation is expanded to PTO / VPTO / LLVM IR, is the final numeric result correct when run on the simulator or NPU?
+2. If I need to add an ST case for a new op, what is the minimum set of files required, and which stages does the run flow go through?
 
-当前框架已经具备下面这些能力：
+The current framework already provides these capabilities:
 
-- 从 `.pto` 直接驱动 `ptoas`，不需要手写 `kernel.cpp` 或中间 `.ll`
-- 支持在一个 testcase 下放多个 case
-- 支持 `sim` / `npu` 两种运行模式
-- 支持单 case 过滤
-- 支持 `src` / `dst` 逻辑 shape 不一致的 testcase（例如 `trowsum` 这类 reduction）
-- 支持把输入、golden、output 隔离到 `build/testcase/<testcase>/` 下，避免不同 testcase 之间互相覆盖
+- Drives `ptoas` directly from `.pto`, without manually writing `kernel.cpp` or intermediate `.ll`
+- Supports multiple cases under one testcase
+- Supports both `sim` and `npu` run modes
+- Supports single-case filtering
+- Supports testcases where the logical `src` and `dst` shapes differ, such as reductions like `trowsum`
+- Isolates input, golden, and output files under `build/testcase/<testcase>/`, avoiding overwrites between different testcases
 
-## 2. 框架定位
+## 2. Framework Positioning
 
-TileLang ST 参考了 `pto-isa` 的 ST 目录组织方式，但编译链路不同。
+TileLang ST follows the directory organization style of `pto-isa` ST, but the compilation flow is different.
 
-| 维度 | pto-isa ST | TileLang ST |
+| Dimension | pto-isa ST | TileLang ST |
 |---|---|---|
-| kernel 来源 | 手写 `kernel.cpp` | 手写 `.pto`，由 `ptoas` 展开 TileLang DSL 模板 |
-| 编译入口 | `bisheng -xcce kernel.cpp` | `ptoas .pto -> fatobj` |
-| device 对象接入 host | 编译器一步直接生成 fatobj | `ptoas` 直接生成 host-linkable fatobj |
-| 精度比较 | GTest / C++ 比较逻辑 | `compare.py` + `numpy.allclose` |
-| 多 case 组织 | 多个 GTest case | 一个 testcase 下多个 kernel 函数 + host case table |
+| kernel source | handwritten `kernel.cpp` | handwritten `.pto`, with `ptoas` expanding TileLang DSL templates |
+| compile entry | `bisheng -xcce kernel.cpp` | `ptoas .pto -> fatobj` |
+| device object integration into host | compiler directly generates fatobj in one step | `ptoas` directly generates a host-linkable fatobj |
+| accuracy comparison | GTest / C++ comparison logic | `compare.py` + `numpy.allclose` |
+| multi-case organization | multiple GTest cases | multiple kernel functions under one testcase plus a host case table |
 
-换句话说，TileLang ST 更适合验证“库模板展开后的端到端运行正确性”，而不是验证某一段单独的 CCE kernel.cpp。
+In other words, TileLang ST is better suited for validating "end-to-end runtime correctness after library-template expansion" than for validating one standalone CCE `kernel.cpp`.
 
-## 3. 当前执行流程
+## 3. Current Execution Flow
 
-统一入口是：
+The unified entry is:
 
 ```bash
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd
 ```
 
-cube 类 kernel 也可以直接走同一入口，例如：
+Cube kernels can also use the same entry directly, for example:
 
 ```bash
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tmatmul
 ```
 
-完整链路如下：
+The full flow is:
 
 ```text
 run_st.py
   ├─ set_env_variables()
-  │   └─ 配置 simulator / NPU 运行环境
+  │   └─ configure simulator / NPU runtime environment
   ├─ build_project()
   │   ├─ cmake -DRUN_MODE=... -DSOC_VERSION=... -DTEST_CASE=... -DPTOAS_BIN=...
   │   ├─ ptoas: <op>.pto -> <op>_kernel.o
@@ -63,34 +63,34 @@ run_st.py
   │   ├─ bisheng -xcce: launch.cpp + <op>_kernel.o -> lib<op>_kernel.so
   │   └─ bisheng -xc++: main.cpp -> <op>
   ├─ run_gen_data()
-  │   └─ 在 build/testcase/<testcase>/ 下生成每个 case 的 input/golden
+  │   └─ generate input/golden for each case under build/testcase/<testcase>/
   ├─ run_binary()
-  │   └─ 在 build/testcase/<testcase>/ 下执行 ../../bin/<testcase> [case]
+  │   └─ execute ../../bin/<testcase> [case] under build/testcase/<testcase>/
   └─ run_compare()
-      └─ 在 build/testcase/<testcase>/ 下逐 case 比较 golden/output
+      └─ compare golden/output case by case under build/testcase/<testcase>/
 ```
 
-### 3.1 关于 fatobj 直连
+### 3.1 Fatobj Direct Linking
 
-TileLang ST 现在不再经过 `kernel.ll -> device.o -> repack` 的中间路径。
+TileLang ST no longer goes through the intermediate `kernel.ll -> device.o -> repack` path.
 
-`ptoas` 直接输出 host 可链接的 fatobj 对象，`launch.cpp` 只负责提供 host 侧的 kernel 声明和 wrapper，然后由 `bisheng -xcce` 直接把 `launch.cpp` 和 fatobj 链接成 `lib<op>_kernel.so`。
+`ptoas` directly outputs a host-linkable fatobj object. `launch.cpp` only provides host-side kernel declarations and wrappers, and then `bisheng -xcce` links `launch.cpp` and the fatobj directly into `lib<op>_kernel.so`.
 
-如果 fatobj 输出没有生成成功，后续 host 链接自然也不会成功，因此排查时优先看 `ptoas` 的输出是否完整。
+If fatobj output is not generated successfully, subsequent host linking naturally cannot succeed. During debugging, first check whether the `ptoas` output is complete.
 
-### 3.2 关于 case 的执行和比较顺序
+### 3.2 Case Execution and Comparison Order
 
-默认情况下：
+By default:
 
-1. `gen_data.py` 会先为 testcase 下的所有 case 生成输入和 golden
-2. `./bin/<testcase>` 会依次跑完所有 case
-3. `compare.py` 再依次比较所有 case 的 `golden.bin` 和 `output.bin`
+1. `gen_data.py` first generates input and golden files for all cases under the testcase.
+2. `./bin/<testcase>` runs all cases in sequence.
+3. `compare.py` then compares each case's `golden.bin` and `output.bin` in sequence.
 
-如果使用 `-c <case_name>`，则运行和比较都会只针对这个 case。
+If `-c <case_name>` is used, both running and comparison target only that case.
 
-## 4. 目录结构与职责
+## 4. Directory Structure and Responsibilities
 
-当前目录结构如下：
+The current directory structure is:
 
 ```text
 test/tilelang_st/
@@ -116,76 +116,76 @@ test/tilelang_st/
                     └── compare.py
 ```
 
-各文件职责如下：
+File responsibilities:
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `script/run_st.py` | 统一入口，负责编译、生成数据、执行二进制、比较结果 |
-| `script/run_all_st.py` | 汇总执行所有 testcase 的入口 |
-| `script/run_ci.sh` | CI 入口包装 |
-| `src/st/CMakeLists.txt` | 顶层 CMake，设置编译器、环境和依赖 |
-| `testcase/CMakeLists.txt` | 定义 `pto_tilelang_vec_st()` 宏，并注册所有 testcase |
-| `testcase/run_ptoas_to_file.cmake` | 封装 `ptoas` 调用，把 `.pto` 编译成 fatobj |
-| `testcase/st_common.py` | 所有 testcase 共享的 Python 公共模块（case 校验、数据生成辅助、`result_cmp`、终端着色） |
-| `testcase/<op>/cases.py` | **case 定义的单一来源**，`gen_data.py` 和 `compare.py` 均从此导入；默认使用 `shape`/`valid_shape`，像 `trowsum` 这类输出 shape 不同的 op 再额外补 `dst_shape`/`dst_valid_shape` |
-| `testcase/<op>/<op>.pto` | testcase 的 kernel 描述，通常一个文件中放多个 case 对应的函数 |
-| `testcase/<op>/launch.cpp` | kernel 声明和 launch wrapper |
-| `testcase/<op>/main.cpp` | host driver，负责分配内存、launch kernel、回写 output（`ACL_CHECK` 宏由公共头 `test_common.h` 提供） |
-| `testcase/<op>/gen_data.py` | 生成 input 与 golden，从 `cases.py` 读取 case 列表 |
-| `testcase/<op>/compare.py` | 每个 testcase 自己的比较脚本，决定读取哪些 bin、reshape 成什么形状、裁哪一块数据，再调用公共 `result_cmp()` |
+| `script/run_st.py` | Unified entry responsible for compiling, generating data, executing the binary, and comparing results |
+| `script/run_all_st.py` | Entry for running all testcases |
+| `script/run_ci.sh` | CI entry wrapper |
+| `src/st/CMakeLists.txt` | Top-level CMake file that sets compiler, environment, and dependencies |
+| `testcase/CMakeLists.txt` | Defines the `pto_tilelang_vec_st()` macro and registers all testcases |
+| `testcase/run_ptoas_to_file.cmake` | Wraps the `ptoas` invocation and compiles `.pto` into fatobj |
+| `testcase/st_common.py` | Python common module shared by all testcases: case validation, data-generation helpers, `result_cmp`, and terminal coloring |
+| `testcase/<op>/cases.py` | **Single source of truth for case definitions**. Both `gen_data.py` and `compare.py` import from it. The default fields are `shape`/`valid_shape`; ops with different output shapes, such as `trowsum`, additionally add `dst_shape`/`dst_valid_shape` |
+| `testcase/<op>/<op>.pto` | Kernel description for the testcase; usually one file contains functions for multiple cases |
+| `testcase/<op>/launch.cpp` | Kernel declarations and launch wrappers |
+| `testcase/<op>/main.cpp` | Host driver responsible for memory allocation, kernel launch, and output writeback. The `ACL_CHECK` macro is provided by the common header `test_common.h` |
+| `testcase/<op>/gen_data.py` | Generates input and golden files, reading the case list from `cases.py` |
+| `testcase/<op>/compare.py` | Per-testcase comparison script that decides which bin files to read, what shape to reshape to, which valid region to slice, and then calls the common `result_cmp()` |
 
-## 5. 日常使用方式
+## 5. Daily Usage
 
-### 5.0 前置条件
+### 5.0 Prerequisites
 
-运行 TileLang ST 之前，建议先确认下面几件事：
+Before running TileLang ST, confirm the following:
 
-- 仓库里的 `ptoas` 已经编出来，默认路径是 `build/tools/ptoas/ptoas`
-- `ASCEND_HOME_PATH` 已经设置正确
-- 如果需要手工跑 `ptoas`、`bisheng` 或 lit，优先先执行：
+- The repository's `ptoas` has already been built; the default path is `build/tools/ptoas/ptoas`.
+- `ASCEND_HOME_PATH` is set correctly.
+- If you need to manually run `ptoas`, `bisheng`, or lit, prefer running:
 
 ```bash
 source scripts/ptoas_env.sh
 ```
 
-`run_st.py` 会在运行时补充 simulator / NPU 相关环境，但它不会替你构建 `ptoas`。
+`run_st.py` supplements simulator / NPU environment variables at runtime, but it does not build `ptoas` for you.
 
-### 5.1 运行已有 testcase
+### 5.1 Run an Existing Testcase
 
 ```bash
-# simulator 上跑 tadd 全部 case
+# Run all tadd cases on the simulator
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd
 
-# NPU 上跑 tadd 全部 case
+# Run all tadd cases on NPU
 python3 test/tilelang_st/script/run_st.py -r npu -v a5 -t tadd
 
-# 只跑一个 case
+# Run only one case
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd -c f32_16x64
 
-# 复用已有 build 目录，不重新编译
+# Reuse the existing build directory without rebuilding
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd -w
 ```
 
-### 5.2 常用参数
+### 5.2 Common Parameters
 
-| 参数 | 含义 |
+| Parameter | Meaning |
 |---|---|
-| `-r, --run-mode` | 运行模式，`sim` 或 `npu` |
-| `-v, --soc-version` | SoC 版本，目前只支持 `a5` |
-| `-t, --testcase` | testcase 名称，对应 `testcase/<name>/` |
-| `-c, --case` | 只运行一个 case |
-| `-p, --ptoas-bin` | 指定 `ptoas` 路径 |
-| `-w, --without-build` | 跳过构建，直接复用已有 `build/` |
+| `-r, --run-mode` | Run mode, `sim` or `npu` |
+| `-v, --soc-version` | SoC version; currently only `a5` is supported |
+| `-t, --testcase` | Testcase name, corresponding to `testcase/<name>/` |
+| `-c, --case` | Run only one case |
+| `-p, --ptoas-bin` | Specify the `ptoas` path |
+| `-w, --without-build` | Skip build and directly reuse the existing `build/` |
 
-### 5.3 产物在哪
+### 5.3 Where Artifacts Are Located
 
-testcase 的运行时数据不再写到 `build/` 根目录，而是写到：
+Runtime data for a testcase is no longer written to the `build/` root. It is written to:
 
 ```text
 test/tilelang_st/npu/a5/src/st/build/testcase/<testcase>/
 ```
 
-以 `tadd` 为例：
+Using `tadd` as an example:
 
 ```text
 build/testcase/tadd/
@@ -203,92 +203,92 @@ build/testcase/tadd/
     └── output.bin
 ```
 
-这个布局的好处是：
+This layout has these benefits:
 
-- 不同 testcase 之间不会因为 case 同名而互相覆盖
-- 方便开发者直接进入 `build/testcase/<testcase>/` 复查输入、输出和 golden
-- 使用 `-w` 时，不容易把旧 testcase 的残留数据误认为当前结果
+- Different testcases will not overwrite each other because of identical case names.
+- Developers can directly enter `build/testcase/<testcase>/` to inspect input, output, and golden files.
+- When using `-w`, stale data from an old testcase is less likely to be mistaken for the current result.
 
-### 5.4 比较输出
+### 5.4 Comparison Output
 
-`compare.py` 会对 pass/fail 做明显提示：
+`compare.py` gives clear pass/fail prompts:
 
-- pass：粗体绿色
-- fail：粗体红色
+- pass: bold green
+- fail: bold red
 
-比较逻辑目前使用 `numpy.allclose`。建议阈值：
+The comparison logic currently uses `numpy.allclose`. Recommended thresholds:
 
-| dtype | 建议 eps |
+| dtype | Recommended eps |
 |---|---|
 | `float32` | `1e-6` |
 | `float16` | `1e-3` |
 | `bfloat16` | `1e-2` |
 | `int8/int16/int32` | `0` |
 
-## 6. 作为库开发者，如何增加一个新 op testcase
+## 6. Adding a New Op Testcase as a Library Developer
 
-这一节回答“我开发了一个新的 TileLang 库实现，怎么用 ST 框架验证它”。
+This section answers: "I developed a new TileLang library implementation; how do I validate it with the ST framework?"
 
-以新增 `pto.tsub` 为例，最少需要准备下面这些文件：
+Using a new `pto.tsub` as an example, the minimum required files are:
 
-| 文件 | 是否新增/修改 | 说明 |
+| File | Add/Modify | Description |
 |---|---|---|
-| `testcase/tsub/CMakeLists.txt` | 新增 | 一般只有一行 `pto_tilelang_vec_st(tsub)` |
-| `testcase/tsub/cases.py` | 新增 | **case 定义的单一来源**：每个 case 必须指定 `name`/`dtype`/`shape`/`valid_shape`/`eps`；如果输出 shape 不同，再额外补 `dst_shape`/`dst_valid_shape` |
-| `testcase/tsub/tsub.pto` | 新增 | 定义一个或多个 case 的 kernel 函数 |
-| `testcase/tsub/launch.cpp` | 新增 | 为每个 kernel 函数声明 entry 并提供 launch wrapper |
-| `testcase/tsub/main.cpp` | 新增 | host driver，负责 case table、内存拷贝、launch 和 output 落盘 |
-| `testcase/tsub/gen_data.py` | 新增 | 生成每个 case 的输入和 golden，从 `cases.py` 导入 `CASES` |
-| `testcase/tsub/compare.py` | 新增 | testcase 自己决定比较哪些输出数据，再调用公共 `result_cmp()` |
-| `testcase/CMakeLists.txt` | 修改 | 把 `tsub` 加入 `ALL_TESTCASES` |
+| `testcase/tsub/CMakeLists.txt` | add | Usually only one line: `pto_tilelang_vec_st(tsub)` |
+| `testcase/tsub/cases.py` | add | **Single source of truth for case definitions**: each case must specify `name`/`dtype`/`shape`/`valid_shape`/`eps`; if the output shape differs, also add `dst_shape`/`dst_valid_shape` |
+| `testcase/tsub/tsub.pto` | add | Defines one or more kernel functions for cases |
+| `testcase/tsub/launch.cpp` | add | Declares each kernel function entry and provides a launch wrapper |
+| `testcase/tsub/main.cpp` | add | Host driver responsible for the case table, memory copies, launch, and writing output to disk |
+| `testcase/tsub/gen_data.py` | add | Generates input and golden for each case, importing `CASES` from `cases.py` |
+| `testcase/tsub/compare.py` | add | The testcase decides which output data to compare, then calls the common `result_cmp()` |
+| `testcase/CMakeLists.txt` | modify | Add `tsub` to `ALL_TESTCASES` |
 
-通常不需要修改：
+Usually, there is no need to modify:
 
 - `script/run_st.py`
 - `src/st/CMakeLists.txt`
 - `testcase/st_common.py`
 - `testcase/run_ptoas_to_file.cmake`
-- `testcase` 目录下的旧 `.ll` / `device.o` / `repack` 产物
+- old `.ll` / `device.o` / `repack` artifacts under the `testcase` directory
 
-除非你在改框架本身，而不是新增一个 testcase。
+unless you are changing the framework itself rather than adding a testcase.
 
-## 7. 以 `pto.tadd` 为例，需要改哪些文件
+## 7. Files to Change, Using `pto.tadd` as an Example
 
-当前仓库里 `tadd` 已经是一个完整样例。把它当成模板即可。
+The current repository already has `tadd` as a complete sample. Use it as the template.
 
 ### 7.1 `testcase/tadd/CMakeLists.txt`
 
-这个文件通常最简单：
+This file is usually the simplest:
 
 ```cmake
 pto_tilelang_vec_st(tadd)
 ```
 
-含义是让公共宏接管 `tadd.pto -> tadd_kernel.o -> libtadd_kernel.so -> tadd` 这一整条流水线。
+It means the common macro owns the full pipeline `tadd.pto -> tadd_kernel.o -> libtadd_kernel.so -> tadd`.
 
 ### 7.2 `testcase/tadd/tadd.pto`
 
-这是最核心的文件。你需要在这里写出要验证的 kernel 形态。
+This is the core file. Write the kernel forms to validate here.
 
-当前 `tadd.pto` 的特点是：
+The current `tadd.pto` has these characteristics:
 
-- 一个文件中包含多个 case
-- 每个 case 对应一个 `func.func @TADD_<dtype>_<rows>x<cols>(...)`
-- 函数体里显式写出 `make_tensor_view`、`partition_view`、`alloc_tile`、`tload`、`pto.tadd`、`tstore`
+- One file contains multiple cases.
+- Each case corresponds to a `func.func @TADD_<dtype>_<rows>x<cols>(...)`.
+- The function body explicitly writes `make_tensor_view`, `partition_view`, `alloc_tile`, `tload`, `pto.tadd`, and `tstore`.
 
-如果你在开发 `pto.tadd` 库实现，最关键的是先把你要覆盖的 case 设计好。例如：
+If you are developing the `pto.tadd` library implementation, the most important first step is designing the cases you want to cover. For example:
 
 - `f32` / `f16` / `bf16`
-- 不同 tile 形状
-- 边界 valid 行列不是整 tile 的情况
+- Different tile shapes
+- Boundary cases where valid rows/columns are not a full tile
 
-这里的函数命名建议统一成：
+The recommended function naming convention is:
 
 ```text
 TADD_<dtype>_<rows>x<cols>
 ```
 
-例如：
+For example:
 
 ```text
 TADD_f32_16x64
@@ -297,12 +297,12 @@ TADD_f32_32x32
 
 ### 7.3 `testcase/tadd/launch.cpp`
 
-这个文件的职责只有两个：
+This file has only two responsibilities:
 
-1. 声明 kernel entry
-2. 为 host driver 提供 `Launch*` wrapper
+1. Declare kernel entries.
+2. Provide `Launch*` wrappers for the host driver.
 
-当前推荐写法和 `tadd` 一致：
+The currently recommended form is the same as `tadd`:
 
 ```cpp
 #include <stdint.h>
@@ -318,30 +318,30 @@ void LaunchTADD_f32_16x64(float *a, float *b, float *c, void *stream) {
 }
 ```
 
-注意点：
+Notes:
 
-- `launch.cpp` 不需要包含 PTO 头文件
-- `AICORE` 直接本地定义为 `[aicore]`
-- 这里的 kernel 声明必须和 `tadd.pto` 中的 `pto.kernel` 函数签名对应，供 `bisheng -xcce` 直接链接 fatobj
-- kernel 参数顺序必须和 `.pto` 中函数签名保持一致
+- `launch.cpp` does not need to include PTO headers.
+- `AICORE` is defined locally as `[aicore]`.
+- The kernel declaration here must match the `pto.kernel` function signature in `tadd.pto`, so `bisheng -xcce` can directly link the fatobj.
+- The kernel parameter order must stay consistent with the function signature in `.pto`.
 
 ### 7.4 `testcase/tadd/main.cpp`
 
-这个文件负责 host 侧调度。
+This file is responsible for host-side scheduling.
 
-你需要做的事主要有三类：
+The main tasks are:
 
-1. 声明所有 `LaunchTADD_*` wrapper
-2. 在 `kCases[]` 中列出每个 case 的名字、launch 函数、输入/输出 shape、valid shape、元素大小
-3. 在 `RunCase()` 中完成：
-   - 从 `./<case>/input*.bin` 读取输入
-   - `aclrtMemcpy` 把输入拷到 device
-   - 调用 `tc.launch(...)`
-   - `aclrtSynchronizeStream`
-   - 把输出拷回 host
-   - 写 `./<case>/output.bin`
+1. Declare all `LaunchTADD_*` wrappers.
+2. List each case in `kCases[]` with its name, launch function, input/output shape, valid shape, and element size.
+3. In `RunCase()`:
+   - Read inputs from `./<case>/input*.bin`.
+   - Copy inputs to device with `aclrtMemcpy`.
+   - Call `tc.launch(...)`.
+   - Run `aclrtSynchronizeStream`.
+   - Copy output back to host.
+   - Write `./<case>/output.bin`.
 
-当前 `tadd/main.cpp` 的 case table 形式如下：
+The current `tadd/main.cpp` case table is:
 
 ```cpp
 struct TestCase {
@@ -360,18 +360,18 @@ static const TestCase kCases[] = {
 };
 ```
 
-注意：`ACL_CHECK` 宏已移至公共头文件 `test_common.h`（需在 `acl/acl.h` 之后包含），不需要在每个 testcase 的 `main.cpp` 中重复定义。
+Note: the `ACL_CHECK` macro has moved to the common header `test_common.h` and should be included after `acl/acl.h`; it does not need to be redefined in each testcase's `main.cpp`.
 
-你在新增 case 时，必须同步更新这个表。
+When adding a case, update this table at the same time.
 
-- 对 `tadd` 这类同 shape op，字段需与 `cases.py` 的 `shape` / `valid_shape` 保持一致。
-- 对 `trowsum` 这类输出 shape 不同的 op，host 侧需要把输入大小和输出大小分开计算。
+- For same-shape ops such as `tadd`, fields must remain consistent with `shape` / `valid_shape` in `cases.py`.
+- For ops such as `trowsum` where the output shape differs, the host side needs to compute input size and output size separately.
 
 ### 7.5 `testcase/tadd/cases.py`
 
-这是 case 定义的**单一来源**，`gen_data.py` 和 `compare.py` 均从此导入 `CASES`。
+This is the **single source of truth** for case definitions. Both `gen_data.py` and `compare.py` import `CASES` from it.
 
-每个 case 必须包含以下字段：
+Each case must include these fields:
 
 ```python
 "name"
@@ -384,41 +384,41 @@ static const TestCase kCases[] = {
 ```python
 CASES = [
     {
-        "name": "f32_16x64",          # case 标识，对应运行时子目录和 main.cpp kCases[] 中的 name
+        "name": "f32_16x64",          # case identifier; matches the runtime subdirectory and the name in main.cpp kCases[]
         "dtype": np.float32,           # numpy dtype
-        "shape": (16, 64),             # 分配的 tile 维度 (rows, cols)
-        "valid_shape": (16, 64),       # 有效计算区域 (valid_rows, valid_cols)
-        "eps": 1e-6,                   # numpy.allclose 容差
+        "shape": (16, 64),             # allocated tile dimensions (rows, cols)
+        "valid_shape": (16, 64),       # valid computation region (valid_rows, valid_cols)
+        "eps": 1e-6,                   # numpy.allclose tolerance
     },
 ]
 ```
 
-`valid_shape` 为必填字段。当 valid shape 等于 tile shape 时也必须显式写出。
+`valid_shape` is required. It must be written explicitly even when the valid shape is equal to the tile shape.
 
-如果输出 shape 不同，可以额外补下面两个字段：
+If the output shape differs, the following two fields can be added:
 
 ```python
 CASES = [
     {
         "name": "f32_16x64",
         "dtype": np.float32,
-        "shape": (16, 64),             # 输入 tensor shape
-        "valid_shape": (16, 64),       # 输入有效区域
-        "dst_shape": (16, 1),          # 输出 tensor shape（GM 可见形状）
-        "dst_valid_shape": (16, 1),    # 输出有效区域
+        "shape": (16, 64),             # input tensor shape
+        "valid_shape": (16, 64),       # input valid region
+        "dst_shape": (16, 1),          # output tensor shape, visible on GM
+        "dst_valid_shape": (16, 1),    # output valid region
         "eps": 1e-5,
     },
 ]
 ```
 
-这也是 `trowsum` 推荐使用的写法。注意 `dst_shape` 描述的是写回 GM 后的实际结果形状，而不是片上 tile 的物理展开形状。
+This is also the recommended form for `trowsum`. Note that `dst_shape` describes the actual result shape after writeback to GM, not the physical expanded shape of an on-chip tile.
 
 ### 7.6 `testcase/tadd/gen_data.py`
 
-这个文件负责为每个 case 生成输入和 golden。从 `cases.py` 导入 `CASES`，
-从 `st_common.py` 导入辅助函数（`setup_case_rng`、`save_case_data`）。
+This file generates input and golden files for each case. It imports `CASES` from `cases.py`
+and helper functions (`setup_case_rng`, `save_case_data`) from `st_common.py`.
 
-以 `pto.tadd` 为例，每个 case 的核心逻辑：
+Using `pto.tadd` as an example, the core logic for each case is:
 
 ```python
 golden = np.zeros(shape, dtype=dtype)
@@ -426,9 +426,9 @@ vr, vc = case["valid_shape"]
 golden[:vr, :vc] = (input1[:vr, :vc] + input2[:vr, :vc]).astype(dtype, copy=False)
 ```
 
-golden 只在 `valid_shape` 区域内计算，区域外保持零值。
+The golden result is computed only inside the `valid_shape` region; values outside the region remain zero.
 
-如果是 `trowsum` 这类输出 shape 不同的 op，则 `gen_data.py` 应该按 `dst_shape` 生成 `golden`，按 `valid_shape` 完成规约计算。例如：
+For ops such as `trowsum` where the output shape differs, `gen_data.py` should generate `golden` according to `dst_shape` and perform the reduction according to `valid_shape`. For example:
 
 ```python
 shape = case["shape"]
@@ -442,21 +442,20 @@ golden[:dst_valid_shape[0], 0] = np.sum(
 ).astype(dtype, copy=False)[:dst_valid_shape[0]]
 ```
 
-比较阶段也会按 `dst_shape` / `dst_valid_shape` 读取和 reshape `golden.bin`、`output.bin`。
+The comparison stage also reads and reshapes `golden.bin` and `output.bin` according to `dst_shape` / `dst_valid_shape`.
 
-每个 case 使用独立的随机 seed（`setup_case_rng` 基于 `hash(case["name"])`），
-新增或调整 case 顺序不会影响已有 case 的测试数据。
+Each case uses an independent random seed. `setup_case_rng` is based on `hash(case["name"])`, so adding or reordering cases does not affect test data for existing cases.
 
 ### 7.7 `testcase/<op>/compare.py`
 
-比较脚本不再放在公共目录，而是每个 testcase 自己维护一份。
+The comparison script is no longer placed in a common directory; each testcase maintains its own copy.
 
-这样做的目的很直接：
+The purpose is straightforward:
 
-- 公共层只提供 `result_cmp(golden, output, eps)` 这种“比已经准备好的数据”的接口
-- 具体读取哪些 bin、reshape 成什么形状、裁哪一块 valid 区域，由 testcase 自己决定
+- The common layer only provides an interface such as `result_cmp(golden, output, eps)` to compare already-prepared data.
+- The testcase itself decides which bin files to read, what shape to reshape to, and which valid region to slice.
 
-以 `tadd` 为例，`compare.py` 的核心逻辑就是：
+Using `tadd` as an example, the core logic in `compare.py` is:
 
 ```python
 golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=case["dtype"]).reshape(shape)
@@ -464,122 +463,122 @@ output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=case["dtype"]).
 ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
 ```
 
-如果是 `trowsum`，则可以自己改成按 `dst_shape` reshape，并只比较 `rows x 1` 的有效区域。
+For `trowsum`, it can reshape by `dst_shape` and compare only the valid `rows x 1` region.
 
-这种拆法更接近 `pto-isa` 的 `ResultCmp` 思路：公共层只负责“怎么比”，不负责“该比哪块数据”。
+This split is closer to the `ResultCmp` idea in `pto-isa`: the common layer is responsible only for "how to compare", not for "which data region should be compared".
 
-## 8. 如果只是在已有 `tadd` 下新增一个 case
+## 8. Adding Only One Case Under Existing `tadd`
 
-如果 `tadd` testcase 已经存在，而你只是想加一个新 case，例如 `f32_8x128`，则通常只需要同步修改 4 个文件：
+If the `tadd` testcase already exists and you only want to add a new case, such as `f32_8x128`, you usually only need to update four files:
 
-| 文件 | 必须修改的内容 |
+| File | Required Change |
 |---|---|
-| `testcase/tadd/cases.py` | 在 `CASES` 中加入新条目（含 `name`/`dtype`/`shape`/`valid_shape`/`eps`） |
-| `testcase/tadd/tadd.pto` | 新增一个 `func.func @TADD_f32_8x128(...)` |
-| `testcase/tadd/launch.cpp` | 新增 `extern "C"` kernel 声明和 `LaunchTADD_f32_8x128` |
-| `testcase/tadd/main.cpp` | 在 `kCases[]` 中加入 `{"f32_8x128", LaunchTADD_f32_8x128, 8, 128, 8, 128, sizeof(float)}` |
+| `testcase/tadd/cases.py` | Add a new entry to `CASES`, including `name`/`dtype`/`shape`/`valid_shape`/`eps` |
+| `testcase/tadd/tadd.pto` | Add a `func.func @TADD_f32_8x128(...)` |
+| `testcase/tadd/launch.cpp` | Add the `extern "C"` kernel declaration and `LaunchTADD_f32_8x128` |
+| `testcase/tadd/main.cpp` | Add `{"f32_8x128", LaunchTADD_f32_8x128, 8, 128, 8, 128, sizeof(float)}` to `kCases[]` |
 
-不需要改：
+No changes are needed in:
 
-- `testcase/tadd/gen_data.py`（自动从 `cases.py` 读取）
-- `testcase/tadd/compare.py`（自动从 `cases.py` 读取）
+- `testcase/tadd/gen_data.py`, which automatically reads from `cases.py`
+- `testcase/tadd/compare.py`, which automatically reads from `cases.py`
 - `testcase/tadd/CMakeLists.txt`
 - `testcase/CMakeLists.txt`
 - `run_st.py`
 
-## 9. 文件之间必须保持一致的约束
+## 9. Cross-File Consistency Constraints
 
-这是新增 testcase 时最容易出错的地方。
+This is the easiest place to make mistakes when adding a testcase.
 
-### 9.1 命名一致
+### 9.1 Naming Consistency
 
-下面这几处名字必须严格一致：
+The following names must match exactly:
 
-| 位置 | 示例 |
+| Location | Example |
 |---|---|
-| `.pto` 中的 kernel 函数名 | `@TADD_f32_16x64` |
-| `launch.cpp` 中的 kernel 声明 | `TADD_f32_16x64` |
-| `launch.cpp` / `main.cpp` 中的 wrapper 名 | `LaunchTADD_f32_16x64` |
-| `main.cpp` 的 case 名 | `f32_16x64` |
-| `gen_data.py` / `compare.py` 的 case 名 | `f32_16x64` |
-| 运行时目录名 | `build/testcase/tadd/f32_16x64/` |
+| kernel function name in `.pto` | `@TADD_f32_16x64` |
+| kernel declaration in `launch.cpp` | `TADD_f32_16x64` |
+| wrapper name in `launch.cpp` / `main.cpp` | `LaunchTADD_f32_16x64` |
+| case name in `main.cpp` | `f32_16x64` |
+| case name in `gen_data.py` / `compare.py` | `f32_16x64` |
+| runtime directory name | `build/testcase/tadd/f32_16x64/` |
 
-### 9.2 参数顺序一致
+### 9.2 Parameter Order Consistency
 
-`.pto` 里 kernel 的参数顺序、`launch.cpp` 声明顺序、`main.cpp` 里 launch wrapper 的参数顺序必须一致。  
-如果 `tadd` 的语义是 `(a, b) -> c`，那 host 侧和 compare 也都要按这个顺序组织。
+The kernel parameter order in `.pto`, the declaration order in `launch.cpp`, and the launch-wrapper parameter order in `main.cpp` must be consistent.
+If the semantics of `tadd` are `(a, b) -> c`, then the host side and compare logic must also use that order.
 
-### 9.3 shape、valid_shape、dst_shape 和 dtype 一致
+### 9.3 Consistency of shape, valid_shape, dst_shape, and dtype
 
-`cases.py` 中的 shape 信息和 `dtype` 是 Python 侧的单一来源，`gen_data.py` 和 `compare.py` 自动从中读取。
+The shape information and `dtype` in `cases.py` are the single source of truth on the Python side; `gen_data.py` and `compare.py` read from it automatically.
 
-- 对大多数 op，`shape`/`valid_shape` 就够了。
-- 对 `trowsum` 这类输出 shape 不同的 op，再额外维护 `dst_shape`/`dst_valid_shape`。
+- For most ops, `shape`/`valid_shape` are enough.
+- For ops such as `trowsum` where the output shape differs, additionally maintain `dst_shape`/`dst_valid_shape`.
 
-但 C++ 侧的 `main.cpp` `kCases[]` 和 `.pto` 中的 tensor/tile shape 仍需手动与 `cases.py` 保持一致。
-否则运行能成功，结果也可能是错误的，且定位会很耗时。
+However, `main.cpp` `kCases[]` on the C++ side and the tensor/tile shapes in `.pto` still need to be kept manually consistent with `cases.py`.
+Otherwise the run may succeed, but the result may still be wrong and debugging will be time-consuming.
 
-## 10. 建议的开发验证节奏
+## 10. Recommended Development and Validation Rhythm
 
-作为库开发者，建议用下面的节奏迭代：
+As a library developer, iterate with this rhythm:
 
-1. 先写一个最小 case，例如 `f32_16x64`
-2. 在 simulator 上跑单 case：
+1. Start with one minimal case, such as `f32_16x64`.
+2. Run a single case on the simulator:
 
 ```bash
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd -c f32_16x64
 ```
 
-3. 改 `.pto` 或 host 代码后，如果确认只是小修改，可以用：
+3. After changing `.pto` or host code, if you confirm it is only a small change, use:
 
 ```bash
 python3 test/tilelang_st/script/run_st.py -r sim -v a5 -t tadd -c f32_16x64 -w
 ```
 
-4. 单 case 稳定后，再补更多 shape / dtype case
-5. 再跑全量 `tadd`
-6. 最后如果需要，再切到 `-r npu`
+4. After the single case is stable, add more shape / dtype cases.
+5. Then run the full `tadd`.
+6. Finally, switch to `-r npu` if needed.
 
-## 11. 调试建议
+## 11. Debugging Suggestions
 
-### 11.1 编译失败看哪里
+### 11.1 Where to Look for Compile Failures
 
-- `ptoas` 失败：优先看 `.pto` 本身、TileLang 模板实例化、是否缺少 `--enable-insert-sync`
-- fatobj 生成失败：优先看 `ptoas` 的 stderr 和 `.pto` 语义是否完整
-- `launch.cpp` / `main.cpp` 链接失败：优先看共享库、ACL 运行时依赖和符号名一致性
+- `ptoas` failure: first check the `.pto` file itself, TileLang template instantiation, and whether `--enable-insert-sync` is missing.
+- fatobj generation failure: first check `ptoas` stderr and whether the `.pto` semantics are complete.
+- `launch.cpp` / `main.cpp` link failure: first check shared-library and ACL runtime dependencies, and symbol-name consistency.
 
-### 11.2 运行失败看哪里
+### 11.2 Where to Look for Runtime Failures
 
-- `main.cpp` 报读文件失败：先确认 `build/testcase/<testcase>/<case>/input*.bin` 是否存在
-- kernel 能跑但 compare fail：先看 `output.bin` 与 `golden.bin` 的差异，再看 `.pto` 语义和 host 参数顺序
-- 某个 case 单独跑通过、全量跑失败：优先怀疑 case 目录隔离、host 资源释放、或者多 case 共用状态
+- `main.cpp` reports file-read failure: first confirm that `build/testcase/<testcase>/<case>/input*.bin` exists.
+- Kernel runs but compare fails: first inspect the difference between `output.bin` and `golden.bin`, then check `.pto` semantics and host parameter order.
+- One case passes when run alone but fails in a full run: first suspect case-directory isolation, host resource release, or shared state across cases.
 
-### 11.3 典型排查文件
+### 11.3 Typical Debug Files
 
-| 文件 | 作用 |
+| File | Purpose |
 |---|---|
-| `build/testcase/<testcase>/<testcase>_kernel.o` | 看 `ptoas` 最终生成的 fatobj |
-| `build/testcase/<testcase>/<case>/golden.bin` | 确认 Python 侧 oracle 是否正确 |
-| `build/testcase/<testcase>/<case>/output.bin` | 确认运行时实际输出 |
-| `testcase/<op>/main.cpp` | 确认 host 侧参数顺序、shape 和文件路径 |
-| `testcase/<op>/compare.py` | 确认比较阈值是否合理 |
+| `build/testcase/<testcase>/<testcase>_kernel.o` | Inspect the final fatobj generated by `ptoas` |
+| `build/testcase/<testcase>/<case>/golden.bin` | Confirm whether the Python-side oracle is correct |
+| `build/testcase/<testcase>/<case>/output.bin` | Confirm the actual runtime output |
+| `testcase/<op>/main.cpp` | Confirm host-side parameter order, shape, and file paths |
+| `testcase/<op>/compare.py` | Confirm whether the comparison threshold is reasonable |
 
-## 12. 一句话总结
+## 12. One-Sentence Summary
 
-对于库开发者来说，TileLang ST 框架就是一条固定好的端到端验证流水线：
+For library developers, the TileLang ST framework is a fixed end-to-end validation pipeline:
 
 ```text
-写 .pto -> 接入 testcase 六件套 -> run_st.py 编译运行 -> 查看 build/testcase/<op>/ 下的 input/golden/output -> 判断库实现是否正确
+write .pto -> integrate the testcase six-file set -> run_st.py compiles and runs -> inspect input/golden/output under build/testcase/<op>/ -> decide whether the library implementation is correct
 ```
 
-如果你想验证的是 `pto.tadd`，最重要的是把下面几处保持同步：
+If you want to validate `pto.tadd`, the most important thing is keeping these pieces synchronized:
 
-- `cases.py` 中的 case 定义（name/dtype/shape/valid_shape/eps）—— Python 侧的单一来源
-- `tadd.pto` 中的 kernel 函数名和 tile shape
-- `launch.cpp` 中的 kernel 声明与 wrapper
-- `main.cpp` 中的 `kCases[]`（rows/cols/validRows/validCols 需与 `cases.py` 一致）
-- `gen_data.py` 中的 golden 计算逻辑（op 语义相关，如加法/减法）
+- Case definitions in `cases.py` (name/dtype/shape/valid_shape/eps): the single source of truth on the Python side
+- Kernel function names and tile shapes in `tadd.pto`
+- Kernel declarations and wrappers in `launch.cpp`
+- `kCases[]` in `main.cpp`, where rows/cols/validRows/validCols must match `cases.py`
+- Golden-computation logic in `gen_data.py`, which depends on op semantics such as addition/subtraction
 
-`compare.py` 和 `gen_data.py` 的 case 列表、比较阈值均自动从 `cases.py` 读取，不需要单独维护。
+The case list and comparison threshold in `compare.py` and `gen_data.py` are both read automatically from `cases.py`; they do not need separate maintenance.
 
-这几处一致，框架就能帮助你把 TileLang 库实现的”端到端正确性”稳定地跑起来。
+Once these pieces are consistent, the framework can help you run the end-to-end correctness of a TileLang library implementation reliably.

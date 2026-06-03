@@ -1,29 +1,27 @@
-# `mad` 族泛化 lowering 规则设计
+# Generalized Lowering Rules Design for the `mad` Family
 
-## 问题
+## Problem
 
-`mad` 族当前已经拆成 semantic op 和 raw op，但 lowering 仍然不够泛化：
+The `mad` family has already been split into semantic ops and raw ops, but lowering is still not generalized enough:
 
-- ordinary MAD 与 MX MAD 的 callee 选择依赖局部 if / fallback，导致 FP8 场景容易串线。
-- `X_t`、`CTRL`、bias packing、callee dispatch 分散在多个 helper 中，新增一种类型或模式时不清楚应该改哪一层。
-- 部分类型识别依赖字符串匹配，并散落在 emitter 逻辑里。
+- Callee selection for ordinary MAD and MX MAD depends on local if / fallback logic, which easily crosses wires in FP8 scenarios.
+- `X_t`, `CTRL`, bias packing, and callee dispatch are spread across multiple helpers, making it unclear which layer to modify when adding a type or mode.
+- Some type recognition depends on string matching and is scattered through emitter logic.
 
-要解决的问题不是再加一个“更大的 descriptor”，而是定义一组泛化 lowering 规则：
+The problem to solve is not to add another "larger descriptor", but to define a set of generalized lowering rules:
 
-- 不复制 operand。
-- 不把可由类型推导的信息再枚举存一份。
-- 不让 raw-to-LLVM 重新解释 semantic clause。
-- 不允许 ordinary/MX family 互相 fallback。
+- Do not copy operands.
+- Do not enumerate and store information that can be inferred from types.
+- Do not let raw-to-LLVM reinterpret semantic clauses.
+- Do not allow fallback between the ordinary and MX families.
 
-## 核心原则
+## Core Principles
 
-### 1. IR 本身是事实源，op interface 是访问入口
+### 1. The IR Itself Is the Source of Truth, and the Op Interface Is the Access Point
 
-lowering 不引入承载 operand 的 descriptor。operand、type、attribute 仍然只存在于原 op 上。
-但 lowering 也不应该到处写 `isa<pto::MadOp>` 这种 class 判断。
+Lowering does not introduce a descriptor that carries operands. Operands, types, and attributes still only exist on the original op. However, lowering also should not write class checks such as `isa<pto::MadOp>` everywhere.
 
-需要给 semantic MAD 和 raw MAD 各定义一个 op interface，让不同 op class 暴露同一组
-accessor 和派生语义：
+Define one op interface each for semantic MAD and raw MAD, so different op classes expose the same set of accessors and derived semantics:
 
 ```c++
 enum class MadFamily { Ordinary, Mx };
@@ -72,15 +70,11 @@ class MadRawOpInterface {
 };
 ```
 
-interface method 可以由 ODS 的 extra class declaration 或 C++ method 实现。关键是：
-lowering pattern 只匹配 interface，不直接按 6 个 semantic op class 和 4 个 raw op
-class 分别写逻辑。
+Interface methods can be implemented through ODS extra class declarations or C++ methods. The key point is that lowering patterns only match the interface and do not write separate logic for six semantic op classes and four raw op classes.
 
-允许在 interface method 的实现内部有一次 class 分发，因为那是 op 定义层的局部事实；
-不允许在 lowering 主流程里散落 class 分发。
+One class dispatch inside the implementation of an interface method is allowed, because that is a local fact at the op-definition layer. Class dispatch must not be scattered through the main lowering flow.
 
-MLIR 不会因为原 op 已经有同名 getter 就自动认为它实现了 interface。需要在 ODS
-里显式把 interface 加到 op traits 上。interface method 的实现有两种方式：
+MLIR does not automatically consider an op to implement an interface just because the original op already has a getter with the same name. The interface must be explicitly added to the op traits in ODS. Interface methods can be implemented in two ways:
 
 ```tablegen
 def MadSemanticOpInterface : OpInterface<"MadSemanticOpInterface"> {
@@ -97,9 +91,7 @@ def PTO_MadOp : PTO_Op<"mad", [
 ]> { ... }
 ```
 
-如果 interface method 没有 default implementation，ODS 只会为实现该 interface 的
-op 生成声明，具体定义需要在 C++ 里补齐。若所有实现 op 都有相同名字和相同语义的
-generated accessor，可以在 interface method 上写 default implementation：
+If an interface method has no default implementation, ODS only generates declarations for ops that implement the interface; the concrete definitions must be filled in C++. If all implementing ops have generated accessors with the same name and semantics, the interface method can provide a default implementation:
 
 ```tablegen
 InterfaceMethod<
@@ -112,24 +104,21 @@ InterfaceMethod<
 >
 ```
 
-对 `lhs/rhs/dst/m/n/k` 这类所有 semantic MAD 都同名的字段，可以用 default
-implementation 直接转发已有 accessor。对 `bias`、`tf32_mode` 这类并非所有 op
-都有的字段，interface 必须提供 capability 方法：
+For fields such as `lhs/rhs/dst/m/n/k` that have the same name across all semantic MAD ops, the default implementation can directly forward to the existing accessor. For fields such as `bias` and `tf32_mode` that do not exist on every op, the interface must provide capability methods:
 
-- `getMadFamily()`：ordinary 或 MX，决定 raw family 和 callee lookup family。
-- `getMadAccumulation()`：`ZeroInit / Accumulate / BiasInit`，决定 accumulator 初值语义。
-- `readsAccumulator()`：只有 acc 模式返回 true；它表示 C 初值来自现有 `%dst`。
-- `initializesAccumulatorWithZero()`：zero-init 模式返回 true；它决定 `X_t.c_init = 1`。
-- `initializesAccumulatorWithBias()`：bias-init 模式返回 true；它决定 `X_t.c_src = 1`。
-- `hasBiasOperand()`：只有 bias-init op 返回 true。
-- `getBiasOrNull()`：`hasBiasOperand() == false` 时返回空值。
-- `supportsTf32Mode()`：ordinary MAD op 返回 true，MX MAD op 返回 false。
-- `getTf32Mode()`：`supportsTf32Mode() == false` 时必须返回 `std::nullopt`。
+- `getMadFamily()`: ordinary or MX; determines the raw family and callee lookup family.
+- `getMadAccumulation()`: `ZeroInit / Accumulate / BiasInit`; determines accumulator initial-value semantics.
+- `readsAccumulator()`: returns true only in acc mode; it means the C initial value comes from the existing `%dst`.
+- `initializesAccumulatorWithZero()`: returns true in zero-init mode; it determines `X_t.c_init = 1`.
+- `initializesAccumulatorWithBias()`: returns true in bias-init mode; it determines `X_t.c_src = 1`.
+- `hasBiasOperand()`: returns true only for bias-init ops.
+- `getBiasOrNull()`: returns null when `hasBiasOperand() == false`.
+- `supportsTf32Mode()`: returns true for ordinary MAD ops and false for MX MAD ops.
+- `getTf32Mode()`: must return `std::nullopt` when `supportsTf32Mode() == false`.
 
-lowering 只能先看 capability，再使用 optional accessor；不能直接假设所有实现 op
-都有 `getBias()` 或 `getTf32ModeAttr()`。
+Lowering must check capabilities first, then use optional accessors. It must not directly assume that every implementing op has `getBias()` or `getTf32ModeAttr()`.
 
-这两个 capability 是正交的，不能用一个 op class 分支同时处理：
+These two capabilities are orthogonal and cannot be handled together through one op-class branch:
 
 | op | family | accumulation | reads acc | zero init | bias init | bias operand | TF32 |
 |---|---|---|---:|---:|---:|---:|---:|
@@ -140,58 +129,47 @@ lowering 只能先看 capability，再使用 optional accessor；不能直接假
 | `pto.mad_mx_acc` | MX | Accumulate | true | false | false | false | false |
 | `pto.mad_mx_bias` | MX | BiasInit | false | false | true | true | false |
 
-因此 `mad_bias` 同时是 bias op 和 TF32-capable op；`mad_mx_bias` 是 bias op
-但不是 TF32-capable op。`mad_acc` 没有额外 operand，但它是唯一会读取现有 accumulator
-作为 C 初值的模式。lowering 不能把 “没有 bias operand” 直接等价成 “zero-init”，
-也不能把 “bias op” 和 “不支持 TF32” 绑定在一起。
+Therefore, `mad_bias` is both a bias op and a TF32-capable op; `mad_mx_bias` is a bias op but not TF32-capable. `mad_acc` has no extra operand, but it is the only mode that reads the existing accumulator as the C initial value. Lowering must not directly equate "no bias operand" with "zero-init", nor bind "bias op" to "does not support TF32".
 
-实现上也不要让 interface default implementation 调用某个并非所有 op 都存在的
-generated getter。建议：
+In implementation, the interface default implementation also should not call a generated getter that does not exist on every op. Recommended approach:
 
-- `getLhs/getRhs/getDst` 可以用固定 operand index `0/1/2`。
-- `getBiasOrNull` 根据 `hasBiasOperand()` 决定是否返回 operand `3`。
-- `getM/getN/getK` 根据 `hasBiasOperand()` 决定从 operand `3/4/5` 或 `4/5/6` 读取。
-- `readsAccumulator/initializesAccumulatorWithZero/initializesAccumulatorWithBias`
-  从 `getMadAccumulation()` 派生，三者必须互斥且恰好一个为 true。
-- `getTf32Mode` 通过通用 attribute lookup 读取 `"tf32_mode"`，而不是调用 generated
-  `getTf32Mode()`；MX op 没有这个 attr 时自然返回空。
-- verifier 保证 `supportsTf32Mode() == false` 的 op 不能携带 `"tf32_mode"`。
+- `getLhs/getRhs/getDst` can use fixed operand indexes `0/1/2`.
+- `getBiasOrNull` returns operand `3` depending on `hasBiasOperand()`.
+- `getM/getN/getK` reads from operands `3/4/5` or `4/5/6` depending on `hasBiasOperand()`.
+- `readsAccumulator/initializesAccumulatorWithZero/initializesAccumulatorWithBias` are derived from `getMadAccumulation()`; the three must be mutually exclusive and exactly one must be true.
+- `getTf32Mode` reads `"tf32_mode"` through generic attribute lookup instead of calling generated `getTf32Mode()`; when MX ops have no such attr, it naturally returns empty.
+- The verifier guarantees that ops with `supportsTf32Mode() == false` cannot carry `"tf32_mode"`.
 
-也就是说，interface 的统一性来自“固定 operand organization + capability”，不是来自
-假设所有 op 都有完全相同的 generated C++ getter。
+In other words, interface uniformity comes from "fixed operand organization + capabilities", not from assuming that every op has exactly the same generated C++ getters.
 
-因此这里不是“自己写 C++ 继承类”。正确方式是：
+Therefore, this is not "write your own C++ inheritance class". The correct approach is:
 
-1. 在 `PTOInterfaces.td` 定义 op interface。
-2. 在每个 MAD ODS op 的 traits 中声明实现该 interface。
-3. 能统一转发的 getter 用 interface default implementation。
-4. 形态相关的字段，例如 family / accumulation / bias/tf32 capability，用每个 op
-   的小实现显式给出。
+1. Define the op interface in `PTOInterfaces.td`.
+2. Declare implementation of the interface in the traits of every MAD ODS op.
+3. Use interface default implementations for getters that can be forwarded uniformly.
+4. Explicitly provide small implementations per op for shape-dependent fields such as family / accumulation / bias/tf32 capability.
 
-### 2. family 由 op kind 决定，不由类型猜
+### 2. Family Is Determined by Op Kind, Not Guessed from Type
 
-ordinary / MX 是 op 语义，不是类型语义：
+ordinary / MX is op semantics, not type semantics:
 
-- `pto.mad*` semantic op 只能 lower 到 ordinary raw family。
-- `pto.mad_mx*` semantic op 只能 lower 到 MX raw family。
-- `pto.mad_raw` / `pto.mad_bias_raw` 只能发 ordinary MAD。
-- `pto.mad_mx_raw` / `pto.mad_mx_bias_raw` 只能发 MX MAD。
+- `pto.mad*` semantic ops can only lower to the ordinary raw family.
+- `pto.mad_mx*` semantic ops can only lower to the MX raw family.
+- `pto.mad_raw` / `pto.mad_bias_raw` can only emit ordinary MAD.
+- `pto.mad_mx_raw` / `pto.mad_mx_bias_raw` can only emit MX MAD.
 
-类型只用于选择同一 family 内的具体 typed intrinsic。类型不能改变 family。
+Types are only used to select a concrete typed intrinsic within the same family. Types cannot change the family.
 
-这是防止普通 FP8 和 MX FP8 串线的关键规则。
+This is the key rule that prevents ordinary FP8 and MX FP8 from crossing wires.
 
-### 3. lowering 使用规则函数，不使用大 descriptor
+### 3. Lowering Uses Rule Functions, Not a Large Descriptor
 
-semantic-to-raw 必须有一个统一入口。这个入口负责从 semantic op 生成 raw op
-需要的两个运行时值：
+semantic-to-raw must have one unified entry. This entry is responsible for generating the two runtime values needed by the raw op from the semantic op:
 
-- `xt`：raw MAD 的 packed shape/config operand，由 semantic op 的
-  `m/n/k` 和 clause 生成。
-- `ctrl_for_mad`：本次 MAD 临时使用的控制状态，由 semantic op 的
-  numeric/layout clause 和指针类型生成。
+- `xt`: the packed shape/config operand of raw MAD, generated from the semantic op's `m/n/k` and clauses.
+- `ctrl_for_mad`: the temporary control state used by this MAD, generated from the semantic op's numeric/layout clauses and pointer types.
 
-规则 helper 只服务这个统一入口，并且接收 interface，而不是裸 `Operation *`：
+Rule helpers only serve this unified entry and receive interfaces instead of bare `Operation *`:
 
 ```c++
 MadRawKind deriveRawKind(MadSemanticOpInterface op);
@@ -202,22 +180,20 @@ Value emitCtrlForMad(MadSemanticOpInterface op, Value ctrlSaved,
 StringRef lookupMadIntrinsic(MadRawOpInterface op);
 ```
 
-这些函数不返回“重新包装过的 op”。它们只返回当前阶段真正需要的产物。
+These functions do not return a "repacked op". They only return the products actually needed by the current stage.
 
-## semantic-to-raw 规则
+## semantic-to-raw Rules
 
-semantic-to-raw 的统一入口是：
+The unified entry for semantic-to-raw is:
 
 ```c++
 LogicalResult lowerMadSemanticOp(MadSemanticOpInterface op,
                                  PatternRewriter &rewriter);
 ```
 
-这个函数是唯一创建 `xt` 的地方。`xt` 不是外部传入的，也不是 raw-to-LLVM
-再生成的；它在 semantic-to-raw 期间由原 semantic op 的 operands/attributes
-构造出来，然后作为 operand 传给 raw op。
+This function is the only place that creates `xt`. `xt` is not passed in from outside and is not regenerated by raw-to-LLVM; it is constructed during semantic-to-raw from the operands/attributes of the original semantic op, then passed as an operand to the raw op.
 
-输入是 semantic op，输出是：
+The input is a semantic op, and the output is:
 
 ```text
 get_ctrl
@@ -226,9 +202,9 @@ raw op(..., xt)
 set_ctrl(ctrl_saved)
 ```
 
-### raw op 选择
+### Raw Op Selection
 
-raw op 只由 semantic op 名字决定：
+The raw op is determined only by the semantic op name:
 
 | semantic op | raw op |
 |---|---|
@@ -239,14 +215,11 @@ raw op 只由 semantic op 名字决定：
 | `pto.mad_mx_acc` | `pto.mad_mx_raw` |
 | `pto.mad_mx_bias` | `pto.mad_mx_bias_raw` |
 
-这里不需要 descriptor。pattern 使用一个通用
-`lowerMadSemanticOp(MadSemanticOpInterface op)`，通过 interface 的
-`getMadFamily()` 和 `getMadAccumulation()` 选择 raw op。
+No descriptor is needed here. The pattern uses a generic `lowerMadSemanticOp(MadSemanticOpInterface op)` and selects the raw op through the interface's `getMadFamily()` and `getMadAccumulation()`.
 
-### `X_t` 生成
+### `X_t` Generation
 
-`X_t` 是 raw op 的 packed `xt` operand。它只在
-`buildMadXtFromSemanticOp(op)` 中生成，来源是 semantic op 本身：
+`X_t` is the packed `xt` operand of the raw op. It is generated only in `buildMadXtFromSemanticOp(op)`, and its source is the semantic op itself:
 
 ```text
 X_t.M = op.m
@@ -258,7 +231,7 @@ X_t.c_src = op.initializesAccumulatorWithBias()
 X_t.c_init = op.initializesAccumulatorWithZero()
 ```
 
-其中 accumulation 由 semantic op 自己通过 interface 暴露：
+The accumulation is exposed by the semantic op itself through the interface:
 
 ```text
 mad / mad_mx -> ZeroInit
@@ -266,11 +239,11 @@ mad_acc / mad_mx_acc -> Accumulate
 mad_bias / mad_mx_bias -> BiasInit
 ```
 
-这条规则避免把 `c_src/c_init` 存进另一个结构。它们是 op kind 的派生语义。
+This rule avoids storing `c_src/c_init` in another structure. They are derived semantics of the op kind.
 
-### `CTRL` 生成
+### `CTRL` Generation
 
-`CTRL` 只由 semantic clause 和指针类型生成：
+`CTRL` is generated only from semantic clauses and pointer types:
 
 ```text
 CTRL[HiF8] = isHiF8(lhs.type, rhs.type)
@@ -279,17 +252,15 @@ CTRL[sat] = op.sat_mode only if explicitly present
 CTRL[n_dir] = op.has(n_dir)
 ```
 
-规则：
+Rules:
 
-- HiF8 必须从 lhs/rhs 指针元素类型推导，不能作为独立 operand 或 enum 保存。
-- TF32 只允许 `supportsTf32Mode() == true` 的 ordinary `f32 x f32 -> f32`
-  semantic op 使用；MX op 的 `supportsTf32Mode()` 必须为 false，`getTf32Mode()`
-  必须返回空值。
-- `sat|nosat` 不写时不覆盖对应状态；写了才覆盖。
-- `n_dir` 不写时显式设置为默认方向，避免污染后续 MAD。
-- semantic-to-raw 必须保存并恢复进入 op 前的 `CTRL`。
+- HiF8 must be inferred from lhs/rhs pointer element types and cannot be stored as an independent operand or enum.
+- TF32 is only allowed on ordinary `f32 x f32 -> f32` semantic ops with `supportsTf32Mode() == true`; MX ops must have `supportsTf32Mode() == false`, and `getTf32Mode()` must return empty.
+- If `sat|nosat` is not written, the corresponding state is not overwritten; it is only overwritten when spelled.
+- When `n_dir` is not written, explicitly set the default direction to avoid contaminating later MAD ops.
+- semantic-to-raw must save and restore the `CTRL` value present before entering the op.
 
-### semantic-to-raw 伪码
+### semantic-to-raw Pseudocode
 
 ```c++
 LogicalResult lowerMadSemanticOp(MadSemanticOpInterface op,
@@ -310,10 +281,9 @@ LogicalResult lowerMadSemanticOp(MadSemanticOpInterface op,
 }
 ```
 
-注意这里的 `emitRawOp(rawKind, op, xt, rewriter)` 只是把原 op 的现有
-data operands 加上刚生成的 `xt` 转发给 raw op，不创建一份新的 operand model。
+Note that `emitRawOp(rawKind, op, xt, rewriter)` only forwards the original op's existing data operands plus the newly generated `xt` to the raw op. It does not create a new operand model.
 
-更具体地说，几个规则函数应当长这样：
+More concretely, several rule functions should look like this:
 
 ```c++
 MadRawKind deriveRawKind(MadSemanticOpInterface op) {
@@ -410,28 +380,27 @@ void emitRawOp(MadRawKind rawKind, MadSemanticOpInterface op, Value xt,
 }
 ```
 
-这里的 `op.getLhs()/op.getM()/op.getUnitFlagMode()` 都来自 interface。它们只从原 op
-读取 operand 或 attribute，不缓存、不重组、不创建新的语义对象。
+The `op.getLhs()/op.getM()/op.getUnitFlagMode()` calls here all come from the interface. They only read operands or attributes from the original op; they do not cache, reorganize, or create new semantic objects.
 
-## raw-to-LLVM 规则
+## raw-to-LLVM Rules
 
-raw-to-LLVM 的输入是 raw op。它只做四件事：
+The input to raw-to-LLVM is a raw op. It only does four things:
 
-1. 从 raw op kind 得到 family。
-2. 从 raw op operand type 生成 intrinsic type suffix。
-3. 查 family-local intrinsic 表。
-4. 发 call。
+1. Get the family from the raw op kind.
+2. Generate the intrinsic type suffix from raw op operand types.
+3. Look up the family-local intrinsic table.
+4. Emit the call.
 
 ### family-local dispatch
 
-callee lookup 必须拆成两个互不 fallback 的入口：
+Callee lookup must be split into two entries that do not fallback to each other:
 
 ```c++
 FailureOr<StringRef> lookupOrdinaryMadIntrinsic(Type lhs, Type rhs, Type dst);
 FailureOr<StringRef> lookupMxMadIntrinsic(Type lhs, Type rhs, Type dst);
 ```
 
-调用规则：
+Call rules:
 
 ```c++
 if (op.getMadFamily() == MadFamily::Ordinary)
@@ -440,18 +409,18 @@ else if (op.getMadFamily() == MadFamily::Mx)
   callee = lookupMxMadIntrinsic(lhsElem, rhsElem, dstElem);
 ```
 
-禁止：
+Forbidden:
 
 ```c++
 ordinary lookup failed -> try MX lookup
 MX lookup failed -> try ordinary lookup
 ```
 
-这比 `MadElementFamily` 更直接：类型 suffix 是从 operand type 现场推导的，不需要先存成 enum。
+This is more direct than `MadElementFamily`: the type suffix is inferred at the use site from operand types and does not need to be stored as an enum first.
 
-### typed suffix 推导
+### Typed Suffix Derivation
 
-suffix 推导只回答“这个 type 在当前 family 下叫什么”：
+Suffix derivation only answers "what this type is called under the current family":
 
 ```c++
 FailureOr<StringRef> getOrdinaryMadTypeSuffix(Type lhsElem, Type rhsElem,
@@ -461,7 +430,7 @@ FailureOr<StringRef> getMxMadTypeSuffix(Type lhsElem, Type rhsElem,
                                          Type dstElem);
 ```
 
-示例：
+Examples:
 
 ```text
 ordinary:
@@ -475,21 +444,21 @@ MX:
   e4m3, e5m2, f32 -> "e4m3e5m2"
 ```
 
-同样的 FP8 类型组合在 ordinary 和 MX 下可以映射到不同 intrinsic stem，但这个差异由 family-local lookup 决定，不由类型自己决定。
+The same FP8 type combination can map to different intrinsic stems under ordinary and MX. That difference is determined by family-local lookup, not by the type itself.
 
-### HiF8 处理
+### HiF8 Handling
 
-HiF8 不参与 raw-to-LLVM callee 区分：
+HiF8 does not participate in raw-to-LLVM callee distinction:
 
-- HiF8 ordinary MAD 使用 ordinary FP8 typed suffix。
-- HiF8 的执行解释由 semantic-to-raw 的 `CTRL` 修改表达。
-- raw-to-LLVM 不读取 HiF8 semantic mode，也不设置 `CTRL`。
+- HiF8 ordinary MAD uses the ordinary FP8 typed suffix.
+- HiF8 execution interpretation is expressed by the semantic-to-raw `CTRL` modification.
+- raw-to-LLVM does not read the HiF8 semantic mode and does not set `CTRL`.
 
-这保证 HiF8 不会因为 callee 名称选择污染 ordinary FP8。
+This guarantees that HiF8 does not contaminate ordinary FP8 through callee-name selection.
 
 ### bias packing
 
-bias packing 是 raw kind 的机械规则：
+bias packing is a mechanical rule of the raw kind:
 
 ```text
 mad_raw / mad_mx_raw:
@@ -499,9 +468,9 @@ mad_bias_raw / mad_mx_bias_raw:
   call dst = pack(dst, bias)
 ```
 
-它不参与 callee 选择，也不影响 ordinary/MX family。
+It does not participate in callee selection and does not affect the ordinary/MX family.
 
-### raw-to-LLVM 伪码
+### raw-to-LLVM Pseudocode
 
 ```c++
 LogicalResult emitMadRaw(MadRawOpInterface op,
@@ -528,9 +497,9 @@ LogicalResult emitMadRaw(MadRawOpInterface op,
 }
 ```
 
-## 类型识别规则
+## Type Recognition Rules
 
-类型识别不应该在 emitter 中到处 `contains("e4m3")`。需要收敛成 family-local type suffix helper：
+Type recognition should not use `contains("e4m3")` everywhere in the emitter. It needs to be consolidated into family-local type suffix helpers:
 
 ```c++
 FailureOr<StringRef> getOrdinaryMadElemToken(Type elem);
@@ -538,18 +507,18 @@ FailureOr<StringRef> getMxMadElemToken(Type elem);
 bool isHiF8Type(Type elem);
 ```
 
-约束：
+Constraints:
 
-- 优先使用 PTO type API。
-- 如果某些 FP8/HiF8 类型暂时没有稳定 API，允许在这个 helper 内部有兼容字符串匹配。
-- 字符串匹配不得出现在 callee lookup、pattern rewrite、raw lowering 主流程里。
-- unsupported target-profile type 在 helper 中失败，不进入 fallback。
+- Prefer the PTO type API.
+- If some FP8/HiF8 types temporarily have no stable API, compatibility string matching is allowed inside this helper.
+- String matching must not appear in callee lookup, pattern rewrite, or the main raw-lowering flow.
+- Unsupported target-profile types fail in the helper and do not enter fallback.
 
-这样新增类型只改 type token helper 和对应 family-local suffix 规则。
+Adding a new type then only changes the type token helper and the corresponding family-local suffix rules.
 
-## 实现组织
+## Implementation Organization
 
-建议新增轻量 helper 和 op interface，而不是新增大 descriptor：
+Add lightweight helpers and op interfaces instead of a new large descriptor:
 
 ```text
 include/PTO/IR/PTOInterfaces.td
@@ -557,44 +526,44 @@ include/PTO/Transforms/MadLoweringRules.h
 lib/PTO/Transforms/MadLoweringRules.cpp
 ```
 
-放入：
+Include:
 
 - `MadSemanticOpInterface` / `MadRawOpInterface`
-- semantic-to-raw 规则：`deriveRawKind`、`buildMadXtFromSemanticOp`、`emitCtrlForMad`
-- raw-to-LLVM 规则：`lookupOrdinaryMadIntrinsic`、`lookupMxMadIntrinsic`
-- type token helper：`getOrdinaryMadElemToken`、`getMxMadElemToken`、`isHiF8Type`
+- semantic-to-raw rules: `deriveRawKind`, `buildMadXtFromSemanticOp`, `emitCtrlForMad`
+- raw-to-LLVM rules: `lookupOrdinaryMadIntrinsic`, `lookupMxMadIntrinsic`
+- type token helpers: `getOrdinaryMadElemToken`, `getMxMadElemToken`, `isHiF8Type`
 
-不放入：
+Do not include:
 
-- operand 副本
-- type-family enum 副本
-- 与具体 rewriter 强绑定的大型状态对象
-- lowering 主流程里的 repeated op class 判断
+- operand copies
+- type-family enum copies
+- large state objects tightly bound to a specific rewriter
+- repeated op-class checks in the main lowering flow
 
-`VPTOExpandWrapperOps.cpp` 保留 IR 构造和 pattern 注册。
-`VPTOLLVMEmitter.cpp` 保留 LLVM address-space cast、bias packing、call emission。
+`VPTOExpandWrapperOps.cpp` keeps IR construction and pattern registration.
+`VPTOLLVMEmitter.cpp` keeps LLVM address-space casts, bias packing, and call emission.
 
-## 验收标准
+## Acceptance Criteria
 
-结构验收：
+Structural acceptance:
 
-- ordinary raw lowering 只调用 `lookupOrdinaryMadIntrinsic`。
-- MX raw lowering 只调用 `lookupMxMadIntrinsic`。
-- 两个 lookup 之间没有 fallback。
-- semantic-to-raw 主流程匹配 `MadSemanticOpInterface`，不是逐个 op class 模板实例。
-- raw-to-LLVM 主流程匹配 `MadRawOpInterface`，不是逐个 raw op class 分支。
-- semantic-to-raw 不构造保存 operand 的 descriptor。
-- raw-to-LLVM 不读取 semantic clause。
-- FP8/HiF8 字符串识别如果存在，只存在于 type token helper。
+- ordinary raw lowering only calls `lookupOrdinaryMadIntrinsic`.
+- MX raw lowering only calls `lookupMxMadIntrinsic`.
+- There is no fallback between the two lookup functions.
+- The main semantic-to-raw flow matches `MadSemanticOpInterface`, not per-op-class template instances.
+- The main raw-to-LLVM flow matches `MadRawOpInterface`, not per-raw-op-class branches.
+- semantic-to-raw does not construct a descriptor that stores operands.
+- raw-to-LLVM does not read semantic clauses.
+- If FP8/HiF8 string recognition exists, it only exists in the type token helper.
 
-行为验收：
+Behavioral acceptance:
 
-- MAD SIM 全量通过。
-- ordinary FP8 `mad_raw` 静态导向 ordinary `MAD.e4m3e4m3`。
-- `mad_mx_raw` / `mad_mx_bias_raw` 静态导向 `MMAD.MX.*`。
-- HiF8 + 后续 ordinary FP8 的同 kernel SIM 通过，证明 `CTRL` 不泄漏。
-- `sat|nosat`、`tf32_mode`、`n_dir` 的现有 SIM 覆盖仍通过。
+- Full MAD SIM passes.
+- ordinary FP8 `mad_raw` statically routes to ordinary `MAD.e4m3e4m3`.
+- `mad_mx_raw` / `mad_mx_bias_raw` statically route to `MMAD.MX.*`.
+- A same-kernel SIM with HiF8 followed by ordinary FP8 passes, proving that `CTRL` does not leak.
+- Existing SIM coverage for `sat|nosat`, `tf32_mode`, and `n_dir` still passes.
 
-## 非目标
+## Non-goals
 
-本设计不改用户可见 MAD op 语法，不新增 MX scale operand，不改 acc_store 族接口，也不重新定义 `sat|nosat` 数值语义。
+This design does not change user-visible MAD op syntax, does not add an MX scale operand, does not change the `acc_store` family interface, and does not redefine the numeric semantics of `sat|nosat`.
