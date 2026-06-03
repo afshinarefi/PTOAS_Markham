@@ -1,31 +1,31 @@
 # PTODSL ST Guide
 
-`test/dsl-st/` 放的是基于 PTODSL 的 simulator/ST 用例。
+`test/dsl-st/` contains simulator/ST cases based on PTODSL.
 
-这类测试适合验证：
+These tests are suitable for validating:
 
-- PTODSL surface 是否能正确生成目标 IR
-- `ptoas --pto-backend=vpto` 后端是否能稳定接受这类新形态
-- kernel 在 simulator / runtime 路径上的真实执行结果
+- Whether the PTODSL surface can correctly generate the target IR.
+- Whether the `ptoas --pto-backend=vpto` backend can reliably accept these new forms.
+- The actual kernel execution result on the simulator/runtime path.
 
-如果你要验证的是 parser、verifier、pass dump、IR rewrite 之类“只看编译输出”的行为，优先放到 `test/lit`，不要放这里。
+If you need to validate behavior that only inspects compilation output, such as parser, verifier, pass dump, or IR rewrite behavior, prefer `test/lit` instead of this directory.
 
-## 推荐写法
+## Recommended Pattern
 
-当前目录下推荐使用 [common.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/common.py) 里的两个 helper：
+In this directory, prefer the two helpers from [common.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/common.py):
 
 - `golden_output_case(...)`
 - `auto_main(globals())`
 
-对大多数单输出测试，开发者只需要写：
+For most single-output tests, developers only need to write:
 
 1. kernel
-2. 输入构造
-3. golden 计算
+2. input construction
+3. golden computation
 4. `CASES = [...]`
-5. 文件末尾一行 `auto_main(globals())`
+5. one `auto_main(globals())` line at the end of the file
 
-## 最小模板
+## Minimal Template
 
 ```python
 #!/usr/bin/env python3
@@ -71,88 +71,88 @@ CASES = [
 auto_main(globals())
 ```
 
-## `golden_output_case(...)` 约定
+## `golden_output_case(...)` Contract
 
-`golden_output_case(...)` 默认适合“若干输入 + 一个输出”的测试。
+`golden_output_case(...)` is intended by default for tests with "several inputs + one output."
 
-它会自动做这些事情：
+It automatically does the following:
 
-- 把 `inputs` 转成 host numpy 数组
-- 根据 `expected` 的 shape / dtype 自动分配一个全零输出
-- 把这个输出作为最后一个参数传给 kernel
-- 默认把最后一个 device tensor 拿出来和 golden 比较
+- Converts `inputs` to host NumPy arrays.
+- Allocates a zero-filled output from the shape/dtype of `expected`.
+- Passes this output to the kernel as the last argument.
+- By default, takes the last device tensor and compares it with the golden result.
 
-常用参数：
+Common parameters:
 
 - `inputs`
-  - 可以是函数，返回 `list[np.ndarray]`
-  - 也可以直接传一个 `list[np.ndarray]`
+  - Can be a function that returns `list[np.ndarray]`.
+  - Can also be a direct `list[np.ndarray]`.
 - `expected`
-  - 可以是函数，签名是 `expected(*host_inputs)`
-  - 也可以直接传 numpy 数组
+  - Can be a function with signature `expected(*host_inputs)`.
+  - Can also be a direct NumPy array.
 - `output_shape`
-  - 如果输出 shape 不能直接从 golden 推出来，可以显式指定
+  - Specify explicitly if the output shape cannot be inferred directly from the golden result.
 - `output_dtype`
-  - 如果输出 dtype 需要和 golden 分开控制，可以显式指定
+  - Specify explicitly if the output dtype must be controlled separately from the golden result.
 - `output_index`
-  - 默认比较最后一个 tensor；如果不是最后一个，改这里
+  - Compares the last tensor by default; change this if the output is not the last tensor.
 - `rtol` / `atol`
-  - 浮点结果建议显式写；位级结果一般用 `0.0`
+  - Set these explicitly for floating-point results; bit-level results usually use `0.0`.
 
-## 什么时候需要自定义 case
+## When To Use A Custom Case
 
-如果测试不是“单输出比 golden”这一路径，就不要硬塞进 `golden_output_case(...)`。
+If the test is not on the "single output compared with golden" path, do not force it into `golden_output_case(...)`.
 
-常见例子：
+Common examples:
 
-- 需要比较多个输出
-- 需要读取中间 buffer
-- 需要自定义断言信息
-- 需要根据运行时结果做结构化检查而不是 `allclose`
+- Multiple outputs need to be compared.
+- Intermediate buffers need to be read.
+- Custom assertion messages are needed.
+- Structured checks based on runtime results are needed instead of `allclose`.
 
-这时可以直接继续使用 `run_cases(...)` 的底层接口，自定义：
+In these cases, use the lower-level `run_cases(...)` interface directly and customize:
 
 - `make_case()`
 - `check(device_inputs, expected)`
 
-## 当前参考用例
+## Current Reference Cases
 
-可以直接参考：
+Refer directly to:
 
 - [predicate_pack_launch.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/predicate_pack_launch.py)
 - [cube_matrix_pipeline.py](/home/zhangzhendong/ptoas-workspace/PTOAS/test/dsl-st/cube_matrix_pipeline.py)
 
-它演示了：
+They demonstrate:
 
 - PTODSL kernel authoring
-- raw predicate image 的 host golden 写法
-- `golden_output_case(...)` 的标准接入方式
-- cube matrix pipeline 的端到端 simulator/ST 写法
+- How to write a host golden for a raw predicate image.
+- The standard integration pattern for `golden_output_case(...)`.
+- End-to-end simulator/ST authoring for a cube matrix pipeline.
 
-## 运行方式
+## How To Run
 
-打印生成的 MLIR：
+Print generated MLIR:
 
 ```bash
 python3 test/dsl-st/predicate_pack_launch.py --emit-mlir
 ```
 
-走 simulator ST：
+Run simulator ST:
 
 ```bash
 scripts/sim_dsl.sh test/dsl-st/predicate_pack_launch.py
 ```
 
-如果只是先做编译链检查，也可以先跑：
+If you only want to check the compilation chain first, you can also run:
 
 ```bash
 python3 ptodsl/tests/test_jit_compile.py
 ```
 
-## 编写建议
+## Authoring Tips
 
-- 优先让 golden 直接表达语义，不要把 expected 写成难懂的魔数堆。
-- 尽量让一个测试只保护一个回归点；如果要覆盖一组紧密相关的形态，可以像 `predicate_pack_launch.py` 一样在同一个 kernel 里并排 materialize。
-- 对 predicate / bit-level 结果，优先用 `psts` 这类“直接 materialize raw state”的方式观测，不要绕远路通过别的算子副作用来猜结果。
-- 能用 Python 原生字面量的地方就直接用，减少不必要的 `pto.const(...)` 噪音。
-- 如果某个写法依赖当前 backend / raw image 约定，最好在 golden 附近留一小段注释，解释为什么 expected 长这样。
+- Prefer making the golden result express the semantics directly; avoid writing `expected` as a hard-to-read pile of magic numbers.
+- Try to make each test protect only one regression point. If you need to cover a tightly related set of forms, materialize them side by side in one kernel as `predicate_pack_launch.py` does.
+- For predicate / bit-level results, prefer observing them with direct raw-state materialization such as `psts`; do not infer the result indirectly through side effects from other ops.
+- Use native Python literals wherever possible to reduce unnecessary `pto.const(...)` noise.
+- If a pattern depends on the current backend / raw image convention, leave a short comment near the golden result explaining why `expected` has that shape.

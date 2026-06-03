@@ -440,8 +440,8 @@ spaces such as `MAT`, `LEFT`, `RIGHT`, `ACC`, and `BIAS` via `pto.Tile`.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `target` | `str` | No | Target hardware architecture. Cube DSL v1 supports `"a5"`. Default: `"a5"`. |
-| `op` | `str` | 与 `ops` 二选一 | Single concrete matcher op. Bare-op strings such as `"pto.mad"` are supported. **Mutually exclusive with `ops`**. |
-| `ops` | `List[str]` | 与 `op` 二选一 | List of concrete matcher ops for shared-body selection and template-slot dispatch. **Mutually exclusive with `op`**. |
+| `op` | `str` | Mutually exclusive with `ops` | Single concrete matcher op. Bare-op strings such as `"pto.mad"` are supported. **Mutually exclusive with `ops`**. |
+| `ops` | `List[str]` | Mutually exclusive with `op` | List of concrete matcher ops for shared-body selection and template-slot dispatch. **Mutually exclusive with `op`**. |
 | `dtypes` | `List[Tuple[Type, ...]]` | Recommended | List of selection dtype signatures. For cube kernels, these signatures describe the concrete query op rather than necessarily mirroring the Python parameter list. |
 | `templates` | `Dict[str, Dict[str, str]]` | No | Static template-slot mappings. Each slot maps concrete op names to real `pto.*` calls. Required when the kernel body uses `pto.tpl(...)`. |
 | `name` | `str` | No | Descriptor name used for registration, debugging, and emitted symbol naming. Defaults to the decorated function name. |

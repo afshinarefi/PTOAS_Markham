@@ -1,8 +1,8 @@
-# `acc_store` 统一接口设计
+# Unified `acc_store` Interface Design
 
-## 1. 目标方案
+## 1. Target Design
 
-`acc_store` 的目标接口只保留 `target_profile` 可用的 `L0C -> OUT` 结构化语义：
+The target `acc_store` interface keeps only the structured `L0C -> OUT` semantics available under `target_profile`:
 
 ```mlir
 pto.mte_l0c_l1 %src, %dst, %m, %n, %src_stride, %dst_stride,
@@ -14,68 +14,68 @@ pto.mte_l0c_l1 %src, %dst, %m, %n, %src_stride, %dst_stride,
               (sat | nosat)?
 ```
 
-其中：
+Where:
 
-- `%src` 必须是 `!pto.ptr<..., l0c>`
-- `%dst` 允许是 `!pto.ptr<..., gm>` `!pto.ptr<..., vec>`或 `!pto.ptr<..., l1>`
-- 这些扩展字段全部是可选的，未出现就表示不启用
-- `nz2nd / nz2dn / nz2nz` 和 `loop3` 是并列的 layout 相关参数
+- `%src` must be `!pto.ptr<..., l0c>`.
+- `%dst` may be `!pto.ptr<..., gm>`, `!pto.ptr<..., vec>`, or `!pto.ptr<..., l1>`.
+- All extension fields are optional; absence means the feature is disabled.
+- `nz2nd / nz2dn / nz2nz` and `loop3` are peer layout-related parameters.
 
-## 2. 字段形态
+## 2. Field Forms
 
-这些是这版结构化接口里各字段的可选/必填关系：
+These are the optional/required relationships for each field in this structured interface version:
 
 - `unit_flag(check_only | check_and_clear)?`
-  - 不写表示 `off`
-  - `check_only` 对应先检查后不清零
-  - `check_and_clear` 对应先检查后清零
-  - `2'b01` 是 ISA 保留值，不进入合法 keyword
+  - Omission means `off`.
+  - `check_only` means check first without clearing.
+  - `check_and_clear` means check first and then clear.
+  - `2'b01` is ISA-reserved and is not exposed as a legal keyword.
 - `pre_quant(..., mode = ...)`
-  - `mode` 必填
-  - `mode` 可选值：`no_convert`、`f32_f16`、`qf322hif8_pre_vec`、`qf322hif8_pre_scalar`、`qf322hif8_pre_hybrid_vec`、`qf322hif8_pre_hybrid_scalar`、`deqs32_int_vec`、`deqs32_int_scalar`、`req8_vec`、`req8_scalar`、`deqf16_vec`、`deqf16_scalar`、`qf322fp8_pre_vec`、`qf322fp8_pre_scalar`、`qf322f32_pre_vec`、`qf322f32_pre_scalar`、`f32_bf16`、`qf162b8_pre_vec`、`qf162b8_pre_scalar`、`qf162s4_pre_vec`、`qf162s4_pre_scalar`、`req4_vec`、`req4_scalar`、`qf322b8_pre_vec`、`qf322b8_pre_scalar`、`qf322s4_pre_vec`、`qf322s4_pre_scalar`、`deqs16_vec`、`deqs16_scalar`、`qf162s16_pre_vec`、`qf162s16_pre_scalar`、`qf322f16_pre_vec`、`qf322f16_pre_scalar`、`qf322bf16_pre_vec`、`qf322bf16_pre_scalar`、`qs322bf16_pre_vec`、`qs322bf16_pre_scalar`
-  - `%scalar_or_fb_addr` 由 `mode` 决定解释方式
-  - scalar 类模式下，`%scalar_or_fb_addr` 是量化参数值，允许直接传 `f16`、`bf16`、`f32`
-  - `f16`/`bf16` scalar payload 会先扩成 `f32`，再按 `SPR.QUANT_PRE` 需要的 32-bit 浮点 bit pattern 编码
-  - `f32` scalar payload 直接按 32-bit 浮点 bit pattern 编码到 `SPR.QUANT_PRE`
-  - vector 类模式下，`%scalar_or_fb_addr` 是 FB1 地址，映射到 `SPR.FPC[15:8] / Quant_PRE_ADDR`
-  - `mode` 还必须与 `acc_store*` 的源/目的元素类型匹配；例如 `f32 -> f16` 应选 `qf322f16_pre_vec/scalar`，`req8_vec/scalar` 只适用于 `i32 -> i8/u8`
-  - 无额外可选子参数
+  - `mode` is required.
+  - Valid `mode` values: `no_convert`, `f32_f16`, `qf322hif8_pre_vec`, `qf322hif8_pre_scalar`, `qf322hif8_pre_hybrid_vec`, `qf322hif8_pre_hybrid_scalar`, `deqs32_int_vec`, `deqs32_int_scalar`, `req8_vec`, `req8_scalar`, `deqf16_vec`, `deqf16_scalar`, `qf322fp8_pre_vec`, `qf322fp8_pre_scalar`, `qf322f32_pre_vec`, `qf322f32_pre_scalar`, `f32_bf16`, `qf162b8_pre_vec`, `qf162b8_pre_scalar`, `qf162s4_pre_vec`, `qf162s4_pre_scalar`, `req4_vec`, `req4_scalar`, `qf322b8_pre_vec`, `qf322b8_pre_scalar`, `qf322s4_pre_vec`, `qf322s4_pre_scalar`, `deqs16_vec`, `deqs16_scalar`, `qf162s16_pre_vec`, `qf162s16_pre_scalar`, `qf322f16_pre_vec`, `qf322f16_pre_scalar`, `qf322bf16_pre_vec`, `qf322bf16_pre_scalar`, `qs322bf16_pre_vec`, `qs322bf16_pre_scalar`
+  - `%scalar_or_fb_addr` is interpreted according to `mode`.
+  - In scalar modes, `%scalar_or_fb_addr` is the quantization parameter value, and `f16`, `bf16`, and `f32` may be passed directly.
+  - An `f16`/`bf16` scalar payload is first extended to `f32`, then encoded as the 32-bit floating-point bit pattern required by `SPR.QUANT_PRE`.
+  - An `f32` scalar payload is directly encoded into `SPR.QUANT_PRE` as a 32-bit floating-point bit pattern.
+  - In vector modes, `%scalar_or_fb_addr` is an FB1 address and maps to `SPR.FPC[15:8] / Quant_PRE_ADDR`.
+  - `mode` must also match the source/destination element types of `acc_store*`. For example, `f32 -> f16` should use `qf322f16_pre_vec/scalar`, and `req8_vec/scalar` applies only to `i32 -> i8/u8`.
+  - No additional optional subparameters.
 - `pre_relu(%alpha_or_fb_addr, mode = ..., clip = %clip_value)?`
-  - `mode` 必填
-  - `mode` 可选值：`no_relu`、`normal_relu`、`scalar_relu`、`vector_relu`、`pwl`
-  - payload 不是对所有 mode 都必填：
-  - `mode = no_relu` 或 `mode = normal_relu` 时，不带 payload
-  - `mode = scalar_relu` 时，必须带 `%alpha_or_fb_addr`，允许直接传 `f16`、`bf16`、`f32`
-  - `f16`/`bf16` scalar alpha 会先扩成 `f32`，再按 `SPR.RELU_ALPHA` 需要的 32-bit 浮点 bit pattern 编码
-  - `f32` scalar alpha 直接按 32-bit 浮点 bit pattern 编码到 `SPR.RELU_ALPHA`
-  - `mode = vector_relu` 时，必须带 `%alpha_or_fb_addr`，其值作为 FB1 地址，映射到 `SPR.FPC[7:0] / RELU_PRE_ADDR`
-  - `clip = %clip_value` 为可选子句：表示启用 pre-stage clip，并把 `%clip_value` 映射到 `SPR.FIX_CLIP_RELU`
-  - `clip` 只允许用于手册明确覆盖的目标类型：`f16`、`ui8`、`s4/s8/s16`
+  - `mode` is required.
+  - Valid `mode` values: `no_relu`, `normal_relu`, `scalar_relu`, `vector_relu`, `pwl`.
+  - A payload is not required for every mode:
+  - For `mode = no_relu` or `mode = normal_relu`, no payload is provided.
+  - For `mode = scalar_relu`, `%alpha_or_fb_addr` is required, and `f16`, `bf16`, and `f32` may be passed directly.
+  - An `f16`/`bf16` scalar alpha is first extended to `f32`, then encoded as the 32-bit floating-point bit pattern required by `SPR.RELU_ALPHA`.
+  - An `f32` scalar alpha is directly encoded into `SPR.RELU_ALPHA` as a 32-bit floating-point bit pattern.
+  - For `mode = vector_relu`, `%alpha_or_fb_addr` is required. Its value is used as an FB1 address and maps to `SPR.FPC[7:0] / RELU_PRE_ADDR`.
+  - `clip = %clip_value` is an optional clause: it enables pre-stage clip and maps `%clip_value` to `SPR.FIX_CLIP_RELU`.
+  - `clip` is allowed only for target types explicitly covered by the manual: `f16`, `ui8`, `s4/s8/s16`.
 - `nz2nd?`
-  - 无额外参数
+  - No additional parameters.
 - `nz2dn(%loop0_src_stride)?`
-  - `loop0_src_stride` 必填
+  - `loop0_src_stride` is required.
 - `nz2nz(%split)?`
-  - `split` 可选
-  - 不写 `split` 表示不做 F32 channel split
+  - `split` is optional.
+  - Omitting `split` means no F32 channel split.
 - `loop3(%count, %src_stride, %dst_stride)?`
-  - 这三个参数都必填
-  - 无额外可选子参数
+  - All three parameters are required.
+  - No additional optional subparameters.
 - `(sat | nosat)?`
-  - 可选 flag
-  - 不写表示不显式配置饱和控制，沿用进入 op 前的状态
-  - 写 `sat` 表示本 op 内选择饱和行为
-  - 写 `nosat` 表示本 op 内选择非饱和行为
-  - `sat` 和 `nosat` 互斥
+  - Optional flag.
+  - Omission means saturation control is not explicitly configured, and the state before entering the op is inherited.
+  - Writing `sat` selects saturating behavior inside this op.
+  - Writing `nosat` selects non-saturating behavior inside this op.
+  - `sat` and `nosat` are mutually exclusive.
 - `atomic(type = ..., op = ...)?`
-  - 仅 `acc_store_gm` 支持
-  - `type` 必填，可选值：`f32`、`f16`、`s16`、`s32`、`s8`、`bf16`
-  - `op` 必填，可选值：`add`、`max`、`min`
-  - 不写 `atomic(...)` 表示普通覆盖写回，不启用 OUT atomic read-modify-write
+  - Supported only by `acc_store_gm`.
+  - `type` is required. Valid values: `f32`, `f16`, `s16`, `s32`, `s8`, `bf16`.
+  - `op` is required. Valid values: `add`, `max`, `min`.
+  - Omitting `atomic(...)` means ordinary overwrite writeback, with OUT atomic read-modify-write disabled.
 
-## 3. 约束
+## 3. Constraints
 
-`target_profile` 下，这版接口保留的有效项是：
+Under `target_profile`, the valid items retained by this interface version are:
 
 - `pre_quant(...)`
 - `pre_relu(..., clip = %clip_value)?`
@@ -85,44 +85,44 @@ pto.mte_l0c_l1 %src, %dst, %m, %n, %src_stride, %dst_stride,
 - `nz2nz(%split)?`
 - `loop3(...)`
 - `sat` / `nosat`
-- `atomic(...)`（仅 `acc_store_gm`）
+- `atomic(...)` (only `acc_store_gm`)
 
-其中：
+Where:
 
-- `pre_quant` 的 scalar 类模式走 `SPR.QUANT_PRE`
-- `pre_quant` 的 vector 类模式走 `SPR.FPC[15:8] / Quant_PRE_ADDR`，对应 FB1 mem_block0
-- `pre_relu(%alpha_or_fb_addr, mode = scalar_relu)` 走 `SPR.RELU_ALPHA[31:13]`，不走 FB1 地址
-- `pre_relu(%alpha_or_fb_addr, mode = vector_relu)` 走 FB1 mem_block1，并通过 `SPR.FPC[7:0]` 选择 `RELU_PRE_ADDR`
-- `pre_relu(..., clip = %clip_value)` 的 `clip` 子句走 `SPR.FIX_CLIP_RELU`
-- `unit_flag` 不走 FB1
-- `split` 不走 FB1
-- `sat` / `nosat` 走 `SPR.CTRL`
-- `atomic` 仅在 `acc_store_gm` 上走 `SPR.CTRL`
-- `post-stage`、`element-wise`、`LoopEnhance` 相关扩展不纳入本版接口
+- Scalar modes of `pre_quant` use `SPR.QUANT_PRE`.
+- Vector modes of `pre_quant` use `SPR.FPC[15:8] / Quant_PRE_ADDR`, corresponding to FB1 mem_block0.
+- `pre_relu(%alpha_or_fb_addr, mode = scalar_relu)` uses `SPR.RELU_ALPHA[31:13]` and does not use an FB1 address.
+- `pre_relu(%alpha_or_fb_addr, mode = vector_relu)` uses FB1 mem_block1 and selects `RELU_PRE_ADDR` through `SPR.FPC[7:0]`.
+- The `clip` clause in `pre_relu(..., clip = %clip_value)` uses `SPR.FIX_CLIP_RELU`.
+- `unit_flag` does not use FB1.
+- `split` does not use FB1.
+- `sat` / `nosat` use `SPR.CTRL`.
+- `atomic` uses `SPR.CTRL` only on `acc_store_gm`.
+- Extensions related to `post-stage`, `element-wise`, and `LoopEnhance` are not included in this interface version.
 
-注意：`NZ2DN` 和 `unit_flag` 不是无条件兼容的。`loop0_src_stride != 1` 时，`unit_flag` 必须关闭。
+Note: `NZ2DN` and `unit_flag` are not unconditionally compatible. When `loop0_src_stride != 1`, `unit_flag` must be disabled.
 
-`target_profile` 下不是禁止 `NZ2ND / NZ2DN` 的参数。相反，`FIX_L0C_TO_OUT.f32/s32` 明确标了 `NZ2ND Mode` 和 `NZ2DN Mode` valid；其中 `nz2dn(%loop0_src_stride)` 仍然需要把 `loop0_src_stride` 写入 `CHANNEL_PARA[63:48]`，单位是 `C0_SIZE`。
+Parameters for `NZ2ND / NZ2DN` are not forbidden under `target_profile`. On the contrary, `FIX_L0C_TO_OUT.f32/s32` explicitly marks `NZ2ND Mode` and `NZ2DN Mode` as valid. For `nz2dn(%loop0_src_stride)`, `loop0_src_stride` still needs to be written to `CHANNEL_PARA[63:48]`, in units of `C0_SIZE`.
 
-`nz2nz(%split)` 只允许用于 `f32` 输出。`SPLIT_EN = 1` 且输出类型不是 `f32` 时是非法配置。
+`nz2nz(%split)` is allowed only for `f32` output. `SPLIT_EN = 1` with a non-`f32` output type is an illegal configuration.
 
-`loop3(...)` 不是 `nz2dn` 或 `nz2nd` 的别名，它是单独的参数组，只在 `nz2nd` 或 `nz2dn` 场景下使用。
+`loop3(...)` is not an alias for `nz2dn` or `nz2nd`; it is a separate parameter group used only in `nz2nd` or `nz2dn` scenarios.
 
-## 4. 映射
+## 4. Mapping
 
-- `pre_quant(%scalar_or_fb_addr, mode = ...)` 映射到 `SPR.QUANT_PRE` 或 `SPR.FPC[15:8] / Quant_PRE_ADDR`
-- `pre_relu(%alpha_or_fb_addr, mode = ...)` 映射到 `X_t[41:39] / ReLU_PRE`，并按模式进一步映射到 `SPR.RELU_ALPHA[31:13]` 或 `SPR.FPC[7:0] / RELU_PRE_ADDR`
-- `pre_relu(..., clip = %clip_value)?` 映射到 `X_t[31:30] / Clip_ReLU_PRE`（使能）以及 `SPR.FIX_CLIP_RELU[15:0]`
-- `unit_flag(check_only | check_and_clear)?` 映射到 `X_t[33:32] / unit_flag`
-- `nz2nz(%split)?` 映射到 `X_t[42] / SPLIT_EN`
-- `nz2dn(%loop0_src_stride)` 映射到 `CHANNEL_PARA[63:48]`
-- `loop3(...)` 映射到 `SPR.LOOP3_PARA`
-- `sat` / `nosat` 映射到 `SPR.CTRL[48] / ctrl_sat_ctrl`
-- `atomic(type = ..., op = ...)?` 仅对 `acc_store_gm` 有效，映射到 `SPR.CTRL[8:6] / ctrl_atomic_en` 和 `SPR.CTRL[10:9] / ctrl_atomic_op`
+- `pre_quant(%scalar_or_fb_addr, mode = ...)` maps to `SPR.QUANT_PRE` or `SPR.FPC[15:8] / Quant_PRE_ADDR`.
+- `pre_relu(%alpha_or_fb_addr, mode = ...)` maps to `X_t[41:39] / ReLU_PRE`, and further maps by mode to `SPR.RELU_ALPHA[31:13]` or `SPR.FPC[7:0] / RELU_PRE_ADDR`.
+- `pre_relu(..., clip = %clip_value)?` maps to `X_t[31:30] / Clip_ReLU_PRE` (enable) and `SPR.FIX_CLIP_RELU[15:0]`.
+- `unit_flag(check_only | check_and_clear)?` maps to `X_t[33:32] / unit_flag`.
+- `nz2nz(%split)?` maps to `X_t[42] / SPLIT_EN`.
+- `nz2dn(%loop0_src_stride)` maps to `CHANNEL_PARA[63:48]`.
+- `loop3(...)` maps to `SPR.LOOP3_PARA`.
+- `sat` / `nosat` maps to `SPR.CTRL[48] / ctrl_sat_ctrl`.
+- `atomic(type = ..., op = ...)?` is valid only for `acc_store_gm`, and maps to `SPR.CTRL[8:6] / ctrl_atomic_en` and `SPR.CTRL[10:9] / ctrl_atomic_op`.
 
 ## 5. Keyword
 
-当前结构化接口使用语义 keyword，不直接暴露 bit 编码：
+The current structured interface uses semantic keywords and does not expose bit encodings directly:
 
 - `pre_relu.mode`
   - `no_relu` -> `3'b000`
@@ -172,9 +172,9 @@ pto.mte_l0c_l1 %src, %dst, %m, %n, %src_stride, %dst_stride,
   - the specific scalar payload is mode-dependent and lives in `SPR.QUANT_PRE`
 - `pre_quant.fb_addr`
   - the specific parameter array address is mode-dependent and lives in `SPR.FPC[15:8]`
-- `pre_relu.clip`（是否出现 `clip = %clip_value` 子句）
-  - 未出现 -> `2'b00`
-  - 出现 -> `2'b01`
+- `pre_relu.clip` (whether the `clip = %clip_value` clause appears)
+  - absent -> `2'b00`
+  - present -> `2'b01`
 - `unit_flag`
   - absent -> `2'b00`
   - `check_only` -> `2'b10`
@@ -195,8 +195,8 @@ pto.mte_l0c_l1 %src, %dst, %m, %n, %src_stride, %dst_stride,
   - `sat` -> `CTRL[48] = 1'b0`
   - `nosat` -> `CTRL[48] = 1'b1`
 
-## 6. 说明
+## 6. Notes
 
-这份文档只描述目标方案，不保留旧扁平接口的过渡写法，也不展开 `profile1` 的后处理、element-wise 和 LoopEnhance 字段列表。
+This document only describes the target design. It does not keep transitional forms of the old flat interface, and it does not expand the field lists for `profile1` post-processing, element-wise, or LoopEnhance.
 
-这里不再引入 `fixpipe(...)` 大包；这些项直接作为 `acc_store` 的结构化语义字段出现，避免把 source access、layout transform 和 writeback control 都误解成同一个固定 pipeline stage。
+This no longer introduces a large `fixpipe(...)` wrapper. These items appear directly as structured semantic fields of `acc_store`, avoiding the misunderstanding that source access, layout transform, and writeback control all belong to one fixed pipeline stage.

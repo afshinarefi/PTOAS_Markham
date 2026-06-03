@@ -1,61 +1,61 @@
 # TileLang Cube DSL Design
 
-> **状态：** 需求对齐完成，尚未实现
-> **范围：** Python 前端语法设计，不涉及后端 lowering 实现细节
+> **Status:** Requirements alignment is complete; not yet implemented
+> **Scope:** Python frontend syntax design; backend lowering implementation details are out of scope
 
 ---
 
-## 1. 背景与动机
+## 1. Background and Motivation
 
-### 1.1 硬件背景
+### 1.1 Hardware Background
 
-PTOAS 目标硬件包含两种独立的计算单元：
+PTOAS target hardware contains two independent compute units:
 
-| 单元 | 硬件核心 | IR kernel_kind | 编译宏 | 典型操作 |
+| Unit | Hardware Core | IR kernel_kind | Compile Macro | Typical Operations |
 |------|---------|----------------|--------|---------|
-| **Vector** | AIV | `#pto.kernel_kind<vector>` | `__DAV_VEC__` | 向量加载/存储/ALU/谓词 |
-| **Cube** | AIC | `#pto.kernel_kind<cube>` | `__DAV_CUBE__` | 矩阵乘法 (MAD)、分形数据搬运 |
+| **Vector** | AIV | `#pto.kernel_kind<vector>` | `__DAV_VEC__` | vector load/store/ALU/predicate |
+| **Cube** | AIC | `#pto.kernel_kind<cube>` | `__DAV_CUBE__` | matrix multiplication (MAD), fractal data movement |
 
-**关键约束：两种指令不能出现在同一个函数中。** 这是硬件限制，编译器验证器已在 IR 层强制执行（`verifyFrontendKernelKind` 检查），DSL 设计必须在 Python 语法层面体现这一分离。
+**Key constraint: the two instruction kinds cannot appear in the same function.** This is a hardware limitation. The compiler verifier already enforces it at the IR layer through the `verifyFrontendKernelKind` check, and the DSL design must reflect this separation at the Python syntax layer.
 
-### 1.2 当前状态
+### 1.2 Current Status
 
-- **Vector DSL**：已有完整的 `@vkernel` 装饰器 + `pto.vecscope` / `pto.strict_vecscope` 作用域机制，支持 basic/advanced 两层 API 面
-- **Cube IR**：VPTO bridge 层指令（`pto.mte_gm_l1`、`pto.mad`、`pto.mte_l0c_l1` 等）已在 IR 层完整定义，有 lowering 和 LLVM 发射支持
-- **缺失环节**：没有对应的 Python DSL 前端，程序员无法用 Python 写出 Cube 指令
+- **Vector DSL**: A complete `@vkernel` decorator plus `pto.vecscope` / `pto.strict_vecscope` scope mechanism already exists, with both basic and advanced API surfaces.
+- **Cube IR**: VPTO bridge-layer instructions (`pto.mte_gm_l1`, `pto.mad`, `pto.mte_l0c_l1`, and others) are fully defined at the IR layer and have lowering and LLVM emission support.
+- **Missing link**: There is no corresponding Python DSL frontend, so programmers cannot write Cube instructions in Python.
 
-### 1.3 设计目标
+### 1.3 Design Goals
 
-1. 提供 `@ckernel` 装饰器，与 `@vkernel` 并列，从入口层面区分硬件单元
-2. 暴露完整的 VPTO bridge 层 Cube 操作（数据搬运 + 矩阵计算）
-3. 支持模板槽位 `pto.tpl()` 机制，复用 Vector DSL 的设计模式
-4. 在 DSL 语义分析阶段就阻止 Cube/Vector 指令混用
+1. Provide an `@ckernel` decorator alongside `@vkernel`, distinguishing the hardware unit at the entry layer.
+2. Expose the full VPTO bridge-layer Cube operations, including data movement and matrix compute.
+3. Support the template-slot `pto.tpl()` mechanism and reuse the Vector DSL design pattern.
+4. Prevent Cube/Vector instruction mixing during DSL semantic analysis.
 
-### 1.4 设计原则
+### 1.4 Design Principles
 
-- **GM 数据用 TensorView / PartitionTensorView 表示**：Cube tileop 的 GM 输入数据通过 `TensorView`（逻辑张量视图）或 `PartitionTensorView`（分块视图）表达，不使用 `Tile` 表示 GM 数据
-- **Tile 用于特定地址空间的缓冲区**：`Tile` 类型表示在特定硬件地址空间（LEFT/RIGHT/ACC/MAT/BIAS）中分配的 tile buffer
-- **VPTO bridge 层使用 ptr 表示**：Cube bridge 操作数使用 `pto.ptr<T, addr_space>` 原始指针，通过 `.as_ptr()` 从 Tile/TensorView 获取
-- **通过 `pto.Tile` 构造器分配带地址空间和布局配置的 tile buffer**：通过 `pto.Tile` 构造器分配带地址空间和布局配置的 tile buffer
-- **本次不涉及同步操作**：只关注 Cube 指令本身的 DSL 暴露，同步由 `--enable-insert-sync` 自动插入
-- **参数顺序与 IR 保持一致**：避免心智负担
+- **Represent GM data with TensorView / PartitionTensorView**: GM input data for Cube tileops is expressed through `TensorView` (logical tensor view) or `PartitionTensorView` (partitioned view), not through `Tile`.
+- **Use Tile for buffers in specific address spaces**: The `Tile` type represents a tile buffer allocated in a specific hardware address space (LEFT/RIGHT/ACC/MAT/BIAS).
+- **Use ptr at the VPTO bridge layer**: Cube bridge operands use raw `pto.ptr<T, addr_space>` pointers, obtained from Tile/TensorView via `.as_ptr()`.
+- **Allocate tile buffers with address-space and layout configuration through the `pto.Tile` constructor**: Use the `pto.Tile` constructor to allocate tile buffers with address-space and layout configuration.
+- **Synchronization is out of scope for this pass**: This design only focuses on exposing the Cube instructions themselves in the DSL; synchronization is inserted automatically by `--enable-insert-sync`.
+- **Keep parameter order consistent with IR**: Avoid extra mental overhead.
 
 ---
 
-## 2. @ckernel 装饰器
+## 2. `@ckernel` Decorator
 
-### 2.1 基本语法
+### 2.1 Basic Syntax
 
 ```python
 from tilelang_dsl import ckernel, Tile, MemorySpace, select_kernel
 
 @ckernel(
-    op="pto.mad",                              # 单 op 名称
-    dtypes=[(pto.f16, pto.f16, pto.f32)],      # 支持的 dtype 组合
-    name="my_matmul",                           # 模板名称
-    # 以下为可选参数
-    ops=["mad", "mad_acc", "mad_bias"],         # 多 op 模板槽位
-    templates={                                 # 槽位 → 具体 op 映射
+    op="pto.mad",                              # single op name
+    dtypes=[(pto.f16, pto.f16, pto.f32)],      # supported dtype combinations
+    name="my_matmul",                          # template name
+    # Optional parameters follow
+    ops=["mad", "mad_acc", "mad_bias"],        # multi-op template slots
+    templates={                                # slot -> concrete op mapping
         "compute": {
             "mad": "mad",
             "mad_acc": "mad_acc",
@@ -64,114 +64,114 @@ from tilelang_dsl import ckernel, Tile, MemorySpace, select_kernel
     },
 )
 def kernel(
-    a_tv: PartitionTensorView,  # GM 输入，通过 PartitionTensorView 表达
+    a_tv: PartitionTensorView,  # GM input, expressed through PartitionTensorView
     b_tv: PartitionTensorView,
-    c_tv: PartitionTensorView,  # GM 输出
+    c_tv: PartitionTensorView,  # GM output
     M: int, K: int, N: int,
 ):
     ...
 ```
 
-### 2.2 参数说明
+### 2.2 Parameter Description
 
-| 参数 | 类型 | 必填 | 说明 |
+| Parameter | Type | Required | Description |
 |------|------|------|------|
-| `op` | str | 与 `ops` 二选一 | 单 op 名称，如 `"pto.mad"` |
-| `ops` | list[str] | 与 `op` 二选一 | 多 op 名称列表，启用模板槽位机制 |
-| `dtypes` | list[tuple] | 是 | 支持的 dtype 组合，如 `[(f16, f16, f32)]` |
-| `name` | str | 是 | 模板名称，用于注册和选择 |
-| `templates` | dict | 否 | 模板槽位映射，将 `pto.tpl("slot", ...)` 映射到具体 op |
-| `target` | str | 否 | 目标架构，默认 `"a5"` |
+| `op` | str | one of `op` or `ops` | Single op name, such as `"pto.mad"` |
+| `ops` | list[str] | one of `op` or `ops` | Multi-op name list, enabling the template-slot mechanism |
+| `dtypes` | list[tuple] | yes | Supported dtype combinations, such as `[(f16, f16, f32)]` |
+| `name` | str | yes | Template name, used for registration and selection |
+| `templates` | dict | no | Template-slot mapping, mapping `pto.tpl("slot", ...)` to a concrete op |
+| `target` | str | no | Target architecture, default `"a5"` |
 
-### 2.3 函数参数类型约定
+### 2.3 Function Parameter Type Conventions
 
-Cube 内核的参数类型反映它们在数据流中的角色：
+The parameter types of a Cube kernel reflect their roles in the dataflow:
 
-| 参数类型 | 用途 | 说明 |
+| Parameter Type | Purpose | Description |
 |----------|------|------|
-| `PartitionTensorView` | GM 上的分块输入/输出 | 由调用方从完整 `TensorView` 通过 `PartitionViewOp` 切出子块传入 |
-| `TensorView` | GM 上的完整逻辑张量 | 用于无需分块的场景 |
-| `Tile`（特定 addr space） | 已分配的硬件 tile buffer | 当调用方已经分配好 LEFT/RIGHT/ACC 等 tile 时传入 |
-| `int` | 维度参数 | M, K, N 等矩阵维度 |
-| `pto.f16` / `pto.f32` 等 | 标量参数 | 如 threshold、alpha 等 |
-| `pto.ptr<T, addr>` | 原始指针 | 需要直接操作指针时（如 GM pointer） |
+| `PartitionTensorView` | partitioned input/output on GM | Passed by the caller after slicing a sub-block from the full `TensorView` through `PartitionViewOp` |
+| `TensorView` | full logical tensor on GM | Used for scenarios that do not require partitioning |
+| `Tile` (specific addr space) | allocated hardware tile buffer | Passed when the caller has already allocated a LEFT/RIGHT/ACC tile, etc. |
+| `int` | dimension parameter | Matrix dimensions such as M, K, and N |
+| `pto.f16` / `pto.f32`, etc. | scalar parameter | Values such as threshold and alpha |
+| `pto.ptr<T, addr>` | raw pointer | Used when direct pointer manipulation is needed, such as a GM pointer |
 
-### 2.4 与 @vkernel 的关键差异
+### 2.4 Key Differences from `@vkernel`
 
-| 特性 | @vkernel | @ckernel |
+| Feature | @vkernel | @ckernel |
 |------|----------|----------|
-| 硬件单元 | Vector (AIV) | Cube (AIC) |
-| 执行作用域 | `pto.vecscope` / `pto.strict_vecscope` | **无需作用域**，函数体直接是 Cube 线性代码 |
-| GM 数据表示 | `TensorView` / `Tile` | `TensorView` / `PartitionTensorView` |
-| 缓冲区 | Tile (UB/VEC) | Tile (MAT/LEFT/RIGHT/ACC/BIAS) |
-| 操作数抽象 | Tile + VecScope 内的向量寄存器和 mask | `pto.ptr<T, addr_space>` 原始指针 |
-| 核心操作 | 向量 ALU、加载/存储 | 数据搬运 + 矩阵乘法 (mad) |
-| 生成 IR 属性 | `#pto.kernel_kind<vector>` | `#pto.kernel_kind<cube>` |
+| Hardware unit | Vector (AIV) | Cube (AIC) |
+| Execution scope | `pto.vecscope` / `pto.strict_vecscope` | **No scope required**; the function body is directly linear Cube code |
+| GM data representation | `TensorView` / `Tile` | `TensorView` / `PartitionTensorView` |
+| Buffers | Tile (UB/VEC) | Tile (MAT/LEFT/RIGHT/ACC/BIAS) |
+| Operand abstraction | Tile plus vector registers and masks inside VecScope | Raw `pto.ptr<T, addr_space>` pointers |
+| Core operations | vector ALU, load/store | data movement plus matrix multiplication (mad) |
+| Generated IR attribute | `#pto.kernel_kind<vector>` | `#pto.kernel_kind<cube>` |
 
 ---
 
-## 3. Cube 编程模型
+## 3. Cube Programming Model
 
-### 3.1 数据流
+### 3.1 Dataflow
 
-```
+```text
 PartitionTensorView (GM)
-       │
-       ├──(cube_load)──> L1/cbuf (MAT) ──(left_load)──> L0A (LEFT)
-       │                                                   │
-       ├──(cube_load)──> L1/cbuf (MAT) ──(right_load)──> L0B (RIGHT)
-       │                                                   │
-       │                                              ┌────┘
-       │                                              ▼
-       │                                         ┌──────────┐
-       │                                         │ pto.mad  │
-       │                                         └──────────┘
-       │                                              │
-       │                                              ▼
-       │    L1/cbuf (MAT) <──(acc_store)── L0C (ACC)
-       │         │                                    │
-       │         ├──(cube_store)──> UB (VEC)          │
-       │         ├──(acc_store_gm)──> GM  <───────────┘
-       │         └──(acc_store_ub)──> UB
-       │
-       ▼
-PartitionTensorView (GM, 写回)
+       |
+       +--(cube_load)--> L1/cbuf (MAT) --(left_load)--> L0A (LEFT)
+       |                                                   |
+       +--(cube_load)--> L1/cbuf (MAT) --(right_load)--> L0B (RIGHT)
+       |                                                   |
+       |                                              +----+
+       |                                              v
+       |                                         +----------+
+       |                                         | pto.mad  |
+       |                                         +----------+
+       |                                              |
+       |                                              v
+       |    L1/cbuf (MAT) <--(acc_store)-- L0C (ACC)
+       |         |                                    |
+       |         +--(cube_store)--> UB (VEC)          |
+       |         +--(acc_store_gm)--> GM  <-----------+
+       |         +--(acc_store_ub)--> UB
+       |
+       v
+PartitionTensorView (GM, writeback)
 ```
 
-### 3.2 地址空间
+### 3.2 Address Spaces
 
-| 地址空间 | 枚举值 | 说明 | 对应 IR 类型 |
+| Address Space | Enum Value | Description | Corresponding IR Type |
 |----------|--------|------|-------------|
-| `GM` | `MemorySpace.GM` | 全局内存 | `!pto.ptr<T, gm>` |
-| `MAT` | `MemorySpace.MAT` | L1 缓冲区 (cbuf) | `!pto.ptr<T, l1>` |
-| `LEFT` | `MemorySpace.LEFT` | L0A 矩阵左乘数缓冲区 | `!pto.ptr<T, l0a>` |
-| `RIGHT` | `MemorySpace.RIGHT` | L0B 矩阵右乘数缓冲区 | `!pto.ptr<T, l0b>` |
-| `ACC` | `MemorySpace.ACC` | L0C 累加器缓冲区 | `!pto.ptr<T, l0c>` |
-| `BIAS` | `MemorySpace.BIAS` | Bias 表 | `!pto.ptr<T, bt>` |
-| `UB` | `MemorySpace.UB` | 统一缓冲区 (Vector 侧) | `!pto.ptr<T, ub>` |
+| `GM` | `MemorySpace.GM` | global memory | `!pto.ptr<T, gm>` |
+| `MAT` | `MemorySpace.MAT` | L1 buffer (cbuf) | `!pto.ptr<T, l1>` |
+| `LEFT` | `MemorySpace.LEFT` | L0A matrix left-operand buffer | `!pto.ptr<T, l0a>` |
+| `RIGHT` | `MemorySpace.RIGHT` | L0B matrix right-operand buffer | `!pto.ptr<T, l0b>` |
+| `ACC` | `MemorySpace.ACC` | L0C accumulator buffer | `!pto.ptr<T, l0c>` |
+| `BIAS` | `MemorySpace.BIAS` | Bias table | `!pto.ptr<T, bt>` |
+| `UB` | `MemorySpace.UB` | unified buffer (Vector side) | `!pto.ptr<T, ub>` |
 
-### 3.3 缓冲区分配接口
+### 3.3 Buffer Allocation Interface
 
-#### `pto.Tile` 构造器
+#### `pto.Tile` Constructor
 
 ```python
 pto.Tile(
-    shape: tuple[int, ...],           # 缓冲区形状 (必填)
-    dtype: pto dtype,                 # 元素类型 (必填)
-    memory_space: MemorySpace,        # 地址空间 (必填)
-    valid_shape: tuple[int, ...] | None = None,    # 有效区域，默认等于 shape
-    blayout: BLayout | None = None,               # B 布局，默认按地址空间自动选择
-    slayout: SLayout | None = None,               # S 布局，默认按地址空间自动选择
-    fractal_size: int | None = None,              # 分形大小，默认按地址空间自动选择
-    pad_value: PadValue = PadValue.Null,          # 填充策略
-    compact_mode: CompactMode = CompactMode.Null, # 压缩模式
-    addr: int | None = None,                      # 预分配地址（level3 使用）
+    shape: tuple[int, ...],           # buffer shape (required)
+    dtype: pto dtype,                 # element type (required)
+    memory_space: MemorySpace,        # address space (required)
+    valid_shape: tuple[int, ...] | None = None,    # valid region; defaults to shape
+    blayout: BLayout | None = None,               # B layout; defaults by address space
+    slayout: SLayout | None = None,               # S layout; defaults by address space
+    fractal_size: int | None = None,              # fractal size; defaults by address space
+    pad_value: PadValue = PadValue.Null,          # padding policy
+    compact_mode: CompactMode = CompactMode.Null, # compact mode
+    addr: int | None = None,                      # preallocated address (used by level3)
 ) -> Tile
 ```
 
-**布局配置默认值（按地址空间）：**
+**Layout Configuration Defaults by Address Space:**
 
-| 地址空间 | blayout | slayout | fractal_size |
+| Address Space | blayout | slayout | fractal_size |
 |----------|---------|---------|-------------|
 | `MAT` | `ColMajor` | `RowMajor` | `TileConfig.fractalABSize` (512) |
 | `LEFT` | `ColMajor` | `RowMajor` | `TileConfig.fractalABSize` (512) |
@@ -179,9 +179,9 @@ pto.Tile(
 | `ACC` | `ColMajor` | `RowMajor` | `TileConfig.fractalCSize` (1024) |
 | `BIAS` | `RowMajor` | `NoneBox` | `TileConfig.fractalABSize` (512) |
 
-**枚举值定义：**
+**Enum Value Definitions:**
 
-| 枚举类型 | 可选值 |
+| Enum Type | Allowed Values |
 |----------|--------|
 | `BLayout` | `ColMajor` (0), `RowMajor` (1) |
 | `SLayout` | `NoneBox` (0), `RowMajor` (1), `ColMajor` (2) |
@@ -190,61 +190,61 @@ pto.Tile(
 
 #### `.as_ptr()`
 
-从 Tile 或 TensorView/PartitionTensorView 获取原始指针（方法调用）：
+Obtain a raw pointer from a Tile or TensorView/PartitionTensorView through a method call:
 
 ```python
-# 从 Tile 获取指针（地址空间由 Tile 的类型决定）
-l0a_ptr = l0a_tile.as_ptr()  # Tile[LEFT] → pto.ptr<f16, left>
+# Get a pointer from Tile; the address space is determined by the Tile type
+l0a_ptr = l0a_tile.as_ptr()  # Tile[LEFT] -> pto.ptr<f16, left>
 
-# 从 TensorView / PartitionTensorView 获取 GM 指针
-gm_ptr = tensor_view.as_ptr()  # TensorView → pto.ptr<f16, gm>
-a_ptr = a_tv.as_ptr()          # PartitionTensorView → pto.ptr<f16, gm>
+# Get GM pointers from TensorView / PartitionTensorView
+gm_ptr = tensor_view.as_ptr()  # TensorView -> pto.ptr<f16, gm>
+a_ptr = a_tv.as_ptr()          # PartitionTensorView -> pto.ptr<f16, gm>
 ```
 
-### 3.4 指针偏移
+### 3.4 Pointer Offset
 
-子矩阵寻址通过 `pto.addptr` 实现，偏移量以元素为单位：
+Submatrix addressing is implemented with `pto.addptr`, and the offset is measured in elements:
 
 ```python
-a_k = pto.addptr(a_ptr, k_off)  # 偏移 k_off 个元素
+a_k = pto.addptr(a_ptr, k_off)  # offset by k_off elements
 ```
 
-不引入 tile slice 语法糖，保持与 VPTO 层的 ptr 抽象一致。
+No tile-slice syntax sugar is introduced; this keeps the abstraction consistent with the VPTO-layer ptr model.
 
-### 3.5 典型编程模式
+### 3.5 Typical Programming Pattern
 
 ```python
 @ckernel(op="pto.mad", dtypes=[(pto.f16, pto.f16, pto.f32)], name="gemm")
-def gemm(a_tv: PartitionTensorView,  # GM 输入 A [M, K]
-         b_tv: PartitionTensorView,  # GM 输入 B [K, N]
-         c_tv: PartitionTensorView,  # GM 输出 C [M, N]
+def gemm(a_tv: PartitionTensorView,  # GM input A [M, K]
+         b_tv: PartitionTensorView,  # GM input B [K, N]
+         c_tv: PartitionTensorView,  # GM output C [M, N]
          M: int, K: int, N: int):
-    # 1. 从 PartitionTensorView 获取 GM 指针
+    # 1. Get GM pointers from PartitionTensorView
     a_ptr = a_tv.as_ptr()  # -> pto.ptr<f16, gm>
     b_ptr = b_tv.as_ptr()  # -> pto.ptr<f16, gm>
     c_ptr = c_tv.as_ptr()  # -> pto.ptr<f32, gm>
 
-    # 2. 分配 L1 (MAT) tile buffer 并获取指针
+    # 2. Allocate L1 (MAT) tile buffers and get pointers
     l1_a = pto.Tile([M, K], pto.f16, MemorySpace.MAT)
     l1_b = pto.Tile([K, N], pto.f16, MemorySpace.MAT)
 
-    # 3. 分配 L0 tile buffer 并获取指针
+    # 3. Allocate L0 tile buffers and get pointers
     l0a = pto.Tile([M, K], pto.f16, MemorySpace.LEFT)
     l0b = pto.Tile([K, N], pto.f16, MemorySpace.RIGHT)
     l0c = pto.Tile([M, N], pto.f32, MemorySpace.ACC)
 
-    # 4. GM -> L1 数据搬运
+    # 4. GM -> L1 data movement
     pto.mte_gm_l1(a_ptr, l1_a.as_ptr(), K, nburst=(1, 0, 0))
     pto.mte_gm_l1(b_ptr, l1_b.as_ptr(), N, nburst=(1, 0, 0))
 
-    # 5. L1 -> L0 数据搬运
+    # 5. L1 -> L0 data movement
     pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, K)
     pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), K, N)
 
-    # 6. 矩阵乘法
+    # 6. Matrix multiplication
     pto.mad(l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), M, N, K)
 
-    # 7. L0C -> GM 结果写回
+    # 7. L0C -> GM result writeback
     pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
                      src_stride=N, dst_stride=N,
                      mode="nz2nd")
@@ -252,13 +252,13 @@ def gemm(a_tv: PartitionTensorView,  # GM 输入 A [M, K]
 
 ---
 
-## 4. Cube 操作 API 面
+## 4. Cube Operation API Surface
 
-以下为 `@ckernel` 函数体内支持的 `pto.*` 调用。所有操作数使用 `pto.ptr<T, addr_space>` 指针类型。
+The following are the supported `pto.*` calls inside an `@ckernel` function body. All operands use the `pto.ptr<T, addr_space>` pointer type.
 
-### 4.1 矩阵计算操作
+### 4.1 Matrix Compute Operations
 
-#### `pto.mad` — 零初始化矩阵乘法
+#### `pto.mad` - Zero-Initialized Matrix Multiplication
 
 ```python
 pto.mad(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>,
@@ -266,9 +266,9 @@ pto.mad(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>,
         unit_flag_ctrl: int = 0, disable_gemv: bool = False)
 ```
 
-语义：`dst = lhs * rhs`（零初始化累加器后计算）
+Semantics: `dst = lhs * rhs` after zero-initializing the accumulator.
 
-#### `pto.mad_acc` — 累加矩阵乘法
+#### `pto.mad_acc` - Accumulating Matrix Multiplication
 
 ```python
 pto.mad_acc(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>,
@@ -276,9 +276,9 @@ pto.mad_acc(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>,
             unit_flag_ctrl: int = 0, disable_gemv: bool = False)
 ```
 
-语义：`dst += lhs * rhs`
+Semantics: `dst += lhs * rhs`.
 
-#### `pto.mad_bias` — 带 Bias 矩阵乘法
+#### `pto.mad_bias` - Matrix Multiplication with Bias
 
 ```python
 pto.mad_bias(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>,
@@ -287,15 +287,15 @@ pto.mad_bias(lhs: pto.ptr<T, left>, rhs: pto.ptr<T, right>, dst: pto.ptr<U, acc>
              unit_flag_ctrl: int = 0, disable_gemv: bool = False)
 ```
 
-语义：`dst = lhs * rhs + bias`
+Semantics: `dst = lhs * rhs + bias`.
 
 #### `pto.mad_mx` / `pto.mad_mx_acc` / `pto.mad_mx_bias`
 
-MX micro-scaling 变体，参数与对应非 MX 版本相同，用于 `f8` 等 MX 数据类型。
+MX micro-scaling variants. Their parameters are the same as the corresponding non-MX versions, and they are used for MX data types such as `f8`.
 
-### 4.2 数据搬运操作
+### 4.2 Data Movement Operations
 
-#### `pto.mte_gm_l1` — GM → L1 (cbuf)
+#### `pto.mte_gm_l1` - GM -> L1 (cbuf)
 
 ```python
 pto.mte_gm_l1(src: pto.ptr<T, gm>, dst: pto.ptr<T, mat>,
@@ -304,7 +304,7 @@ pto.mte_gm_l1(src: pto.ptr<T, gm>, dst: pto.ptr<T, mat>,
               loops: list[tuple[int, int, int]] | None = None)
 ```
 
-#### `pto.mte_l1_ub` — L1 (cbuf) → UB
+#### `pto.mte_l1_ub` - L1 (cbuf) -> UB
 
 ```python
 pto.mte_l1_ub(src: pto.ptr<T, mat>, dst: pto.ptr<T, ub>,
@@ -313,7 +313,7 @@ pto.mte_l1_ub(src: pto.ptr<T, mat>, dst: pto.ptr<T, ub>,
                loops: list[tuple[int, int, int]] | None = None)
 ```
 
-#### `pto.mte_gm_l1_frac` — 分形加载 (nd2nz / dn2nz)
+#### `pto.mte_gm_l1_frac` - Fractal Load (nd2nz / dn2nz)
 
 ```python
 pto.mte_gm_l1_frac(src: pto.ptr<T, gm>, dst: pto.ptr<T, mat>,
@@ -324,7 +324,7 @@ pto.mte_gm_l1_frac(src: pto.ptr<T, gm>, dst: pto.ptr<T, mat>,
                    ctrl: tuple[int, bool])          # (l2_cache_ctrl, smallc0_en)
 ```
 
-#### `pto.mte_l1_bt` — L1 (cbuf) → Bias 表
+#### `pto.mte_l1_bt` - L1 (cbuf) -> Bias Table
 
 ```python
 pto.mte_l1_bt(src: pto.ptr<T, mat>, dst: pto.ptr<U, bias>,
@@ -332,7 +332,7 @@ pto.mte_l1_bt(src: pto.ptr<T, mat>, dst: pto.ptr<U, bias>,
               nburst: tuple[int, int, int] = (1, 0, 0))
 ```
 
-#### `pto.mte_l1_l0a` — L1 (cbuf) → L0A
+#### `pto.mte_l1_l0a` - L1 (cbuf) -> L0A
 
 ```python
 pto.mte_l1_l0a(src: pto.ptr<T, mat>, dst: pto.ptr<T, left>,
@@ -340,10 +340,7 @@ pto.mte_l1_l0a(src: pto.ptr<T, mat>, dst: pto.ptr<T, left>,
               start_row: int, start_col: int)
 ```
 
-DSL frontends may let users omit `start_row` and `start_col`; omitted start
-positions are materialized as `0` before emitting PTO IR.
-
-#### `pto.mte_l1_l0b` — L1 (cbuf) → L0B
+#### `pto.mte_l1_l0b` - L1 (cbuf) -> L0B
 
 ```python
 pto.mte_l1_l0b(src: pto.ptr<T, mat>, dst: pto.ptr<T, right>,
@@ -356,23 +353,23 @@ positions are materialized as `0` before emitting PTO IR.
 
 #### `pto.mte_l1_l0a_mx` / `pto.mte_l1_l0b_mx`
 
-MX 模式 L1→L0A/L0B 搬运，参数同非 MX 版本。
+MX-mode L1->L0A/L0B movement. Parameters are the same as the non-MX versions.
 
-### 4.3 结果写回操作
+### 4.3 Result Writeback Operations
 
-#### `pto.mte_l0c_l1` — L0C (acc) → L1 (cbuf)
+#### `pto.mte_l0c_l1` - L0C (acc) -> L1 (cbuf)
 
 ```python
 pto.mte_l0c_l1(src: pto.ptr<T, acc>, dst: pto.ptr<T, mat>,
               m: int, n: int,
               src_stride: int, dst_stride: int,
               mode: str = "nz2nd",  # "nz2nd" | "nz2dn" | "nz2nz"
-              loop0_src_stride: int | None = None,   # mode="nz2dn" 时需要
-              split: int | None = None,              # mode="nz2nz" 时需要
+              loop0_src_stride: int | None = None,   # required when mode="nz2dn"
+              split: int | None = None,              # required when mode="nz2nz"
               loop3: tuple[int, int, int] | None = None)
 ```
 
-#### `pto.mte_l0c_gm` — L0C (acc) → GM
+#### `pto.mte_l0c_gm` - L0C (acc) -> GM
 
 ```python
 pto.mte_l0c_gm(src: pto.ptr<T, acc>, dst: pto.ptr<T, gm>,
@@ -385,7 +382,7 @@ pto.mte_l0c_gm(src: pto.ptr<T, acc>, dst: pto.ptr<T, gm>,
                  loop3: tuple[int, int, int] | None = None)
 ```
 
-#### `pto.mte_l0c_ub` — L0C (acc) → UB
+#### `pto.mte_l0c_ub` - L0C (acc) -> UB
 
 ```python
 pto.mte_l0c_ub(src: pto.ptr<T, acc>, dst: pto.ptr<T, ub>,
@@ -394,19 +391,19 @@ pto.mte_l0c_ub(src: pto.ptr<T, acc>, dst: pto.ptr<T, ub>,
                  dual_dst_mode: int = 0, sub_blockid: int = 0,
                  mode: str = "nz2nd",
                  loop0_src_stride: int | None = None,
-                 channel_split_en: int | None = None,  # mode="nz2nz" 时需要
+                 channel_split_en: int | None = None,  # required when mode="nz2nz"
                  loop3: tuple[int, int, int] | None = None)
 ```
 
 ---
 
-## 5. 模板槽位机制
+## 5. Template Slot Mechanism
 
-### 5.1 设计
+### 5.1 Design
 
-复用 Vector DSL 的 `pto.tpl()` 机制，允许一个 Cube kernel 模板适配多种 mad 操作变体。
+Reuse the Vector DSL `pto.tpl()` mechanism, allowing one Cube kernel template to adapt to multiple mad operation variants.
 
-### 5.2 语法
+### 5.2 Syntax
 
 ```python
 @ckernel(
@@ -434,75 +431,75 @@ def gemm_template(a_tv: PartitionTensorView, b_tv: PartitionTensorView,
     pto.mte_l1_l0a(l1_a.as_ptr(), l0a.as_ptr(), M, K)
     pto.mte_l1_l0b(l1_b.as_ptr(), l0b.as_ptr(), K, N)
 
-    # 模板槽位：根据 selected_op 自动替换为 mad 或 mad_acc
+    # Template slot: automatically replaced with mad or mad_acc according to selected_op
     pto.tpl("compute", l0a.as_ptr(), l0b.as_ptr(), l0c.as_ptr(), M, N, K)
 
     pto.mte_l0c_gm(l0c.as_ptr(), c_ptr, M, N,
                      src_stride=N, dst_stride=N, mode="nz2nd")
 ```
 
-使用方式：
+Usage:
 
 ```python
 k_mad = select_kernel("a5", "gemm_template", selected_op="mad")
 k_acc = select_kernel("a5", "gemm_template", selected_op="mad_acc")
 ```
 
-### 5.3 约束
+### 5.3 Constraints
 
-模板槽位中的变体必须参数签名一致：
+Variants in the same template slot must have identical parameter signatures:
 
-| 槽位组 | 成员 | 参数 |
+| Slot Group | Members | Parameters |
 |--------|------|------|
 | `compute` | `mad`, `mad_acc` | `(lhs, rhs, dst, m, n, k)` |
 | `compute_bias` | `mad_bias` | `(lhs, rhs, dst, bias, m, n, k)` |
 | `compute_mx` | `mad_mx`, `mad_mx_acc` | `(lhs, rhs, dst, m, n, k)` |
 
-参数不一致的变体（如 mad vs mad_bias）不能放在同一个槽位中。
+Variants with different parameters, such as mad vs. mad_bias, cannot be placed in the same slot.
 
 ---
 
-## 6. 硬件分离规则
+## 6. Hardware Separation Rules
 
-### 6.1 函数级别隔离
+### 6.1 Function-Level Isolation
 
-- `@ckernel` 生成的函数带有 `#pto.kernel_kind<cube>` 属性
-- `@vkernel` 生成的函数带有 `#pto.kernel_kind<vector>` 属性
-- 验证器在 IR 层阻止两种指令出现在同一函数中
+- Functions generated by `@ckernel` carry the `#pto.kernel_kind<cube>` attribute.
+- Functions generated by `@vkernel` carry the `#pto.kernel_kind<vector>` attribute.
+- The verifier prevents the two instruction kinds from appearing in the same function at the IR layer.
 
-### 6.2 DSL 层面强制
+### 6.2 DSL-Level Enforcement
 
-在语义分析阶段：
+During semantic analysis:
 
-1. `@ckernel` 函数体内不允许出现 Vector 专有操作（`vlds`、`vadd` 等）
-2. `@ckernel` 函数体内不允许出现 `pto.vecscope` / `pto.strict_vecscope`
-3. CKernel 不能调用 VKernel 的 inline_proc，反之亦然
+1. Vector-only operations such as `vlds` and `vadd` are not allowed inside an `@ckernel` function body.
+2. `pto.vecscope` / `pto.strict_vecscope` are not allowed inside an `@ckernel` function body.
+3. CKernel cannot call a VKernel `inline_proc`, and vice versa.
 
-### 6.3 模块级别
+### 6.3 Module Level
 
-- 同一个 `.py` 文件中可以同时定义 `@ckernel` 和 `@vkernel`
-- 每个函数独立编译，由 EmitC 后端通过 `__DAV_CUBE__` / `__DAV_VEC__` 宏守卫条件编译
+- The same `.py` file may define both `@ckernel` and `@vkernel`.
+- Each function is compiled independently, and the EmitC backend uses the `__DAV_CUBE__` / `__DAV_VEC__` macro guards for conditional compilation.
 
 ---
 
-## 7. 与 Vector DSL 的共享基础设施
+## 7. Shared Infrastructure with the Vector DSL
 
-| 设施 | 说明 |
+| Facility | Description |
 |------|------|
-| `TensorView` / `PartitionTensorView` | GM 数据的高层视图，两者通用 |
-| `Tile` 类型 | 缓冲区类型标注，通过 `MemorySpace` 区分地址空间 |
-| `select_kernel()` / `KernelRegistry` | Kernel 注册和选择 |
-| `MaterializedMLIRModule` | 具体化后的 MLIR 模块 |
-| `pto.ptr` / `pto.castptr` / `pto.addptr` | 指针操作 |
-| `MemorySpace` | 地址空间枚举（已含 MAT/LEFT/RIGHT/ACC/BIAS） |
-| `Tile` 构造器 | 缓冲区分配（通过 `pto.Tile()` 构造） |
-| `TileConfig` | 分形大小等常量 |
+| `TensorView` / `PartitionTensorView` | High-level views of GM data; both are shared |
+| `Tile` type | Buffer type annotation, using `MemorySpace` to distinguish address spaces |
+| `select_kernel()` / `KernelRegistry` | Kernel registration and selection |
+| `MaterializedMLIRModule` | Materialized MLIR module |
+| `pto.ptr` / `pto.castptr` / `pto.addptr` | Pointer operations |
+| `MemorySpace` | Address-space enum, already including MAT/LEFT/RIGHT/ACC/BIAS |
+| `Tile` constructor | Buffer allocation, constructed through `pto.Tile()` |
+| `TileConfig` | Constants such as fractal sizes |
 
 ---
 
-## 8. 完整示例
+## 8. Complete Examples
 
-### 8.1 基础 GEMM
+### 8.1 Basic GEMM
 
 ```python
 from tilelang_dsl import ckernel, Tile, MemorySpace
@@ -585,7 +582,7 @@ def gemm_splitk(a_tv: PartitionTensorView,   # [M, K]
                      src_stride=N, dst_stride=N, mode="nz2nd")
 ```
 
-### 8.3 带 Bias 的矩阵乘法
+### 8.3 Matrix Multiplication with Bias
 
 ```python
 @ckernel(
@@ -622,7 +619,7 @@ def gemm_bias(a_tv: PartitionTensorView, b_tv: PartitionTensorView,
                      src_stride=N, dst_stride=N, mode="nz2nd")
 ```
 
-### 8.4 分形加载 (nd2nz) 示例
+### 8.4 Fractal Load (nd2nz) Example
 
 ```python
 @ckernel(
@@ -659,50 +656,50 @@ def gemm_frac(a_tv: PartitionTensorView, b_tv: PartitionTensorView,
 
 ---
 
-## 9. Lowering 流程
+## 9. Lowering Flow
 
-### 9.1 与 Vector DSL 的对比
+### 9.1 Comparison with Vector DSL
 
-| 阶段 | Vector DSL | Cube DSL |
+| Stage | Vector DSL | Cube DSL |
 |------|-----------|----------|
-| AST 解析 | `frontend_ast.py` → `FrontendKernelNode` | 增加 `FrontendCKernelNode` |
-| 语义分析 | `semantic.py` → `SemanticKernel`（含 vecscope 分析） | 增加 Cube 语义分析（无 vecscope，线性 IR） |
-| MLIR 发射 | `lowering.py` → MLIR 文本（含 `vecscope` 块） | 增加 Cube lowering（直接发射线性 VPTO IR） |
-| IR 属性 | `#pto.kernel_kind<vector>` | `#pto.kernel_kind<cube>` |
-| 目标 march | `dav-c310-vec` | `dav-c310-cube` |
+| AST parsing | `frontend_ast.py` -> `FrontendKernelNode` | Add `FrontendCKernelNode` |
+| Semantic analysis | `semantic.py` -> `SemanticKernel` with vecscope analysis | Add Cube semantic analysis with no vecscope and linear IR |
+| MLIR emission | `lowering.py` -> MLIR text with `vecscope` blocks | Add Cube lowering with direct linear VPTO IR emission |
+| IR attribute | `#pto.kernel_kind<vector>` | `#pto.kernel_kind<cube>` |
+| Target march | `dav-c310-vec` | `dav-c310-cube` |
 
-### 9.2 Cube 特有问题
+### 9.2 Cube-Specific Issues
 
-1. **无 vecscope 作用域**：Cube 函数体直接是线性 IR 序列
-2. **地址空间验证**：每个 Cube op 对操作数的地址空间有严格要求
-3. **ptr 管理**：`.as_ptr()` 从 Tile/TensorView 取地址、`pto.addptr` 指针偏移需要在语义阶段正确处理
-4. **Tile 构造器配置**：`pto.Tile()` 按地址空间自动推导布局默认值
+1. **No vecscope scope**: A Cube function body is directly a linear IR sequence.
+2. **Address-space verification**: Each Cube op has strict address-space requirements on operands.
+3. **ptr management**: `.as_ptr()` obtains addresses from Tile/TensorView, and `pto.addptr` pointer offsets must be handled correctly during semantic analysis.
+4. **Tile constructor configuration**: `pto.Tile()` automatically infers layout defaults by address space.
 
 ---
 
-## 10. 分阶段实施建议
+## 10. Phased Implementation Recommendations
 
-### Phase 1：最小可用面 (MVP)
+### Phase 1: Minimum Viable Surface (MVP)
 
-- `@ckernel` 装饰器
-- `pto.Tile` 构造器 + `.as_ptr()` 缓冲区分配和指针获取
+- `@ckernel` decorator
+- `pto.Tile` constructor plus `.as_ptr()` buffer allocation and pointer retrieval
 - `pto.mad` / `pto.mad_acc` / `pto.mad_bias`
 - `pto.mte_gm_l1` / `pto.mte_l1_ub`
 - `pto.mte_l1_l0a` / `pto.mte_l1_l0b`
 - `pto.mte_l0c_gm`
-- 模板槽位 `pto.tpl()` 基本支持
+- Basic support for the `pto.tpl()` template slot
 
-### Phase 2：完整 bridge 面
+### Phase 2: Complete Bridge Surface
 
 - `pto.mad_mx` / `pto.mad_mx_acc` / `pto.mad_mx_bias`
 - `pto.mte_gm_l1_frac`
 - `pto.mte_l1_bt`
 - `pto.mte_l1_l0a_mx` / `pto.mte_l1_l0b_mx`
 - `pto.mte_l0c_l1` / `pto.mte_l0c_ub`
-- `pto.addptr` 指针偏移
+- `pto.addptr` pointer offsets
 
-### Phase 3：高级特性
+### Phase 3: Advanced Features
 
-- Split-K 循环语法糖
-- 分形参数自动推导
-- Tile 构造器布局全自动推断
+- Split-K loop syntax sugar
+- Automatic fractal-parameter inference
+- Fully automatic layout inference for the Tile constructor
