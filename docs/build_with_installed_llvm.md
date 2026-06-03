@@ -1,26 +1,26 @@
-# 基于已安装 LLVM 的 PTOAS 构建说明
+# PTOAS Build Guide With Installed LLVM
 
-本文档按 [README.md](../README.md) 第 3 章的逻辑整理，适用于：
+This document follows the structure of [README.md](../README.md) section 3 and applies when:
 
-- LLVM/MLIR `19.1.7` 已经构建并安装完成。
-- LLVM 安装路径固定为 `/opt/llvm`。
-- `/opt/llvm` 是共享目录，不希望 `ptoas` 的安装步骤写入其中。
+- LLVM/MLIR `19.1.7` has already been built and installed.
+- The LLVM installation path is fixed at `/opt/llvm`.
+- `/opt/llvm` is a shared directory, and the `ptoas` installation step should not write into it.
 
-## 3.0 环境变量配置
+## 3.0 Environment Variable Setup
 
-先按 README 第 3.0 节的思路把变量定好。区别是这里不再使用 LLVM 源码目录和 LLVM build tree，而是直接使用 LLVM install tree。
+First define the variables following the approach in README section 3.0. The difference is that this setup no longer uses the LLVM source directory or LLVM build tree, and instead uses the LLVM install tree directly.
 
 ```bash
-# ================= 配置区域 (请按实际环境调整) =================
+# ================= Configuration area (adjust for your environment) =================
 export WORKSPACE_DIR=$HOME/llvm-workspace
 
-# LLVM 已安装完成，直接指向 install 根目录
+# LLVM has already been installed; point directly to the install root.
 export LLVM_INSTALL_DIR=/opt/llvm
 
-# 为兼容仓库内部分脚本 / lit 变量命名，这里额外保留 LLVM_BUILD_DIR
+# Keep LLVM_BUILD_DIR for compatibility with scripts/lit variable names in the repository.
 export LLVM_BUILD_DIR=$LLVM_INSTALL_DIR
 
-# ptoas 源码与安装路径
+# ptoas source and install paths
 export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
 export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-optllvm
 # ============================================================
@@ -28,17 +28,17 @@ export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-optllvm
 mkdir -p "$WORKSPACE_DIR"
 ```
 
-说明：
+Notes:
 
-- 这里的 `LLVM_BUILD_DIR` 只是为了兼容仓库内已有变量名，实际指向的是 LLVM install 根目录 `/opt/llvm`。
-- `PTO_INSTALL_DIR` 建议单独放到 PTOAS 自己目录下，避免与共享 LLVM 安装混用。
+- `LLVM_BUILD_DIR` is kept only for compatibility with existing variable names in the repository; it actually points to the LLVM install root `/opt/llvm`.
+- Put `PTO_INSTALL_DIR` under PTOAS's own directory to avoid mixing it with the shared LLVM installation.
 
-## 3.1 环境准备
+## 3.1 Environment Preparation
 
-沿用 README 第 3.1 节即可，重点确认这些依赖已经满足：
+Follow README section 3.1, and make sure these dependencies are available:
 
 - Linux
-- GCC >= 9 或 Clang
+- GCC >= 9 or Clang
 - CMake >= 3.20
 - Ninja
 - Python 3.8+
@@ -49,38 +49,38 @@ mkdir -p "$WORKSPACE_DIR"
 pip3 install pybind11 numpy
 ```
 
-## 跳过 3.2
+## Skip 3.2
 
-README 第 3.2 节是 LLVM/MLIR 的下载和编译步骤。当前场景下 LLVM 已经安装在 `/opt/llvm`，这一节可以直接跳过。
+README section 3.2 covers downloading and building LLVM/MLIR. In this scenario, LLVM is already installed at `/opt/llvm`, so this section can be skipped.
 
-已验证：
+Verified:
 
 ```bash
 /opt/llvm/bin/llvm-config --version
 ```
 
-输出为：
+Output:
 
 ```text
 19.1.7
 ```
 
-## 3.3 第二步：构建 ptoas
+## 3.3 Step 2: Build ptoas
 
-这里沿用 README 第 3.3 节的流程，但 `LLVM_DIR` 和 `MLIR_DIR` 需要改为
-`/opt/llvm/lib/cmake/...`。
+Follow the flow from README section 3.3, but change `LLVM_DIR` and `MLIR_DIR` to
+`/opt/llvm/lib/cmake/...`.
 
-`MLIR_PYTHON_PACKAGE_DIR` 仍然指向 LLVM 的 MLIR Python package。PTOAS 的
-`pto.py`、`_pto_ops_gen.py` 和 `_pto.cpython-*.so` 会安装到
-`CMAKE_INSTALL_PREFIX`，不会写入共享的 LLVM 安装目录。
+`MLIR_PYTHON_PACKAGE_DIR` still points to LLVM's MLIR Python package. PTOAS
+`pto.py`, `_pto_ops_gen.py`, and `_pto.cpython-*.so` are installed to
+`CMAKE_INSTALL_PREFIX`; they are not written into the shared LLVM installation directory.
 
 ```bash
 cd "$PTO_SOURCE_DIR"
 
-# 1. 获取 pybind11 的 CMake 路径
+# 1. Get pybind11's CMake path.
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 
-# 2. 配置 CMake
+# 2. Configure CMake.
 cmake -G Ninja \
     -S . \
     -B build \
@@ -93,29 +93,29 @@ cmake -G Ninja \
     -DMLIR_PYTHON_PACKAGE_DIR="$LLVM_INSTALL_DIR/python_packages/mlir_core" \
     -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
 
-# 3. 编译并安装
+# 3. Build and install.
 ninja -C build
 cmake --install build
 ```
 
-## 构建后关键产物
+## Key Artifacts After Build
 
-按上面的配置，关键产物位置如下：
+With the configuration above, the key artifact locations are:
 
-- build 目录：
+- build directory:
   - `$PTO_SOURCE_DIR/build/tools/ptoas/ptoas`
   - `$PTO_SOURCE_DIR/build/tools/ptobc/ptobc`
   - `$PTO_SOURCE_DIR/build/python/mlir/_mlir_libs/_pto.cpython-*.so`
   - `$PTO_SOURCE_DIR/build/python/mlir/dialects/pto.py`
-- install 目录：
+- install directory:
   - `$PTO_INSTALL_DIR/bin/ptoas`
   - `$PTO_INSTALL_DIR/mlir/_mlir_libs/_pto.cpython-*.so`
   - `$PTO_INSTALL_DIR/mlir/dialects/pto.py`
   - `$PTO_INSTALL_DIR/share/ptoas/oplib/level3`
 
-## 补充：运行环境
+## Additional Runtime Environment
 
-### 使用 build 目录中的 `ptoas`
+### Use `ptoas` From The build Directory
 
 ```bash
 export PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
@@ -123,7 +123,7 @@ export PYTHONPATH=$LLVM_INSTALL_DIR/python_packages/mlir_core:$PTO_SOURCE_DIR/bu
 export LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:$PTO_SOURCE_DIR/build/lib:$LD_LIBRARY_PATH
 ```
 
-### 使用 install 目录中的 `ptoas`
+### Use `ptoas` From The install Directory
 
 ```bash
 export PATH=$PTO_INSTALL_DIR/bin:$PATH
@@ -131,23 +131,23 @@ export PYTHONPATH=$LLVM_INSTALL_DIR/python_packages/mlir_core:$PTO_INSTALL_DIR:$
 export LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
 ```
 
-注意：
+Notes:
 
-- install 版 `ptoas` 仍然需要从 `/opt/llvm/lib` 加载 LLVM/MLIR 共享库。
-- 如果直接运行 `$PTO_INSTALL_DIR/bin/ptoas` 而没有设置 `LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:...`，会报缺少 `libMLIR*.so`。
+- The installed `ptoas` still needs to load LLVM/MLIR shared libraries from `/opt/llvm/lib`.
+- If `$PTO_INSTALL_DIR/bin/ptoas` is run directly without `LD_LIBRARY_PATH=$LLVM_INSTALL_DIR/lib:...`, it will report missing `libMLIR*.so`.
 
-## 本地验证结果
+## Local Validation Results
 
-当前仓库已验证通过以下组合：
+The current repository has been validated with this combination:
 
 - `LLVM_DIR=/opt/llvm/lib/cmake/llvm`
 - `MLIR_DIR=/opt/llvm/lib/cmake/mlir`
 - `MLIR_PYTHON_PACKAGE_DIR=/opt/llvm/python_packages/mlir_core`
 - `CMAKE_INSTALL_PREFIX=$PTO_INSTALL_DIR`
 
-最小验证结果：
+Minimal validation results:
 
-- build 版 `ptoas --version` 输出 `ptoas 0.22`
-- build 版 `ptoas` 可成功处理 `test/lit/pto/empty_func.pto`
-- install 版 Python 绑定可在 `PYTHONPATH=/opt/llvm/python_packages/mlir_core:$PTO_INSTALL_DIR` 下正常导入
-- 若 install 版 `ptoas` 配合 `LD_LIBRARY_PATH=/opt/llvm/lib:$PTO_INSTALL_DIR/lib`，可正常执行
+- build `ptoas --version` outputs `ptoas 0.22`.
+- build `ptoas` successfully processes `test/lit/pto/empty_func.pto`.
+- installed Python bindings import correctly with `PYTHONPATH=/opt/llvm/python_packages/mlir_core:$PTO_INSTALL_DIR`.
+- installed `ptoas` runs correctly when used with `LD_LIBRARY_PATH=/opt/llvm/lib:$PTO_INSTALL_DIR/lib`.

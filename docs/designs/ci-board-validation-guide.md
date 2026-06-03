@@ -1,84 +1,84 @@
-# PTOAS CI 与上板测试说明
+# PTOAS CI and Board Validation Guide
 
-## 1. 文档目的
+## 1. Document Purpose
 
-本文说明 PTOAS 当前与开发者最相关的 3 条验证链路：
+This document describes the three PTOAS validation paths that are currently most relevant to developers:
 
-1. 本地最小复现：`build -> runop -> 生成 pto/cpp`
-2. GitHub Actions：`Build Wheel` 与 `CI`
-3. PR 评论触发的 A3/A5 手动板测
+1. Local minimal reproduction: `build -> runop -> generate pto/cpp`
+2. GitHub Actions: `Build Wheel` and `CI`
+3. A3/A5 manual board validation triggered from PR comments
 
-本文只描述当前仓库已经存在、并且日常开发会直接用到的流程，不展开板测机器人内部实现。
+This document only covers flows that already exist in the current repository and are used directly in daily development. It does not expand on the internal implementation of the board-validation bot.
 
-## 2. 当前链路总览
+## 2. Current Flow Overview
 
 ### 2.1 `Build Wheel`
 
-对应 workflow：`.github/workflows/build_wheel.yml`
+Corresponding workflow: `.github/workflows/build_wheel.yml`
 
-补充：
+Notes:
 
-- macOS wheel 走独立 workflow：`.github/workflows/build_wheel_mac.yml`
-- 评论板测监测器当前依赖的是 Linux `Build Wheel` 产物
+- The macOS wheel uses a separate workflow: `.github/workflows/build_wheel_mac.yml`
+- The comment-triggered board-validation monitor currently depends on the Linux `Build Wheel` artifacts
 
-用途：
+Purpose:
 
-- 构建 Linux wheel
-- 构建 `ptoas` 二进制分发包
-- 产出评论板测监测器会下载的 artifact
+- Build the Linux wheel
+- Build the `ptoas` binary distribution package
+- Produce artifacts downloaded by the comment-triggered board-validation monitor
 
-关键 artifact：
+Key artifacts:
 
 - `ptoas-wheel-py<version>-x86_64`
 - `ptoas-bin-x86_64`
 
-结论：
+Conclusions:
 
-- 如果 PR 对应 head SHA 没有成功的 `Build Wheel`，评论触发的板测通常无法准备工具链。
-- 板测机器人报 `no successful workflow run named 'Build Wheel' found` 时，先补跑这个 workflow。
+- If the PR head SHA does not have a successful `Build Wheel`, comment-triggered board validation usually cannot prepare the toolchain.
+- When the board-validation bot reports `no successful workflow run named 'Build Wheel' found`, rerun this workflow first.
 
 ### 2.2 `CI`
 
-对应 workflow：`.github/workflows/ci.yml`
+Corresponding workflow: `.github/workflows/ci.yml`
 
-用途：
+Purpose:
 
-- 在 GitHub runner 上构建 LLVM/MLIR 与 PTOAS
-- 执行 `test/samples/runop.sh --enablebc all`
-- 在 `workflow_dispatch` / `schedule` 时打包 payload，并把样例和脚本发到远端板机执行 `run_remote_npu_validation.sh`
+- Build LLVM/MLIR and PTOAS on the GitHub runner
+- Run `test/samples/runop.sh --enablebc all`
+- For `workflow_dispatch` / `schedule`, package the payload and send the samples and scripts to the remote board machine to run `run_remote_npu_validation.sh`
 
-触发差异：
+Trigger differences:
 
-- `push` / `pull_request`：只跑 GitHub runner 上的构建和样例生成
-- `workflow_dispatch` / `schedule`：除上述步骤外，还会跑远端板测 job `remote-npu-validation`
+- `push` / `pull_request`: only run the build and sample generation on the GitHub runner
+- `workflow_dispatch` / `schedule`: also run the remote board-validation job `remote-npu-validation`
 
-### 2.3 评论触发板测
+### 2.3 Comment-Triggered Board Validation
 
-这部分不在本仓库内实现，但当前开发流程依赖它。
+This part is not implemented in this repository, but the current development flow depends on it.
 
-用途：
+Purpose:
 
-- 在 PR 评论区手动触发 A3 或 A5 板测
-- 结果会回到 GitHub 评论区，并同步飞书通知
+- Manually trigger A3 or A5 board validation from the PR comments
+- Return the result to the GitHub comments and send a synchronized Feishu notification
 
-常用命令：
+Common commands:
 
 - `/run a3`
 - `/run all`
 - `/run a5 <case>`
 - `/run a5 case1,case2 --pto-level=level3`
 
-约束：
+Constraints:
 
-- A5 手动板测当前应显式给出 case 列表，不建议直接 `/run a5` 空跑。
-- `/run all` 当前主要用于 A3 这套全量手动板测。
-- 如果 PR 与 `origin/main` 有冲突，监测器应直接提示冲突并跳过，不应继续执行。
+- A5 manual board validation should currently provide an explicit case list. Running plain `/run a5` is not recommended.
+- `/run all` is currently mainly used for the full A3 manual board-validation suite.
+- If the PR conflicts with `origin/main`, the monitor should report the conflict and skip directly instead of continuing.
 
-## 3. 本地最小复现
+## 3. Local Minimal Reproduction
 
-下面这套命令尽量对齐 `CI` workflow，适合开发阶段先在本地确认 `py -> pto -> cpp` 没有问题。
+The commands below are aligned with the `CI` workflow as closely as possible. They are suitable for first checking locally during development that `py -> pto -> cpp` works correctly.
 
-### 3.1 构建 LLVM/MLIR
+### 3.1 Build LLVM/MLIR
 
 ```bash
 git clone https://github.com/llvm/llvm-project.git
@@ -96,9 +96,9 @@ cmake -G Ninja -S llvm -B llvm/build-shared \
 ninja -C llvm/build-shared
 ```
 
-### 3.2 构建 PTOAS
+### 3.2 Build PTOAS
 
-在 PTOAS 仓库根目录执行：
+Run from the PTOAS repository root:
 
 ```bash
 export LLVM_DIR=$PWD/llvm-project/llvm/build-shared
@@ -121,7 +121,7 @@ ninja -C build ptobc
 ninja -C build install
 ```
 
-### 3.3 跑样例生成链路
+### 3.3 Run the Sample Generation Flow
 
 ```bash
 export MLIR_PYTHON_ROOT=$PWD/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
@@ -133,30 +133,30 @@ export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
 bash test/samples/runop.sh --enablebc all
 ```
 
-只跑单个目录时：
+To run a single directory:
 
 ```bash
 bash test/samples/runop.sh --enablebc -t Sync
 ```
 
-只跑单个 Python 样例时，直接进入对应目录执行也可以，但要自己保证 `PYTHONPATH` / `LD_LIBRARY_PATH` / `PTOAS_BIN` 已经对齐。
+To run a single Python sample, you can also enter the corresponding directory and execute it directly, but you must ensure `PYTHONPATH` / `LD_LIBRARY_PATH` / `PTOAS_BIN` are aligned.
 
-如果要本地复现 A5 / Qwen 一类 case，建议显式补齐 `ptoas` 参数：
+To locally reproduce A5 / Qwen-style cases, explicitly provide the `ptoas` arguments:
 
 ```bash
 export PTOAS_FLAGS="--pto-arch=a5 --pto-level=level3"
 bash test/samples/runop.sh --enablebc -t Qwen3Decode
 ```
 
-说明：
+Notes:
 
-- `runop.sh` 支持通过 `PTOAS_FLAGS` 透传额外 `ptoas` 参数
-- `runop.sh` 默认会追加 `--enable-insert-sync`
-- 本地复现板测问题时，优先让 `PTOAS_FLAGS` 与评论触发板测保持一致
+- `runop.sh` supports passing additional `ptoas` arguments through `PTOAS_FLAGS`
+- `runop.sh` appends `--enable-insert-sync` by default
+- When locally reproducing board-validation issues, prefer keeping `PTOAS_FLAGS` consistent with comment-triggered board validation
 
-### 3.4 直接跑远端板测脚本
+### 3.4 Run the Remote Board-Validation Script Directly
 
-如果你已经在板机上，或者 GitHub Actions payload 已经准备好，可以直接运行：
+If you are already on the board machine, or the GitHub Actions payload is already prepared, you can run directly:
 
 ```bash
 STAGE=run \
@@ -167,7 +167,7 @@ SKIP_CASES='mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp' \
 bash test/npu_validation/scripts/run_remote_npu_validation.sh
 ```
 
-A5 例子：
+A5 example:
 
 ```bash
 STAGE=run \
@@ -178,30 +178,30 @@ DEVICE_ID=1 \
 bash test/npu_validation/scripts/run_remote_npu_validation.sh
 ```
 
-说明：
+Notes:
 
-- `RUN_ONLY_CASES` 和 `SKIP_CASES` 都支持逗号或空格分隔。
-- `run_remote_npu_validation.sh` 会自动 source 常见 Ascend 环境脚本，并尝试探测 `ASCEND_HOME_PATH`。
-- `ci.yml` 会在全量跑时根据 `SOC_VERSION` 自动排除 A3-only / A5-only case；手工跑时你自己要关注目标架构是否匹配。
+- `RUN_ONLY_CASES` and `SKIP_CASES` both support comma or space separators.
+- `run_remote_npu_validation.sh` automatically sources common Ascend environment scripts and tries to detect `ASCEND_HOME_PATH`.
+- During full runs, `ci.yml` automatically excludes A3-only / A5-only cases based on `SOC_VERSION`; during manual runs, you must check whether the target architecture matches.
 
-## 4. GitHub Actions 怎么跑
+## 4. How to Run GitHub Actions
 
-### 4.1 PR 默认会跑什么
+### 4.1 What Runs by Default for PRs
 
-PR 创建或推送后，至少会涉及两类 workflow：
+After a PR is created or pushed, at least two workflows are involved:
 
 1. `Build Wheel`
 2. `CI`
 
-推荐检查顺序：
+Recommended check order:
 
-1. `Build Wheel` 是否成功
-2. `CI` 的 `build-and-test` 是否成功
-3. 如果要上板，再决定走 `workflow_dispatch` 还是评论触发监测器
+1. Whether `Build Wheel` succeeded
+2. Whether the `CI` `build-and-test` job succeeded
+3. If board validation is needed, decide whether to use `workflow_dispatch` or the comment-triggered monitor
 
-### 4.2 手动触发 `Build Wheel`
+### 4.2 Manually Trigger `Build Wheel`
 
-当评论板测缺少工具链 artifact 时，先手动补跑：
+When comment-triggered board validation is missing toolchain artifacts, manually rerun this first:
 
 ```bash
 gh workflow run build_wheel.yml \
@@ -209,17 +209,17 @@ gh workflow run build_wheel.yml \
   --ref <your-branch>
 ```
 
-检查产物：
+Check artifacts:
 
 ```bash
 gh run list --repo hw-native-sys/PTOAS --workflow 'Build Wheel' --limit 5
 ```
 
-### 4.3 手动触发 `CI` 远端板测
+### 4.3 Manually Trigger `CI` Remote Board Validation
 
-`CI` 的 `remote-npu-validation` 只会在 `workflow_dispatch` 或定时任务下执行。
+The `CI` `remote-npu-validation` job only runs under `workflow_dispatch` or scheduled tasks.
 
-命令行例子：
+Command-line example:
 
 ```bash
 gh workflow run ci.yml \
@@ -233,7 +233,7 @@ gh workflow run ci.yml \
   -f run_only_cases=''
 ```
 
-A5 例子：
+A5 example:
 
 ```bash
 gh workflow run ci.yml \
@@ -246,147 +246,147 @@ gh workflow run ci.yml \
   -f run_only_cases='qwen3_decode_layer_incore_0,qwen3_decode_layer_incore_1'
 ```
 
-关键输入解释：
+Key input descriptions:
 
-- `stage`：`build` 或 `run`
-- `run_mode`：`npu` 或 `sim`
-- `soc_version`：例如 `Ascend910B1`、`Ascend950`
-- `device_id`：远端 `aclrtSetDevice` 的 device id
-- `skip_cases`：跳过列表
-- `run_only_cases`：只跑列表
-- `pto_isa_repo` / `pto_isa_commit`：指定板测使用的 `pto-isa`
-- `remote_host` / `remote_user` / `remote_port`：指定远端板机
+- `stage`: `build` or `run`
+- `run_mode`: `npu` or `sim`
+- `soc_version`: for example `Ascend910B1`, `Ascend950`
+- `device_id`: device id for remote `aclrtSetDevice`
+- `skip_cases`: skip list
+- `run_only_cases`: run-only list
+- `pto_isa_repo` / `pto_isa_commit`: specify the `pto-isa` used for board validation
+- `remote_host` / `remote_user` / `remote_port`: specify the remote board machine
 
-## 5. PR 评论触发板测
+## 5. PR Comment-Triggered Board Validation
 
-### 5.1 触发前检查
+### 5.1 Checks Before Triggering
 
-先检查这几件事：
+Check these first:
 
-1. PR 能否干净合到 `origin/main`
-2. 对应 head SHA 或 merge SHA 是否有成功的 `Build Wheel`
-3. 要跑的 case 是否已经具备可比较的 golden / compare 资产
-4. A3 / A5 是否需要按架构拆 case
+1. Whether the PR can merge cleanly into `origin/main`
+2. Whether the corresponding head SHA or merge SHA has a successful `Build Wheel`
+3. Whether the cases to run already have comparable golden / compare assets
+4. Whether A3 / A5 cases need to be split by architecture
 
-### 5.2 常用命令
+### 5.2 Common Commands
 
-A3 全量：
+A3 full run:
 
 ```text
 /run a3
 ```
 
-A3 手动全量入口：
+A3 manual full-run entry point:
 
 ```text
 /run all
 ```
 
-A5 单 case：
+A5 single case:
 
 ```text
 /run a5 qwen3_decode_layer_incore_0 --pto-level=level3
 ```
 
-A5 多 case：
+A5 multiple cases:
 
 ```text
 /run a5 qwen3_decode_layer_incore_0,qwen3_decode_layer_incore_1,qwen3_decode_layer_incore_2 --pto-level=level3
 ```
 
-说明：
+Notes:
 
-- case 列表支持逗号分隔；为了减少解析歧义，优先使用逗号。
-- A5 当前建议总是显式给 case 列表。
-- Qwen 一类 A5 case 常常还会带 `--pto-level=level3`。
+- Case lists support comma separation; prefer commas to reduce parsing ambiguity.
+- A5 currently recommends always specifying an explicit case list.
+- Qwen-style A5 cases often also include `--pto-level=level3`.
 
-### 5.3 结果怎么看
+### 5.3 How to Read Results
 
-通常会有两路结果：
+There are usually two result channels:
 
-1. GitHub 评论区汇总
-2. 飞书机器人消息
+1. GitHub comment summary
+2. Feishu bot message
 
-常见状态：
+Common statuses:
 
 - `OK / FAIL / SKIP`
-- `fetch-source`：拉源码失败
-- `prepare-toolchain`：下载或解压板测工具链失败
-- `sample-build-and-test`：样例生成、编译或运行阶段失败
-- `internal`：监测器自身异常
+- `fetch-source`: failed to fetch source
+- `prepare-toolchain`: failed to download or unpack the board-validation toolchain
+- `sample-build-and-test`: failed during sample generation, compilation, or execution
+- `internal`: monitor internal exception
 
-## 6. 新增 case 时要注意什么
+## 6. Notes When Adding Cases
 
-### 6.1 `runop.sh` 会执行哪些文件
+### 6.1 Which Files `runop.sh` Executes
 
-`test/samples/runop.sh` 会遍历样例目录下的 `*.py`，但会跳过：
+`test/samples/runop.sh` iterates over `*.py` files under sample directories, but skips:
 
 - `*_golden.py`
 - `*_compare.py`
 
-这意味着：
+This means:
 
-- 纯 helper 脚本不要随便命名成普通 `*.py`
-- 如果 helper 只是给 golden 复用，优先命名成 `*_golden.py`，或者放到不会被 `runop.sh` 当成入口脚本执行的路径
+- Do not casually name pure helper scripts as ordinary `*.py` files
+- If a helper is only reused by golden logic, prefer naming it `*_golden.py`, or place it under a path that `runop.sh` will not execute as an entry script
 
-否则 `runop.sh all` 会把它当成样例生成入口，导致空 IR 或错误 IR 被送进 `ptoas`。
+Otherwise, `runop.sh all` treats it as a sample-generation entry point, which can send empty IR or incorrect IR into `ptoas`.
 
-### 6.2 golden / compare 资产放哪里
+### 6.2 Where to Place Golden / Compare Assets
 
-当前样例链路会自动拷贝：
+The current sample flow automatically copies:
 
-- 样例目录下的 `*_golden.py`
-- 样例目录下的 `*_compare.py`
-- 样例目录下 `npu_validation/golden.py`
-- 样例目录下 `npu_validation/compare.py`
+- `*_golden.py` under the sample directory
+- `*_compare.py` under the sample directory
+- `npu_validation/golden.py` under the sample directory
+- `npu_validation/compare.py` under the sample directory
 
-建议：
+Recommendations:
 
-- case 独立的 golden，用 `<case>_golden.py`
-- case 独立的 compare，用 `<case>_compare.py`
-- 多个 case 共享逻辑时，公共代码不要命名成会被入口匹配到的普通脚本名
+- For case-specific golden logic, use `<case>_golden.py`
+- For case-specific compare logic, use `<case>_compare.py`
+- When multiple cases share logic, do not give common code an ordinary script name that will be matched as an entry point
 
-### 6.3 A3 / A5 分流
+### 6.3 A3 / A5 Routing
 
-如果 case 只适用于某个架构，需要同步更新 `.github/workflows/ci.yml` 中的分流列表：
+If a case only applies to one architecture, also update the routing lists in `.github/workflows/ci.yml`:
 
 - `A3_ONLY_CASES`
 - `A5_ONLY_CASES`
 
-否则：
+Otherwise:
 
-- A3 可能错误地去跑 A5 case
-- A5 可能错误地去跑 A3 case
-- 全量板测会出现和功能本身无关的误报
+- A3 may incorrectly run A5 cases
+- A5 may incorrectly run A3 cases
+- Full board validation may report false positives unrelated to the feature itself
 
-## 7. 常见问题
+## 7. FAQ
 
-### 7.1 为什么 PR 的 `CI` 绿了，但评论板测还是起不来？
+### 7.1 Why Is the PR `CI` Green, but Comment-Triggered Board Validation Still Cannot Start?
 
-最常见原因不是 case 本身，而是工具链前置条件不满足：
+The most common cause is not the case itself, but unmet toolchain prerequisites:
 
-- `Build Wheel` 没成功
-- PR 没有可用 merge ref
-- 板测监测器拉源码或下载 artifact 失败
+- `Build Wheel` did not succeed
+- The PR has no usable merge ref
+- The board-validation monitor failed to fetch source or download artifacts
 
-先看机器人回的失败阶段，不要直接重试很多次。
+Check the failure stage reported by the bot first; do not immediately retry many times.
 
-### 7.2 为什么 A5 手动板测不建议直接 `/run a5`？
+### 7.2 Why Is Plain `/run a5` Not Recommended for A5 Manual Board Validation?
 
-当前 A5 监测器更适合显式 case 列表，尤其是 Qwen、Tilelet 这类只跑局部回归的场景。直接空跑会把“我要验证的内容”说不清楚，也容易碰到非目标 case 干扰。
+The current A5 monitor is better suited to explicit case lists, especially for scenarios such as Qwen and Tilelet that only run partial regressions. A plain empty run makes the intended validation unclear and is more likely to be affected by unrelated cases.
 
-### 7.3 为什么新增了 helper 脚本后 `runop all` 挂了？
+### 7.3 Why Did `runop all` Fail After Adding a Helper Script?
 
-因为 `runop.sh` 默认把普通 `*.py` 视为样例入口。helper 如果不属于 golden/compare 命名模式，就会被误执行。
+Because `runop.sh` treats ordinary `*.py` files as sample entry points by default. If a helper does not follow the golden/compare naming pattern, it will be executed by mistake.
 
-### 7.4 什么时候用 `workflow_dispatch`，什么时候用评论触发板测？
+### 7.4 When Should I Use `workflow_dispatch`, and When Should I Use Comment-Triggered Board Validation?
 
-建议：
+Recommendations:
 
-- 想直接验证远端脚本、payload 或 `run_remote_npu_validation.sh` 时，用 `workflow_dispatch`
-- 想对 PR 做日常板测、拿飞书/GitHub 评论反馈时，用评论触发监测器
+- Use `workflow_dispatch` when directly validating remote scripts, payloads, or `run_remote_npu_validation.sh`
+- Use the comment-triggered monitor for routine PR board validation and Feishu/GitHub comment feedback
 
-## 8. 参考文件
+## 8. Reference Files
 
 - `.github/workflows/build_wheel.yml`
 - `.github/workflows/ci.yml`
