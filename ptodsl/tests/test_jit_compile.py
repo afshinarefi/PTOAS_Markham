@@ -75,12 +75,12 @@ class _FakeTileWithPartialValidShape:
 
 expect_raises(
     TypeError,
-    lambda: pto.load_tile(object(), _FakeTileWithoutValidShape(), offset=[0, 0]),
+    lambda: pto.tile.load(object(), _FakeTileWithoutValidShape(), offset=[0, 0]),
     "requires tile valid_shape metadata",
 )
 expect_raises(
     ValueError,
-    lambda: pto.load_tile(object(), _FakeTileWithPartialValidShape(), offset=[0, 0]),
+    lambda: pto.tile.load(object(), _FakeTileWithPartialValidShape(), offset=[0, 0]),
     "tile.valid_shape[1] is None",
 )
 
@@ -151,8 +151,8 @@ def tile_transfer_surface_probe(
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
     a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
     o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
-    pto.load_tile(a_view, a_tile, offset=[0, 0])
-    pto.store_tile(o_tile, o_view, offsets=[0, 0])
+    pto.tile.load(a_view, a_tile, offset=[0, 0])
+    pto.tile.store(o_tile, o_view, offsets=[0, 0])
 
 
 @pto.jit(target="a5", insert_sync=False)
@@ -1226,8 +1226,6 @@ def main() -> None:
         "mad_mx",
         "mad_mx_acc",
         "mad_mx_bias",
-        "load_tile",
-        "store_tile",
         "empty_like",
     ]
     for name in expected_public_exports:
@@ -1242,6 +1240,8 @@ def main() -> None:
     expect(hasattr(pto.tile, "load"), "pto.tile.load should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "add"), "pto.tile.add should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "cmps"), "pto.tile.cmps should be exported from the public tile namespace")
+    expect(not hasattr(pto, "load_tile"), "pto.load_tile should not remain on the public pto namespace")
+    expect(not hasattr(pto, "store_tile"), "pto.store_tile should not remain on the public pto namespace")
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
@@ -1636,14 +1636,14 @@ def main() -> None:
 
     tile_transfer_text = tile_transfer_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(tile_transfer_text, "tile transfer surface specialization")
-    expect("pto.tload" in tile_transfer_text, "pto.load_tile(...) should lower to pto.tload")
-    expect("pto.tstore" in tile_transfer_text, "pto.store_tile(...) should lower to pto.tstore")
+    expect("pto.tload" in tile_transfer_text, "pto.tile.load(..., offset=...) should lower to pto.tload")
+    expect("pto.tstore" in tile_transfer_text, "pto.tile.store(..., offset=...) should lower to pto.tstore")
     expect(
         re.search(
             r"sizes = \[%[a-zA-Z0-9_]+, %[a-zA-Z0-9_]+\]",
             tile_transfer_text,
         ) is not None,
-        "load_tile/store_tile should infer partition sizes from tile.valid_shape",
+        "pto.tile.load/store overloads should infer partition sizes from tile.valid_shape",
     )
 
     authored_addr_tile_text = authored_addr_tile_surface_probe.compile().mlir_text()

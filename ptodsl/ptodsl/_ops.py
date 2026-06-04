@@ -1724,40 +1724,6 @@ def _tile_transfer_partition(tv, tile, *, offset=None, offsets=None, sizes=None,
     return partition_view(tv, offsets=normalized_offsets, sizes=normalized_sizes)
 
 
-def load_tile(src, dst_tile, *, offset=None, offsets=None, sizes=None):
-    """
-    Load a tensor-view partition into ``dst_tile``.
-
-    ``sizes`` defaults to ``dst_tile.valid_shape`` when the view and tile ranks match.
-    """
-    part = _tile_transfer_partition(
-        src,
-        dst_tile,
-        offset=offset,
-        offsets=offsets,
-        sizes=sizes,
-        context="load_tile(...)",
-    )
-    tload(part, dst_tile)
-
-
-def store_tile(src_tile, dst, *, offset=None, offsets=None, sizes=None):
-    """
-    Store ``src_tile`` into a tensor-view partition.
-
-    ``sizes`` defaults to ``src_tile.valid_shape`` when the view and tile ranks match.
-    """
-    part = _tile_transfer_partition(
-        dst,
-        src_tile,
-        offset=offset,
-        offsets=offsets,
-        sizes=sizes,
-        context="store_tile(...)",
-    )
-    tstore(src_tile, part)
-
-
 def alloc_tile(
     tile_type=None,
     *,
@@ -4043,7 +4009,6 @@ __all__ = [
     "vaxpy", "vaddrelu", "vsubrelu",
     "vsel",
     "make_tensor_view", "partition_view",
-    "load_tile", "store_tile",
     "alloc_tile",
     "tload", "tstore", "tmov",
     "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
