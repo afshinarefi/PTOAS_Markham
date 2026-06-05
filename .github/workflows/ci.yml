@@ -68,6 +68,9 @@ permissions:
   actions: write
   pull-requests: read
 
+env:
+  PTOAS_CLANG_MAJOR: "15"
+
 jobs:
   license-header-check:
     if: ${{ github.event_name == 'pull_request' }}
@@ -117,7 +120,7 @@ jobs:
           sudo apt-get install -y \
             cmake git ninja-build \
             python3 python3-pip python3-venv \
-            clang lld \
+            clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
           python3 -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
@@ -202,39 +205,13 @@ jobs:
             llvm-project/llvm/build-assert
           key: llvm-${{ runner.os }}-${{ env.LLVM_SOURCE_SHA }}-${{ env.LLVM_CACHE_FLAVOR }}
 
-      - name: Resolve default clang toolchain
+      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
         shell: bash
         run: |
           set -euo pipefail
 
-          resolve_default_clang_cxx() {
-            if command -v clang++ >/dev/null 2>&1; then
-              command -v clang++
-              return 0
-            fi
-
-            local clang_bin="$1"
-            local clang_dir clang_name versioned_cxx
-            clang_dir="$(dirname "${clang_bin}")"
-            clang_name="$(basename "${clang_bin}")"
-            if [[ "${clang_name}" =~ ^clang-([0-9.]+)$ ]]; then
-              versioned_cxx="${clang_dir}/clang++-${BASH_REMATCH[1]}"
-              if [[ -x "${versioned_cxx}" ]]; then
-                printf '%s\n' "${versioned_cxx}"
-                return 0
-              fi
-            fi
-
-            versioned_cxx="$(find "${clang_dir}" -maxdepth 1 -type f -name 'clang++-*' | sort -V | tail -n 1 || true)"
-            if [[ -n "${versioned_cxx}" && -x "${versioned_cxx}" ]]; then
-              printf '%s\n' "${versioned_cxx}"
-              return 0
-            fi
-            return 1
-          }
-
-          clang_c="$(command -v clang)"
-          clang_cxx="$(resolve_default_clang_cxx "${clang_c}")"
+          clang_c="$(command -v "clang-${PTOAS_CLANG_MAJOR}")"
+          clang_cxx="$(command -v "clang++-${PTOAS_CLANG_MAJOR}")"
           echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
           echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
           "${clang_c}" --version | head -n 1
@@ -379,14 +356,27 @@ jobs:
             fi
           done
 
+          apt_packages=()
           if [[ "${#missing_tools[@]}" -gt 0 ]]; then
+            apt_packages+=(python3 python3-pip git cmake ninja-build make)
+          fi
+
+          if ! command -v "clang-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1 || \
+             ! command -v "clang++-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
+            apt_packages+=("clang-${PTOAS_CLANG_MAJOR}" "lld-${PTOAS_CLANG_MAJOR}")
+          fi
+
+          if [[ "${#apt_packages[@]}" -gt 0 ]]; then
             if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
               sudo apt-get update
-              sudo apt-get install -y python3 python3-pip git cmake ninja-build make clang
+              sudo apt-get install -y "${apt_packages[@]}"
             else
-              echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
-              echo "ERROR: automatic installation requires sudo + apt-get" >&2
-              exit 1
+              if [[ "${#missing_tools[@]}" -gt 0 ]]; then
+                echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
+                echo "ERROR: automatic installation requires sudo + apt-get" >&2
+                exit 1
+              fi
+              echo "WARN: clang-${PTOAS_CLANG_MAJOR} is unavailable on self-hosted runner; will try system clang or LLVM clang fallback" >&2
             fi
           fi
 
@@ -450,13 +440,17 @@ jobs:
 
           ninja -C llvm/build-shared
 
-      - name: Resolve default clang toolchain
+      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
         shell: bash
         run: |
           set -euo pipefail
 
-          resolve_default_clang_c() {
+          resolve_clang_c() {
             local fallback_dir="$1"
+            if command -v "clang-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
+              command -v "clang-${PTOAS_CLANG_MAJOR}"
+              return 0
+            fi
             if command -v clang >/dev/null 2>&1; then
               command -v clang
               return 0
@@ -468,46 +462,25 @@ jobs:
             return 1
           }
 
-          resolve_default_clang_cxx() {
+          resolve_clang_cxx() {
+            local fallback_dir="$1"
+            if command -v "clang++-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
+              command -v "clang++-${PTOAS_CLANG_MAJOR}"
+              return 0
+            fi
             if command -v clang++ >/dev/null 2>&1; then
               command -v clang++
               return 0
             fi
-
-            local clang_bin="$1"
-            local fallback_dir="$2"
-            local clang_dir clang_name versioned_cxx
-            clang_dir="$(dirname "${clang_bin}")"
-            clang_name="$(basename "${clang_bin}")"
-            if [[ "${clang_name}" =~ ^clang-([0-9.]+)$ ]]; then
-              versioned_cxx="${clang_dir}/clang++-${BASH_REMATCH[1]}"
-              if [[ -x "${versioned_cxx}" ]]; then
-                printf '%s\n' "${versioned_cxx}"
-                return 0
-              fi
-            fi
-
-            versioned_cxx="$(find "${clang_dir}" -maxdepth 1 -type f -name 'clang++-*' | sort -V | tail -n 1 || true)"
-            if [[ -n "${versioned_cxx}" && -x "${versioned_cxx}" ]]; then
-              printf '%s\n' "${versioned_cxx}"
-              return 0
-            fi
-
             if [[ -n "${fallback_dir}" && -x "${fallback_dir}/clang++" ]]; then
               printf '%s\n' "${fallback_dir}/clang++"
-              return 0
-            fi
-
-            versioned_cxx="$(find "${fallback_dir}" -maxdepth 1 -type f -name 'clang++-*' | sort -V | tail -n 1 || true)"
-            if [[ -n "${versioned_cxx}" && -x "${versioned_cxx}" ]]; then
-              printf '%s\n' "${versioned_cxx}"
               return 0
             fi
             return 1
           }
 
-          clang_c="$(resolve_default_clang_c "${LLVM_DIR}/bin")"
-          clang_cxx="$(resolve_default_clang_cxx "${clang_c}" "${LLVM_DIR}/bin")"
+          clang_c="$(resolve_clang_c "${LLVM_DIR}/bin")"
+          clang_cxx="$(resolve_clang_cxx "${LLVM_DIR}/bin")"
           echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
           echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
           "${clang_c}" --version | head -n 1
