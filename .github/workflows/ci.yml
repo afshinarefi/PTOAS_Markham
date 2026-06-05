@@ -68,9 +68,6 @@ permissions:
   actions: write
   pull-requests: read
 
-env:
-  PTOAS_CLANG_MAJOR: "15"
-
 jobs:
   license-header-check:
     if: ${{ github.event_name == 'pull_request' }}
@@ -99,6 +96,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-22.04
     env:
+      PTOAS_CLANG_MAJOR: "15"
       LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
@@ -356,27 +354,15 @@ jobs:
             fi
           done
 
-          apt_packages=()
           if [[ "${#missing_tools[@]}" -gt 0 ]]; then
-            apt_packages+=(python3 python3-pip git cmake ninja-build make)
-          fi
-
-          if [[ "${#apt_packages[@]}" -gt 0 ]]; then
             if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
               sudo apt-get update
-              sudo apt-get install -y "${apt_packages[@]}"
+              sudo apt-get install -y python3 python3-pip git cmake ninja-build make
             else
-              if [[ "${#missing_tools[@]}" -gt 0 ]]; then
-                echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
-                echo "ERROR: automatic installation requires sudo + apt-get" >&2
-                exit 1
-              fi
+              echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
+              echo "ERROR: automatic installation requires sudo + apt-get" >&2
+              exit 1
             fi
-          fi
-
-          if ! command -v "clang-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1 || \
-             ! command -v "clang++-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
-            echo "WARN: clang-${PTOAS_CLANG_MAJOR} is unavailable on self-hosted runner; will try system clang or LLVM clang fallback" >&2
           fi
 
           python3 -m pip --version >/dev/null 2>&1 || {
@@ -439,62 +425,13 @@ jobs:
 
           ninja -C llvm/build-shared
 
-      - name: Resolve clang-${{ env.PTOAS_CLANG_MAJOR }} toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          resolve_clang_c() {
-            local fallback_dir="$1"
-            if command -v "clang-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
-              command -v "clang-${PTOAS_CLANG_MAJOR}"
-              return 0
-            fi
-            if command -v clang >/dev/null 2>&1; then
-              command -v clang
-              return 0
-            fi
-            if [[ -n "${fallback_dir}" && -x "${fallback_dir}/clang" ]]; then
-              printf '%s\n' "${fallback_dir}/clang"
-              return 0
-            fi
-            return 1
-          }
-
-          resolve_clang_cxx() {
-            local fallback_dir="$1"
-            if command -v "clang++-${PTOAS_CLANG_MAJOR}" >/dev/null 2>&1; then
-              command -v "clang++-${PTOAS_CLANG_MAJOR}"
-              return 0
-            fi
-            if command -v clang++ >/dev/null 2>&1; then
-              command -v clang++
-              return 0
-            fi
-            if [[ -n "${fallback_dir}" && -x "${fallback_dir}/clang++" ]]; then
-              printf '%s\n' "${fallback_dir}/clang++"
-              return 0
-            fi
-            return 1
-          }
-
-          clang_c="$(resolve_clang_c "${LLVM_DIR}/bin")"
-          clang_cxx="$(resolve_clang_cxx "${LLVM_DIR}/bin")"
-          echo "PTOAS_CMAKE_C_COMPILER=${clang_c}" >> "${GITHUB_ENV}"
-          echo "PTOAS_CMAKE_CXX_COMPILER=${clang_cxx}" >> "${GITHUB_ENV}"
-          "${clang_c}" --version | head -n 1
-          "${clang_cxx}" --version | head -n 1
-
       - name: Build PTOAS
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "${GITHUB_WORKSPACE}/build"
           rm -rf "${PTO_INSTALL_DIR}"
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-          CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
-          CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
             python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 
