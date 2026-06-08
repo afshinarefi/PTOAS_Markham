@@ -1,0 +1,41 @@
+2026-06-08 13:59:51,537 - __main__ - INFO - Starting TileLang daemon
+2026-06-08 13:59:51,537 - __main__ - INFO -   Socket: /tmp/tilelang_daemon_14246.sock
+2026-06-08 13:59:51,537 - __main__ - INFO -   Template dir: /Users/melikanorouzbeygi/Workspace/Huawei/PTOAS/lib/TileOps
+2026-06-08 13:59:51,537 - __main__ - INFO -   Max entries: 1000
+2026-06-08 13:59:51,655 - tilelang_dsl.daemon_server - INFO - RPC server stopped
+Error: Daemon socket not created at /tmp/tilelang_daemon_14246.sock
+Note: Daemon process started (pid=14247) but socket not found. Check daemon logs.
+Warning: Failed to start daemon, using subprocess mode (fallback)
+2026-06-08 13:59:52,980 - __main__ - INFO - Received shutdown signal
+2026-06-08 13:59:52,980 - __main__ - ERROR - Fatal error: [Errno 1] Operation not permitted
+Traceback (most recent call last):
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/PTOAS/tilelang-dsl/python/tilelang_dsl/daemon.py", line 159, in main
+    asyncio.run(async_main(args))
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/PTOAS/tilelang-dsl/python/tilelang_dsl/daemon.py", line 133, in async_main
+    await server_task
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/PTOAS/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 255, in run_server
+    await server.start()
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/PTOAS/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 62, in start
+    self.server = await asyncio.start_unix_server(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/streams.py", line 113, in start_unix_server
+    return await loop.create_unix_server(factory, path, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/unix_events.py", line 321, in create_unix_server
+    sock.bind(path)
+    ~~~~~~~~~^^^^^^
+PermissionError: [Errno 1] Operation not permitted
+TileLang daemon stopped (pid=14247)

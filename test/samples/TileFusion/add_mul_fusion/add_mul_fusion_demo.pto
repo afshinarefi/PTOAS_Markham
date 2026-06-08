@@ -1,0 +1,31 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @add_mul_fusion_demo() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+
+    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp0 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %tmp1 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>,
+                          !pto.tile_buf<vec, 32x32xf32>)
+             outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tmul ins(%tmp0, %c : !pto.tile_buf<vec, 32x32xf32>,
+                            !pto.tile_buf<vec, 32x32xf32>)
+             outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>)
+    return
+  }
+}
