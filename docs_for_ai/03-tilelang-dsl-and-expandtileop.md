@@ -114,7 +114,7 @@ wants to lift up so the choice becomes MLIR-visible.
   similar surfaces (`tile[row, col:]`, simd/cube notions) that must be changed in lockstep. No
   TODO/FIXME/DEPRECATED markers in templates/daemon/ExpandTileOp — the migration is tracked in #739,
   not in code comments.
-- ❌ **No migration code exists yet.** Per Alan Wang (China team) there is no proposal wiring `ptodsl`
+- ❌ **No migration code exists yet.** Per the team there is no proposal wiring `ptodsl`
   into `ExpandTileOp`; it must be designed (registration, matching, constraints, version selection,
   instantiation interface, optimization pipeline). The design discussion is captured in
   [ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md).
