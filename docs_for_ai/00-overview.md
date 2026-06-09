@@ -78,7 +78,7 @@ high-performance variants per op (axis merging, post-update fusion, layout/tile-
 variants); (C) build the selection mechanism that runs *during* `ExpandTileOp` where full IR
 context is available.
 
-**Status of the plan itself: not started.** Per the China team (Alan Wang) and confirmed by
+**Status of the plan itself: not started.** Per the team and confirmed by
 inspection, there is currently **no proposal/integration** wiring `ptodsl` into `ExpandTileOp`;
 it needs to be designed. The design notes the team has so far are in
 [ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md). Key
