@@ -1,0 +1,182 @@
+2026-06-09 14:32:04,681 - __main__ - INFO - Starting TileLang daemon
+2026-06-09 14:32:04,681 - __main__ - INFO -   Socket: /tmp/tilelang_daemon_61669.sock
+2026-06-09 14:32:04,681 - __main__ - INFO -   Template dir: /var/folders/mv/qf8dh_6x5q58ftt691h0_t4m0000gn/T/tmp.0xnRgbwvPM/likai_vf/lib/TileOps
+2026-06-09 14:32:04,681 - __main__ - INFO -   Max entries: 1000
+2026-06-09 14:32:04,796 - tilelang_dsl.daemon_server - INFO - RPC server stopped
+Error: Daemon socket not created at /tmp/tilelang_daemon_61669.sock
+Note: Daemon process started (pid=61670) but socket not found. Check daemon logs.
+Warning: Failed to start daemon, using subprocess mode (fallback)
+// -----// IR Dump Before PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
+module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+  func.func @add_mul_fusion_demo() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c32 = arith.constant 32 : index
+    %0 = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %2 = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    pto.fusion_region {
+      %3 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+      %4 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c32_0 = arith.constant 32 : index
+      %5 = pto.tile_buf_addr %0 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %6 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %7 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %c32_1 = arith.constant 32 : index
+      %c32_2 = arith.constant 32 : index
+      scf.for %arg0 = %c0 to %c32_1 step %c1 {
+        %11 = arith.index_cast %c32_2 : index to i32
+        %12 = scf.for %arg1 = %c0 to %c32_2 step %c64 iter_args(%arg2 = %11) -> (i32) {
+          %mask, %scalar_out = pto.plt_b32 %arg2 : i32 -> !pto.mask<b32>, i32
+          %13 = arith.subi %c32_0, %arg1 : index
+          %subview = memref.subview %5[%arg0, %arg1] [%c1, %13] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result = pto.vlds %subview[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %14 = arith.subi %c32_0, %arg1 : index
+          %subview_9 = memref.subview %6[%arg0, %arg1] [%c1, %14] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result_10 = pto.vlds %subview_9[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %15 = pto.vadd %result, %result_10, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+          %16 = arith.subi %c32_0, %arg1 : index
+          %subview_11 = memref.subview %7[%arg0, %arg1] [%c1, %16] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          pto.vsts %15, %subview_11[%c0], %mask : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+          scf.yield %scalar_out : i32
+        }
+      }
+      %c0_3 = arith.constant 0 : index
+      %c1_4 = arith.constant 1 : index
+      %c64_5 = arith.constant 64 : index
+      %c32_6 = arith.constant 32 : index
+      %8 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %9 = pto.tile_buf_addr %2 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %10 = pto.tile_buf_addr %4 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %c32_7 = arith.constant 32 : index
+      %c32_8 = arith.constant 32 : index
+      scf.for %arg0 = %c0_3 to %c32_7 step %c1_4 {
+        %11 = arith.index_cast %c32_8 : index to i32
+        %12 = scf.for %arg1 = %c0_3 to %c32_8 step %c64_5 iter_args(%arg2 = %11) -> (i32) {
+          %mask, %scalar_out = pto.plt_b32 %arg2 : i32 -> !pto.mask<b32>, i32
+          %13 = arith.subi %c32_6, %arg1 : index
+          %subview = memref.subview %8[%arg0, %arg1] [%c1_4, %13] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result = pto.vlds %subview[%c0_3] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %14 = arith.subi %c32_6, %arg1 : index
+          %subview_9 = memref.subview %9[%arg0, %arg1] [%c1_4, %14] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result_10 = pto.vlds %subview_9[%c0_3] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %15 = pto.vmul %result, %result_10, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+          %16 = arith.subi %c32_6, %arg1 : index
+          %subview_11 = memref.subview %10[%arg0, %arg1] [%c1_4, %16] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          pto.vsts %15, %subview_11[%c0_3], %mask : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+          scf.yield %scalar_out : i32
+        }
+      }
+      pto.yield() : () -> ()
+    } {pto.fusion.group_id = 0 : i64} : 
+    return
+  }
+}
+
+// -----// IR Dump After PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
+module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+  func.func @add_mul_fusion_demo() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c32 = arith.constant 32 : index
+    %0 = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %2 = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    pto.fusion_region {
+      %3 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+      %4 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c64 = arith.constant 64 : index
+      %c32_0 = arith.constant 32 : index
+      %5 = pto.tile_buf_addr %0 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %6 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %7 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %c32_1 = arith.constant 32 : index
+      %c32_2 = arith.constant 32 : index
+      %c0_3 = arith.constant 0 : index
+      %c1_4 = arith.constant 1 : index
+      %c64_5 = arith.constant 64 : index
+      %c32_6 = arith.constant 32 : index
+      %8 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %9 = pto.tile_buf_addr %2 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %10 = pto.tile_buf_addr %4 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+      %c32_7 = arith.constant 32 : index
+      %c32_8 = arith.constant 32 : index
+      scf.for %arg0 = %c0 to %c32_1 step %c1 {
+        %11 = arith.index_cast %c32_2 : index to i32
+        %12 = arith.index_cast %c32_8 : index to i32
+        %13:2 = scf.for %arg1 = %c0 to %c32_2 step %c64 iter_args(%arg2 = %11, %arg3 = %12) -> (i32, i32) {
+          %mask, %scalar_out = pto.plt_b32 %arg2 : i32 -> !pto.mask<b32>, i32
+          %14 = arith.subi %c32_0, %arg1 : index
+          %subview = memref.subview %5[%arg0, %arg1] [%c1, %14] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result = pto.vlds %subview[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %15 = arith.subi %c32_0, %arg1 : index
+          %subview_9 = memref.subview %6[%arg0, %arg1] [%c1, %15] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result_10 = pto.vlds %subview_9[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %16 = pto.vadd %result, %result_10, %mask : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+          %17 = arith.subi %c32_0, %arg1 : index
+          %subview_11 = memref.subview %7[%arg0, %arg1] [%c1, %17] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          pto.vsts %16, %subview_11[%c0], %mask : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+          %mask_12, %scalar_out_13 = pto.plt_b32 %arg3 : i32 -> !pto.mask<b32>, i32
+          %18 = arith.subi %c32_6, %arg1 : index
+          %subview_14 = memref.subview %8[%arg0, %arg1] [%c1_4, %18] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result_15 = pto.vlds %subview_14[%c0_3] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %19 = arith.subi %c32_6, %arg1 : index
+          %subview_16 = memref.subview %9[%arg0, %arg1] [%c1_4, %19] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          %result_17 = pto.vlds %subview_16[%c0_3] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+          %20 = pto.vmul %result_15, %result_17, %mask_12 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+          %21 = arith.subi %c32_6, %arg1 : index
+          %subview_18 = memref.subview %10[%arg0, %arg1] [%c1_4, %21] [%c1_4, %c1_4] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+          pto.vsts %20, %subview_18[%c0_3], %mask_12 : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+          scf.yield %scalar_out, %scalar_out_13 : i32, i32
+        }
+      }
+      pto.yield() : () -> ()
+    } {pto.fusion.group_id = 0 : i64} : 
+    return
+  }
+}
+
+2026-06-09 14:32:06,148 - __main__ - INFO - Received shutdown signal
+2026-06-09 14:32:06,149 - __main__ - ERROR - Fatal error: [Errno 1] Operation not permitted
+Traceback (most recent call last):
+  File "/var/folders/mv/qf8dh_6x5q58ftt691h0_t4m0000gn/T/tmp.0xnRgbwvPM/likai_vf/tilelang-dsl/python/tilelang_dsl/daemon.py", line 159, in main
+    asyncio.run(async_main(args))
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/var/folders/mv/qf8dh_6x5q58ftt691h0_t4m0000gn/T/tmp.0xnRgbwvPM/likai_vf/tilelang-dsl/python/tilelang_dsl/daemon.py", line 133, in async_main
+    await server_task
+  File "/var/folders/mv/qf8dh_6x5q58ftt691h0_t4m0000gn/T/tmp.0xnRgbwvPM/likai_vf/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 255, in run_server
+    await server.start()
+  File "/var/folders/mv/qf8dh_6x5q58ftt691h0_t4m0000gn/T/tmp.0xnRgbwvPM/likai_vf/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 62, in start
+    self.server = await asyncio.start_unix_server(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+    )
+    ^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/streams.py", line 113, in start_unix_server
+    return await loop.create_unix_server(factory, path, **kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.5/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/unix_events.py", line 321, in create_unix_server
+    sock.bind(path)
+    ~~~~~~~~~^^^^^^
+PermissionError: [Errno 1] Operation not permitted
+TileLang daemon stopped (pid=61670)
