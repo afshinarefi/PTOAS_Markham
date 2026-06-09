@@ -39,11 +39,11 @@ def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
   - `tadd_dsl.py`: low-level standalone vector example using explicit `castptr`, `addptr`, `vlds`, `vadd`, `vsts`.
   - `tadd_lowlevel.py`: raw MLIR Python binding version, manually constructing the same kind of IR as `tadd_dsl.py`.
 
-## Important correction from Alan Wang
+## Important correction from the team
 
-We asked the China team whether future PTODSL TileLib templates should look more like `tadd_dsl.py` with bare pointers, or more like TileLang templates using `src0[row, col:]`.
+We asked the team whether future PTODSL TileLib templates should look more like `tadd_dsl.py` with bare pointers, or more like TileLang templates using `src0[row, col:]`.
 
-Alan clarified:
+The team clarified:
 
 - Future PTODSL TileLib templates should **follow the TileLang-style tile indexing**, not the bare-pointer style.
 - Avoid bare pointers like in `tadd_dsl.py`.
@@ -156,7 +156,7 @@ TileValue
   -> memref.SubViewOp(...)
 ```
 
-This confirms Alan’s point: PTODSL already supports structured tile slicing and preserves memref/tile metadata.
+This confirms the team’s point: PTODSL already supports structured tile slicing and preserves memref/tile metadata.
 
 ## Corrected mental model
 
@@ -170,7 +170,7 @@ vc = pto.vadd(...)
 pto.vsts(...)
 ```
 
-After Alan’s clarification and inspecting `_surface_values.py`, the corrected model is:
+After the team’s clarification and inspecting `_surface_values.py`, the corrected model is:
 
 ```text
 Future PTODSL TileLib template should look closer to TileLang body style:
@@ -258,7 +258,7 @@ Important nuance:
 
 ## Things to design for PTODSL + ExpandTileOp integration
 
-Alan said there is no proposal yet, so likely design is needed:
+The team said there is no proposal yet, so likely design is needed:
 
 ### 1. Template registration
 
