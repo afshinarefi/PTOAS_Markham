@@ -120,10 +120,24 @@ class TileSpec:
 class _TemplateTile(TileValue):
     """Engine ``TileValue`` with the template-author alias ``element_type`` and forced
     dynamic ``valid_shape`` (emit ``pto.tile_valid_rows/cols`` rather than folding the
-    static ``v_row/v_col`` carried in the tile_buf type)."""
+    static ``v_row/v_col`` carried in the tile_buf type).
 
-    def __init__(self, value):
-        super().__init__(value)
+    Metadata (shape/dtype/memory_space) is supplied from the ``TileSpec`` because a raw
+    entry-block ``tile_buf`` type is not introspectable by ``parse_tile_type_metadata``
+    (its regex expects a different textual form, and the binding path needs a cast type).
+    Supplying it explicitly takes the fast path in ``infer_memref_type_from_surface_value``.
+    """
+
+    def __init__(self, value, spec: "TileSpec"):
+        elem = _resolve(_scalar_descriptor(spec.dtype))
+        super().__init__(
+            value,
+            shape=tuple(spec.shape),
+            physical_shape=tuple(spec.shape),
+            dtype=elem,
+            memory_space=spec.memory_space,
+            valid_shape=None,
+        )
         # Force the dynamic valid-shape ops to match the tilelang render.
         self.static_valid_shape = None
         self._valid_shape._cache.clear()
@@ -238,7 +252,9 @@ class _TemplateTrace(TracingRuntime):
         return arg_types
 
     def bind_entry_arguments(self, entry_arguments):
-        return tuple(_TemplateTile(arg) for arg in entry_arguments)
+        return tuple(
+            _TemplateTile(arg, spec) for arg, (_, spec) in zip(entry_arguments, self._ordered_specs)
+        )
 
     def trace_entry(self, *args):
         self.descriptor.py_fn(*args)
