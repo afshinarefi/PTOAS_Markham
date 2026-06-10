@@ -23,8 +23,7 @@ section (what works / what is WIP / what is missing).
 | [03-tilelang-dsl-and-expandtileop.md](03-tilelang-dsl-and-expandtileop.md) | The **legacy** `tilelang-dsl` + the `lib/TileOps` templates + `ExpandTileOp` + the Tilelang daemon. The thing #739 wants to replace. |
 | [04-ptoas-cli-and-backends.md](04-ptoas-cli-and-backends.md) | The `ptoas` CLI: flags (`--pto-arch`, `--pto-level`, `--pto-backend`), the EmitC vs VPTO backends, output modes. |
 | [05-pto-isa-library.md](05-pto-isa-library.md) | The separate `pto-isa` C++ tile library: arch support, what "version selection" means there (functional vs performance), how generated code links to it. |
-| [06-ptodsl-tilelib-migration-plan.md](06-ptodsl-tilelib-migration-plan.md) | **The plan** to make `ptodsl` the TileLib for `ExpandTileOp` (#739): ptodsl capability audit, version-selection state, phased roadmap. *Not implemented yet.* |
-| [ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md) | **Design notes** on the migration (kept verbatim; the human-decision record behind #739). |
+| [ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md) | **The plan** (single source of truth) to make `ptodsl` the TileLib for `ExpandTileOp` (#739): thesis, contract, reuse-vs-port gap analysis, file/folder design, phased roadmap, MVP, verification checklist. *Not implemented yet.* |
 
 ## The one-sentence summary
 

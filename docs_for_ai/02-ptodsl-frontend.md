@@ -90,7 +90,7 @@ Implemented in `_surface_values.py:799–876`:
 - ✅ supported: rank-2 `tile[row, col:]` (1D column view), rank-1 `tile[start:]`, static + dynamic
   offsets/sizes, element access `tile[row, col]` → `TileElementRef`.
 - This is exactly the structured-tile-info-preserving lowering the migration design relies on
-  (see [ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md)).
+  (see [ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md)).
 
 ## 4. Current status
 

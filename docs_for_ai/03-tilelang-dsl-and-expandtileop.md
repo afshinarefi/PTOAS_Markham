@@ -117,7 +117,7 @@ wants to lift up so the choice becomes MLIR-visible.
 - ❌ **No migration code exists yet.** Per the team there is no proposal wiring `ptodsl`
   into `ExpandTileOp`; it must be designed (registration, matching, constraints, version selection,
   instantiation interface, optimization pipeline). The design discussion is captured in
-  [ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md).
+  [ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md).
 
 Evolution of `tilelang-dsl` itself (`docs/matcher-and-advanced-surface-migration.md`):
 v1 core (monomorphic) → v1 lowering (DMA/vector/loops) → matcher + advanced surface (multi-signature,
