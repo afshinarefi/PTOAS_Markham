@@ -80,9 +80,9 @@ context is available.
 
 **Status of the plan itself: not started.** Per the team and confirmed by
 inspection, there is currently **no proposal/integration** wiring `ptodsl` into `ExpandTileOp`;
-it needs to be designed. The design notes the team has so far are in
-[ptodsl_tilelang_expandtileop_summary.md](ptodsl_tilelang_expandtileop_summary.md). Key
-clarifications from that record:
+it needs to be designed. The consolidated design + roadmap is in
+[ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md). Key
+clarifications driving it:
 
 - Future `ptodsl` TileLib templates should keep **TileLang-style tile indexing**
   (`src0[row, col:]`), *not* bare-pointer style (`addptr`/`castptr`) — the bare-pointer
