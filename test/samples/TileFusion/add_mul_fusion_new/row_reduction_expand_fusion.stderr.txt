@@ -1,0 +1,214 @@
+2026-06-10 10:14:22,863 - __main__ - INFO - Starting TileLang daemon
+2026-06-10 10:14:22,863 - __main__ - INFO -   Socket: /tmp/tilelang_daemon_84001.sock
+2026-06-10 10:14:22,863 - __main__ - INFO -   Template dir: /Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/lib/TileOps
+2026-06-10 10:14:22,863 - __main__ - INFO -   Max entries: 1000
+2026-06-10 10:14:22,977 - tilelang_dsl.daemon_server - INFO - RPC server started at /tmp/tilelang_daemon_84001.sock
+TileLang daemon started (pid=84002, socket=/tmp/tilelang_daemon_84001.sock)
+Info: TileLang daemon started successfully
+2026-06-10 10:14:23,972 - tilelang_dsl.daemon_server - ERROR - Error processing instantiate: No kernel found for target='a5', op='pto.trowexpandmul', operand_types=(f32, f32, f32)
+Traceback (most recent call last):
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 162, in _process_request
+    result = await self._rpc_instantiate(params)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 202, in _rpc_instantiate
+    mlir_text = await self.cache.instantiate(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_core.py", line 120, in instantiate
+    mlir_text = await self._do_instantiate(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target, op, operand_specs, context_attrs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_core.py", line 183, in _do_instantiate
+    raise LookupError(
+    ...<2 lines>...
+    )
+LookupError: No kernel found for target='a5', op='pto.trowexpandmul', operand_types=(f32, f32, f32)
+Error: Daemon RPC failed: instantiate failed: No kernel found for target='a5', op='pto.trowexpandmul', operand_types=(f32, f32, f32)
+ExpandTileOp: daemon helper failed (rc=1): 
+ExpandTileOp: daemon RPC failed, falling back to subprocess mode
+// -----// IR Dump Before PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
+module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+  func.func @row_reduction_expand_fusion() {
+    %c5120_i64 = arith.constant 5120 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c0_i64 = arith.constant 0 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %0 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x8xf32, valid=32x1>
+    %2 = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %3 = pto.alloc_tile addr = %c5120_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c8 = arith.constant 8 : index
+    %4 = pto.tile_buf_addr %0 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %5 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x8xf32, valid=32x1> -> memref<32x8xf32, #pto.address_space<vec>>
+    %c64 = arith.constant 64 : index
+    %c32_0 = arith.constant 32 : index
+    %c32_1 = arith.constant 32 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %c4 = arith.constant 4 : index
+    %6 = arith.index_cast %c1 : index to i32
+    %mask, %scalar_out = pto.plt_b32 %6 : i32 -> !pto.mask<b32>, i32
+    %7 = scf.for %arg0 = %c0 to %c32_0 step %c1 iter_args(%arg1 = %scalar_out) -> (i32) {
+      %11 = arith.index_cast %c1 : index to i32
+      %mask_9, %scalar_out_10 = pto.plt_b32 %11 : i32 -> !pto.mask<b32>, i32
+      %12 = pto.vbr %cst : f32 -> !pto.vreg<64xf32>
+      %13 = arith.index_cast %c32_1 : index to i32
+      %14:2 = scf.for %arg2 = %c0 to %c32_1 step %c64 iter_args(%arg3 = %13, %arg4 = %12) -> (i32, !pto.vreg<64xf32>) {
+        %mask_11, %scalar_out_12 = pto.plt_b32 %arg3 : i32 -> !pto.mask<b32>, i32
+        %16 = arith.subi %c32, %arg2 : index
+        %subview_13 = memref.subview %4[%arg0, %arg2] [%c1, %16] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result = pto.vlds %subview_13[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %17 = pto.vcadd %result, %mask_11 : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %18 = pto.vadd %arg4, %17, %mask_9 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        scf.yield %scalar_out_12, %18 : i32, !pto.vreg<64xf32>
+      }
+      %15 = arith.subi %c8, %c0 : index
+      %subview = memref.subview %5[%arg0, %c0] [%c1, %15] [%c1, %c1] : memref<32x8xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+      pto.vsts %14#1, %subview[%c0], %mask {dist = "1PT_B32"} : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+      scf.yield %scalar_out_10 : i32
+    }
+    %c0_2 = arith.constant 0 : index
+    %c1_3 = arith.constant 1 : index
+    %c64_4 = arith.constant 64 : index
+    %c8_5 = arith.constant 8 : index
+    %c32_6 = arith.constant 32 : index
+    %8 = pto.tile_buf_addr %2 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %9 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x8xf32, valid=32x1> -> memref<32x8xf32, #pto.address_space<vec>>
+    %10 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %c32_7 = arith.constant 32 : index
+    %c32_8 = arith.constant 32 : index
+    scf.for %arg0 = %c0_2 to %c32_7 step %c1_3 {
+      %11 = arith.index_cast %c32_8 : index to i32
+      %12 = scf.for %arg1 = %c0_2 to %c32_8 step %c64_4 iter_args(%arg2 = %11) -> (i32) {
+        %mask_9, %scalar_out_10 = pto.plt_b32 %arg2 : i32 -> !pto.mask<b32>, i32
+        %13 = arith.subi %c8_5, %c0_2 : index
+        %subview = memref.subview %9[%arg0, %c0_2] [%c1_3, %13] [%c1_3, %c1_3] : memref<32x8xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result = pto.vlds %subview[%c0_2] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %14 = pto.vdup %result, %mask_9 {position = "LOWEST"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %15 = arith.subi %c32_6, %arg1 : index
+        %subview_11 = memref.subview %8[%arg0, %arg1] [%c1_3, %15] [%c1_3, %c1_3] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result_12 = pto.vlds %subview_11[%c0_2] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %16 = pto.vmul %result_12, %14, %mask_9 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %17 = arith.subi %c32_6, %arg1 : index
+        %subview_13 = memref.subview %10[%arg0, %arg1] [%c1_3, %17] [%c1_3, %c1_3] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        pto.vsts %16, %subview_13[%c0_2], %mask_9 : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+        scf.yield %scalar_out_10 : i32
+      }
+    }
+    return
+  }
+}
+
+// -----// IR Dump After PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
+module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+  func.func @row_reduction_expand_fusion() {
+    %c5120_i64 = arith.constant 5120 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c0_i64 = arith.constant 0 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %0 = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x8xf32, valid=32x1>
+    %2 = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %3 = pto.alloc_tile addr = %c5120_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c8 = arith.constant 8 : index
+    %4 = pto.tile_buf_addr %0 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %5 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x8xf32, valid=32x1> -> memref<32x8xf32, #pto.address_space<vec>>
+    %c64 = arith.constant 64 : index
+    %c32_0 = arith.constant 32 : index
+    %c32_1 = arith.constant 32 : index
+    %cst = arith.constant 0.000000e+00 : f32
+    %c4 = arith.constant 4 : index
+    %6 = arith.index_cast %c1 : index to i32
+    %mask, %scalar_out = pto.plt_b32 %6 : i32 -> !pto.mask<b32>, i32
+    %7 = scf.for %arg0 = %c0 to %c32_0 step %c1 iter_args(%arg1 = %scalar_out) -> (i32) {
+      %11 = arith.index_cast %c1 : index to i32
+      %mask_9, %scalar_out_10 = pto.plt_b32 %11 : i32 -> !pto.mask<b32>, i32
+      %12 = pto.vbr %cst : f32 -> !pto.vreg<64xf32>
+      %13 = arith.index_cast %c32_1 : index to i32
+      %14:2 = scf.for %arg2 = %c0 to %c32_1 step %c64 iter_args(%arg3 = %13, %arg4 = %12) -> (i32, !pto.vreg<64xf32>) {
+        %mask_11, %scalar_out_12 = pto.plt_b32 %arg3 : i32 -> !pto.mask<b32>, i32
+        %16 = arith.subi %c32, %arg2 : index
+        %subview_13 = memref.subview %4[%arg0, %arg2] [%c1, %16] [%c1, %c1] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result = pto.vlds %subview_13[%c0] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %17 = pto.vcadd %result, %mask_11 : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %18 = pto.vadd %arg4, %17, %mask_9 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        scf.yield %scalar_out_12, %18 : i32, !pto.vreg<64xf32>
+      }
+      %15 = arith.subi %c8, %c0 : index
+      %subview = memref.subview %5[%arg0, %c0] [%c1, %15] [%c1, %c1] : memref<32x8xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+      pto.vsts %14#1, %subview[%c0], %mask {dist = "1PT_B32"} : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+      scf.yield %scalar_out_10 : i32
+    }
+    %c0_2 = arith.constant 0 : index
+    %c1_3 = arith.constant 1 : index
+    %c64_4 = arith.constant 64 : index
+    %c8_5 = arith.constant 8 : index
+    %c32_6 = arith.constant 32 : index
+    %8 = pto.tile_buf_addr %2 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %9 = pto.tile_buf_addr %1 : !pto.tile_buf<vec, 32x8xf32, valid=32x1> -> memref<32x8xf32, #pto.address_space<vec>>
+    %10 = pto.tile_buf_addr %3 : !pto.tile_buf<vec, 32x32xf32> -> memref<32x32xf32, #pto.address_space<vec>>
+    %c32_7 = arith.constant 32 : index
+    %c32_8 = arith.constant 32 : index
+    scf.for %arg0 = %c0_2 to %c32_7 step %c1_3 {
+      %11 = arith.index_cast %c32_8 : index to i32
+      %12 = scf.for %arg1 = %c0_2 to %c32_8 step %c64_4 iter_args(%arg2 = %11) -> (i32) {
+        %mask_9, %scalar_out_10 = pto.plt_b32 %arg2 : i32 -> !pto.mask<b32>, i32
+        %13 = arith.subi %c8_5, %c0_2 : index
+        %subview = memref.subview %9[%arg0, %c0_2] [%c1_3, %13] [%c1_3, %c1_3] : memref<32x8xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result = pto.vlds %subview[%c0_2] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %14 = pto.vdup %result, %mask_9 {position = "LOWEST"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %15 = arith.subi %c32_6, %arg1 : index
+        %subview_11 = memref.subview %8[%arg0, %arg1] [%c1_3, %15] [%c1_3, %c1_3] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        %result_12 = pto.vlds %subview_11[%c0_2] : memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>> -> !pto.vreg<64xf32>
+        %16 = pto.vmul %result_12, %14, %mask_9 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+        %17 = arith.subi %c32_6, %arg1 : index
+        %subview_13 = memref.subview %10[%arg0, %arg1] [%c1_3, %17] [%c1_3, %c1_3] : memref<32x32xf32, #pto.address_space<vec>> to memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>
+        pto.vsts %16, %subview_13[%c0_2], %mask_9 : !pto.vreg<64xf32>, memref<?x?xf32, strided<[?, ?], offset: ?>, #pto.address_space<vec>>, !pto.mask<b32>
+        scf.yield %scalar_out_10 : i32
+      }
+    }
+    return
+  }
+}
+
+2026-06-10 10:14:24,261 - __main__ - INFO - Received shutdown signal
+2026-06-10 10:14:24,261 - tilelang_dsl.daemon_server - INFO - Server cancelled
+2026-06-10 10:14:24,261 - tilelang_dsl.daemon_server - INFO - RPC server stopped
+2026-06-10 10:14:24,261 - __main__ - INFO - Daemon shutdown complete
+2026-06-10 10:14:24,274 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=LookupError("No kernel found for target='a5', op='pto.trowexpandmul', operand_types=(f32, f32, f32)")>
+Traceback (most recent call last):
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 162, in _process_request
+    result = await self._rpc_instantiate(params)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_server.py", line 202, in _rpc_instantiate
+    mlir_text = await self.cache.instantiate(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_core.py", line 120, in instantiate
+    mlir_text = await self._do_instantiate(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target, op, operand_specs, context_attrs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/melikanorouzbeygi/Workspace/Huawei/ptoas-pr786-vf-fusion/tilelang-dsl/python/tilelang_dsl/daemon_core.py", line 183, in _do_instantiate
+    raise LookupError(
+    ...<2 lines>...
+    )
+LookupError: No kernel found for target='a5', op='pto.trowexpandmul', operand_types=(f32, f32, f32)
+TileLang daemon stopped (pid=84002)
