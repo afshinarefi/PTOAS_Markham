@@ -91,14 +91,17 @@ layer and point the "render the winner" step at ptodsl's engine.
 
 > Line numbers drift — treat as "start here," grep the symbol if moved.
 
-### One existing prototype, at the wrong abstraction
+### One existing prototype — keep the scaffolding, discard the emitters
 
 `ptodsl/ptodsl/_tile_template_tracing.py` is an **unwired prototype** (no importers, 0 tests, not
-exported). It already emits a *standalone func with `!pto.tile_buf` params* (the right module shape,
-`ModuleStyle.NESTED`), but its body emitters are **too low-level**: `ensure_tile_ptr` +
-`materialize_linear_offset` produce ptr+offset instead of `memref.subview`, `valid_shape` is static,
-and `plt_b32` may raise `NotImplementedError`. **We keep its func-shaping and fix its three emitters
-to call the engine** (this becomes `tilelib/_render_runtime.py`).
+exported). Its *useful* part is the **runtime scaffolding**: `compute_argument_types` builds
+`!pto.tile_buf` arg types from `Tile` annotations + a `TileSpec`, and `bind_entry_arguments` hands
+the body the entry args. Its *body emitters* are too low-level (`ensure_tile_ptr` +
+`materialize_linear_offset` → ptr+offset; static `valid_shape`) and should be **deleted, not
+fixed** — see the §9.4 finding: wrapping each entry arg as `TileValue(arg)` makes the engine's own
+`tile[row,col:]` / `valid_shape` / `_ops.*` produce the golden directly. This becomes
+`tilelib/_render_runtime.py`: keep the scaffolding, bind args as `TileValue`, drop `_TileProxy` and
+the ptr/offset path.
 
 ---
 
@@ -205,14 +208,26 @@ yes; DMA-stride/matmul need static), then let MLIR canonicalization fold concret
 Confirm the reuse assumptions (engine emitters, func shape, attribute name, bindings) and regenerate
 the golden. No large code.
 
-### Phase 1 — Fix the renderer abstraction *(highest risk; do first)*
+### Phase 1 — Renderer via the engine *(highest risk; do first)*
 In `_render_runtime.py` (from `_tile_template_tracing.py`):
-1. Emit `pto.tile_buf_addr` → **memref** (not ptr); route `vlds`/`vsts` through
-   `_surface_values._build_tile_slice_view` so they consume `memref.subview` + `%c0`. Delete
-   `materialize_linear_offset`/`_materialize_row_offset`/ptr cache.
-2. Make `valid_shape` **dynamic** — emit `pto.tile_valid_rows/cols`, so `scf.for` bounds are dynamic.
-3. Fix `plt_b32` (binding present → wire; absent → add it; `tadd` needs `plt_b32`).
-4. Author the spike `tadd` body **without `vecscope`** (the golden has none) and diff vs the golden.
+1. **Bind entry args as `TileValue`** — change `bind_entry_arguments` to return `TileValue(arg)`
+   instead of `_TileProxy(arg)` (metadata auto-parses from the `!pto.tile_buf` type — §9.4). Delete
+   `_TileProxy`, `ensure_tile_ptr`, `materialize_linear_offset`, `_materialize_row_offset`, ptr cache.
+2. **Author surface calls the engine** — `author.py` re-exports `_ops.vlds/vadd/vsts/make_mask` and
+   `get_lanes`; `tile[row,col:]` is just `TileValue.__getitem__` → `memref.subview`; `valid_shape`
+   is the engine's dynamic `pto.tile_valid_rows/cols`. No new lowering written.
+3. **Match the golden's module/func shape** — emit a single `module {pto.target_arch}` containing
+   the func, with `pto.tilelang.instance` (UnitAttr) + `pto.kernel_kind` **on the func**. The
+   prototype's `ModuleStyle.NESTED` double-nests and puts `kernel_kind` on the inner module, and
+   never sets `tilelang.instance` (§9.3) — add a small custom builder or post-process (~10 lines).
+4. **`plt_b32` already works** — binding present (§9.1); the prototype's `make_mask` only threw when
+   absent. No work.
+5. Author the spike `tadd` body **without `vecscope`** (the golden has none); compare vs the golden
+   structurally (normalize SSA names / drop tilelang `//` comment header — not a byte `diff`).
+
+> AST rewrite (`for…range` → loops) is a Phase-4 nicety: the prototype calls `py_fn` directly (no
+> rewrite), so the MVP body uses explicit `for_(...)`. Routing `trace_entry` through `_ast_rewrite`
+> later enables true copy-paste bodies.
 
 ### Phase 2 — Catalog layer (minimum to author)
 `metadata.py`, `decorator.py`, `author.py`. Export `tile_template` from `tilelib/__init__.py`.
@@ -240,12 +255,15 @@ default to ptodsl; delete `tilelang-dsl` + `lib/TileOps` once green.
 ## 7. MVP (build first, in this order)
 
 Prove the loop with `tadd` before any breadth:
-1. `_render_runtime.py` — Phase 1 fixes (subview + dynamic valid_shape + plt_b32).
+0. Commit the golden fixture `ptodsl/tests/fixtures/tadd_a5_8x64_f32.golden.mlir` (from §9.2).
+1. `_render_runtime.py` — Phase 1 (bind `TileValue`, call engine, match func shape/attrs).
 2. `metadata.py`, `decorator.py`, `author.py`.
 3. `templates/a5/tadd.py` — one real template **plus a duplicate at higher `priority`** to exercise
    selection (proves multi-version registration even with identical bodies).
 4. `registry.py` — `register` + `select`.
-5. `render.py` + CLI; `ptodsl/tests/test_tilelib_render.py` diffing against `tadd_template.mlir`.
+5. `render.py` + CLI; `ptodsl/tests/test_tilelib_render.py` comparing rendered MLIR to the golden
+   fixture **structurally** (normalize SSA names, drop the tilelang `//` comment header) — not a
+   byte `diff`, since ptodsl SSA naming and the comment header will differ.
 
 Expected: selecting `pto.tadd`/`a5` returns the priority-10 template; rendered MLIR matches the
 golden's abstraction. Example render command:
@@ -278,31 +296,33 @@ python3 -m ptodsl.tilelib.render --op pto.tadd --target a5 \
 
 ---
 
-## 9. Verification checklist (need help from a runner)
+## 9. Verification checklist — RESOLVED (2026-06-10)
 
-These confirm the reuse assumptions before/while building. Paste outputs back.
+All four reuse assumptions confirmed; results recorded below.
 
-1. **Bindings present?** (decides whether Phase 1.3 is "wire" or "add a binding"):
-   ```bash
-   cd /home/mani/Desktop/PTOAS_Markham && python3 -c "from mlir.dialects import pto; \
-   print({n: hasattr(pto,n) for n in ['PltB32Op','PltB16Op','PltB8Op','TileBufAddrOp','TileValidRowsOp','TileValidColsOp','VldsOp','VstsOp']})"
-   ```
-2. **Golden regenerable?** (use `runpy`; `lib/TileOps/math.py` shadows stdlib `math` on direct run):
-   ```bash
-   cd /home/mani/Desktop/PTOAS_Markham && python3 - <<'PY'
-   import runpy, sys
-   sys.argv = ["render_template_mlir.py","lib/TileOps/tadd_template.py",
-     "--tile","dst=8x64@ub","--tile","src0=8x64@ub","--tile","src1=8x64@ub","-o","/tmp/tadd_golden.mlir"]
-   runpy.run_path("lib/TileOps/render_template_mlir.py", run_name="__main__")
-   PY
-   diff /tmp/tadd_golden.mlir tadd_template.mlir && echo MATCHES
-   ```
-3. **`_TraceBuilder` func shape** — confirm it emits a standalone `func.func` with `!pto.tile_buf`
-   params + `pto.kernel_kind` (and where to attach `pto.tilelang.instance`). Inspect/render
-   `SpecializedTileTemplate(...).mlir_text()` for a trivial template.
-4. **`@pto.jit` engine reachability** — confirm `_surface_values._build_tile_slice_view` /
-   `_emit_tile_memref` / dynamic `valid_shape` / `_ops.make_mask` are callable from a NESTED-style
-   trace (so `_render_runtime.py` can call them directly).
+1. **Bindings present? ✅ ALL PRESENT.** `PltB32Op/PltB16Op/PltB8Op/TileBufAddrOp/TileValidRowsOp/
+   TileValidColsOp/VldsOp/VstsOp` all `True`. → Phase 1.4 (`plt_b32`) needs no new binding.
+2. **Golden regenerable? ✅.** `runpy` render of `lib/TileOps/tadd_template.py` (dst/src0/src1 =
+   8x64@ub) reproduces the expected abstraction (`tile_buf_addr→memref`, `tile_valid_rows/cols`,
+   `memref.subview`, `vlds/vadd/vsts`, no `vecscope`, func attrs `pto.tilelang.instance` +
+   `pto.kernel_kind<vector>`). The untracked repo-root `tadd_template.mlir` is byte-identical.
+   *(Direct invocation fails — `lib/TileOps/math.py` shadows stdlib `math`; use `runpy`.)*
+   **TODO:** commit a stable copy as `ptodsl/tests/fixtures/tadd_a5_8x64_f32.golden.mlir` so the
+   regression test has a checked-in reference (don't diff against the scratch repo-root file).
+3. **`_TraceBuilder` func shape — ⚠️ params ✅, module/func shape needs a small builder.** The
+   prototype emits a `func.func` with `!pto.tile_buf` params (`compute_argument_types` +
+   `TileSpec.mlir_type()`), but `ModuleStyle.NESTED` (`_tracing/module_builder.py:56-72`) produces
+   `module > inner builtin.module(kernel_kind) > func` and **never sets `pto.tilelang.instance`**;
+   the golden is a single `module(target_arch) > func(kernel_kind, tilelang.instance)`. → Phase 1.3
+   adds a custom builder/post-process (func-level attrs can be set directly:
+   `ir_fn.attributes["pto.tilelang.instance"] = UnitAttr.get()`). Confirm what `ExpandTileOp` reads
+   `kernel_kind` from (func vs module) when Phase 5 lands.
+4. **Engine reachability — ✅ CLEAN.** `TileValue.__init__` (`_surface_values.py:418-447`)
+   auto-parses shape/dtype/memory_space/valid_shape from the `!pto.tile_buf` type via
+   `parse_tile_type_metadata(value.type)`. So `TileValue(entry_arg)` is fully populated with **no
+   extra metadata**, and `__getitem__` (→ `memref.subview`), `valid_shape` (→ dynamic
+   `tile_valid_rows/cols`), and `_ops.vlds/vadd/vsts/make_mask` are directly callable. → Phase 1
+   *deletes* the prototype emitters rather than fixing them.
 
 ---
 
