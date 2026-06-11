@@ -258,9 +258,37 @@ keep per-op legality constraints (`tcolmax` row-major+1-row; `tnot` int-only; `t
 Order: elementwise (`tadd/tsub/tmul/…`) → reductions (`tcolmax/…`) → `tcvt`/`tsel`/`tmatmul`.
 
 ### Phase 5 — Wire to `ExpandTileOp`
-Stand up `serving/daemon.py` reusing the **existing C++ RPC contract** (`ExpandTileOp.cpp` builds
-`SpecKey` → operand-specs/context-attrs JSON); swap the Python responder to call `render.py`. C++
-side barely changes. Reuse `stable_key`-style cache (`cache.py`). Gate behind a flag/target initially.
+
+**Contract (verified).** C++ chooses daemon vs subprocess by whether `daemonSocketPath` is set
+(`ExpandTileOp.cpp:955-962`). The daemon protocol is AF_UNIX SOCK_STREAM, 4-byte big-endian
+length-prefixed JSON, one request/connection; method `instantiate` with params
+`{target, op, operand_specs, context_attrs}` → `{success, result|error}` (`daemon_client.py`).
+`operand_specs` per-tile JSON = `{kind:"tile", dtype, shape[], valid_shape[], memory_space,
+config{b_layout,s_layout,s_fractal_size,pad_value}}` (`ExpandTileOp.cpp:702-719`). The returned
+func must carry `pto.tilelang.instance` (`ExpandTileOp.cpp:937-941`) — ours does. The per-call
+*client* is `tilelang_dsl.daemon_helper`, a generic socket client → talks to our daemon unchanged.
+The daemon *server* module is hardcoded `"tilelang_dsl.daemon"` at `TilelangDaemon.cpp:40`.
+
+**5a — ptodsl daemon (DONE, pure Python).** `tilelib/serving/{wire,daemon,client,helper}.py`:
+`TileLibDaemonServer` speaks the exact protocol, translates `operand_specs` → `TileSpec`s →
+`render_best`, with an instance cache + `ping`/`get_stats`/`clear`. Verified in-process by
+`tests/test_tilelib_daemon.py` (C++-shaped `tadd` JSON → socket RPC → structured MLIR, cache hit,
+error path). No C++/rebuild needed.
+
+**5b — C++ swap (TODO, needs rebuild).** Minimal flag-gated diff:
+1. `TilelangDaemon.h/.cpp`: add a `daemonModule` param to `DaemonManager::start` (default
+   `"tilelang_dsl.daemon"`); use it at the hardcoded `args` list.
+2. `ptoas.cpp`: add `--tile-lib-backend=tilelang|ptodsl` (default tilelang); when `ptodsl`, pass
+   `daemonModule="ptodsl.tilelib.serving.daemon"` to `start(...)` and ensure `ptodsl` is importable
+   (pkgPath includes the ptodsl root, or rely on the installed package).
+3. *(clean cutover, optional)* add an ExpandTileOp `helper-module` option (Passes.td) and use it in
+   the helper args (`ExpandTileOp.cpp:810`), set to `ptodsl.tilelib.serving.helper` for ptodsl —
+   otherwise the existing `tilelang_dsl.daemon_helper` client is reused (works, protocol-identical).
+
+**5b test.** Rebuild, then run a real kernel (e.g. `test/lit/vpto/fold_tile_buf_intrinsics.pto`,
+which has a `pto.tadd` 16x64 kernel) with `--tile-lib-backend=ptodsl` and compare lowering to the
+default tilelang path. This is where the standalone-instance-func limitation resolves (the func is
+inlined into the kernel) and true end-to-end lowering is exercised.
 
 ### Phase 6 — Cutover & retire tilelang-dsl
 Parity-test ptodsl vs tilelang MLIR per op (instance cache makes A/B easy). Flip the `ExpandTileOp`
