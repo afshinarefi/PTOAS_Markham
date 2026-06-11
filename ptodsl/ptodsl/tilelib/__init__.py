@@ -16,7 +16,20 @@ Layers:
   - templates/   : the ported per-arch template bodies
 """
 
-from .author import Tile, for_, get_lanes, make_mask, vadd, vlds, vsts
+from .author import (
+    Tile,
+    const_expr,
+    for_,
+    get_lanes,
+    if_,
+    make_mask,
+    static_range,
+    vadd,
+    vecscope,
+    vlds,
+    vsts,
+    yield_,
+)
 from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
 from .metadata import ScalarType, TemplateMetadata, TileSpec, bf16, f16, f32, i8, i16, i32
 from .registry import (
@@ -34,6 +47,11 @@ __all__ = [
     "Tile",
     "tile_template",
     "for_",
+    "static_range",
+    "if_",
+    "yield_",
+    "const_expr",
+    "vecscope",
     "get_lanes",
     "make_mask",
     "vlds",
