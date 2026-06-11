@@ -20,6 +20,8 @@ the caller renders via ptodsl's engine. Selection order:
 
 from __future__ import annotations
 
+from . import constraints as _constraints
+
 
 class NoMatchingTemplate(Exception):
     pass
@@ -57,6 +59,15 @@ class TileTemplateRegistry:
             sig = _dtype_signature(candidates[0], tile_specs)
             raise NoMatchingTemplate(
                 f"no template for op={op!r} target={target!r} matches dtype signature {sig}"
+            )
+
+        # Hard legality constraints (e.g. layout / valid-shape rules).
+        context = _constraints.build_context(tile_specs, target, op)
+        legal = [d for d in legal if _constraints.passes(d.metadata.constraints, context)]
+        if not legal:
+            raise NoMatchingTemplate(
+                f"no template for op={op!r} target={target!r} satisfies its constraints "
+                f"(layout/valid-shape) for the given operands"
             )
 
         if len(legal) == 1:
