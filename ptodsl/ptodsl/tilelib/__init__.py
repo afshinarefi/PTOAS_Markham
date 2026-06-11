@@ -35,6 +35,7 @@ from .author import (
     vsub,
     yield_,
 )
+from .constraints import BLayout, SLayout
 from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
 from .metadata import ScalarType, TemplateMetadata, TileSpec, bf16, f16, f32, i8, i16, i32
 from .registry import (
@@ -71,6 +72,8 @@ __all__ = [
     "TileSpec",
     "ScalarType",
     "TemplateMetadata",
+    "BLayout",
+    "SLayout",
     "f32",
     "f16",
     "bf16",

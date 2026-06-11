@@ -66,11 +66,19 @@ def scalar_descriptor(dtype: ScalarType):
 
 @dataclass(frozen=True)
 class TileSpec:
-    """Concrete specialization of one tile operand."""
+    """Concrete specialization of one tile operand.
+
+    ``valid_shape``/``b_layout``/``s_layout`` are carried for constraint evaluation
+    (selection). Rendering currently always emits row-major/none-box tile_buf types; a
+    non-row-major operand is rejected by the relevant template's constraints before render.
+    """
 
     shape: tuple
     dtype: ScalarType
     memory_space: str = "ub"
+    valid_shape: tuple | None = None
+    b_layout: str = "row_major"
+    s_layout: str = "none_box"
 
     def __post_init__(self):
         if len(self.shape) != 2:
@@ -105,6 +113,8 @@ class TemplateMetadata:
     dtypes: tuple = ()          # tuple of per-operand dtype-name tuples, e.g. (("f32","f32","f32"),)
     layouts: tuple = ()
     memory_spaces: tuple = ()
+    # Hard constraints (legality predicates: callables matched by param name — see constraints.py)
+    constraints: tuple = ()
     # Selection hints
     priority: int = 0
     fusible: bool = False
@@ -112,7 +122,7 @@ class TemplateMetadata:
 
     @staticmethod
     def build(*, op, target, name, dtypes=(), layouts=(), memory_spaces=(),
-              priority=0, fusible=False, tags=()):
+              constraints=(), priority=0, fusible=False, tags=()):
         return TemplateMetadata(
             op=op,
             target=target,
@@ -120,6 +130,7 @@ class TemplateMetadata:
             dtypes=tuple(tuple(sig) for sig in dtypes),
             layouts=tuple(layouts),
             memory_spaces=tuple(memory_spaces),
+            constraints=tuple(constraints),
             priority=priority,
             fusible=fusible,
             tags=tuple(tags),
