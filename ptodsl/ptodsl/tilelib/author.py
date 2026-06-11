@@ -43,6 +43,26 @@ def vadd(lhs, rhs, mask):
     return _ops.vadd(lhs, rhs, mask)
 
 
+def vsub(lhs, rhs, mask):
+    """``pto.vsub`` element-wise subtract."""
+    return _ops.vsub(lhs, rhs, mask)
+
+
+def vmul(lhs, rhs, mask):
+    """``pto.vmul`` element-wise multiply."""
+    return _ops.vmul(lhs, rhs, mask)
+
+
+def vmax(lhs, rhs, mask):
+    """``pto.vmax`` element-wise maximum."""
+    return _ops.vmax(lhs, rhs, mask)
+
+
+def vmin(lhs, rhs, mask):
+    """``pto.vmin`` element-wise minimum."""
+    return _ops.vmin(lhs, rhs, mask)
+
+
 def vsts(vec, tile_slice, mask):
     """``pto.vsts`` to a ``tile[row, col:]`` slice."""
     return _ops.vsts(vec, tile_slice, mask)
@@ -60,5 +80,9 @@ __all__ = [
     "make_mask",
     "vlds",
     "vadd",
+    "vsub",
+    "vmul",
+    "vmax",
+    "vmin",
     "vsts",
 ]
