@@ -10,6 +10,7 @@
 from . import (  # noqa: F401  (import side effect: @tile_template registration)
     tadd,
     tadd_hp,
+    tdiv,
     tmax,
     tmin,
     tmul,
