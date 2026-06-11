@@ -6,12 +6,16 @@
 > [01](01-compiler-pipeline.md), [02](02-ptodsl-frontend.md), [03](03-tilelang-dsl-and-expandtileop.md),
 > [05](05-pto-isa-library.md).
 >
-> **Status (2026-06-10): Phases 0–3 DONE — MVP working.** `ptodsl/ptodsl/tilelib/` exists
-> (metadata/author/decorator/registry/render/_render_runtime + `templates/a5/{tadd,tadd_hp}`).
-> `tadd` renders at the golden abstraction, two versions register, priority selection picks the
-> winner, 7 unittests pass (`ptodsl/tests/test_tilelib_{render,select}.py`), and the render is
-> PTOAS-equivalent to the tilelang golden (identical ptoas behavior). **Remaining: Phases 4–6**
-> (port the rest of the templates, wire `ExpandTileOp`, cutover).
+> **Status (2026-06-11): Phases 0–3 + 5 DONE for `tadd` — full pipeline proven end-to-end.**
+> `ptodsl/ptodsl/tilelib/` exists (metadata/author/decorator/registry/render/_render_runtime +
+> `serving/` daemon + `templates/a5/{tadd,tadd_hp}`). `tadd` renders at the golden abstraction; two
+> versions register; priority selection picks the winner; 12 unittests pass
+> (`test_tilelib_{render,select,daemon}.py`). The C++ `ExpandTileOp` now expands a real kernel's
+> `pto.tadd` through the ptodsl daemon (`--tile-lib-backend=ptodsl`), inlines, folds, and lowers
+> through vpto to valid output — semantically equivalent to tilelang (only diff: a loop-invariant
+> `castptr` not hoisted; LICM/canonicalize folds it). **Remaining: Phase 4** (port the other ~84
+> templates), **Phase 6** (parity cutover), and polish (LICM hoist, swap helper to
+> `ptodsl.tilelib.serving.helper`, faster daemon startup).
 
 ---
 
@@ -257,7 +261,12 @@ Mechanically port `lib/TileOps/*_template.py` (~85) into `templates/a5/`: bodies
 keep per-op legality constraints (`tcolmax` row-major+1-row; `tnot` int-only; `tcvt` pair whitelist).
 Order: elementwise (`tadd/tsub/tmul/…`) → reductions (`tcolmax/…`) → `tcvt`/`tsel`/`tmatmul`.
 
-### Phase 5 — Wire to `ExpandTileOp`
+### Phase 5 — Wire to `ExpandTileOp` — ✅ DONE (for `tadd`)
+> Proven 2026-06-11: `ptoas --tile-lib-backend=ptodsl` on `test/lit/vpto/fold_tile_buf_intrinsics.pto`
+> expanded `pto.tadd` via the ptodsl daemon and lowered through vpto cleanly. Distinguished from
+> tilelang by the output diff (ptodsl emits the base `castptr` inside the loop; tilelang hoists it)
+> — confirming a different, ptodsl-served expansion. Required a poll-based daemon-startup wait
+> (`TilelangDaemon.cpp`) since the ptodsl import exceeds the old fixed 1s.
 
 **Contract (verified).** C++ chooses daemon vs subprocess by whether `daemonSocketPath` is set
 (`ExpandTileOp.cpp:955-962`). The daemon protocol is AF_UNIX SOCK_STREAM, 4-byte big-endian
