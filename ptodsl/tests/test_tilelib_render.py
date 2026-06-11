@@ -12,6 +12,7 @@ Asserts the rendered MLIR is *on par* with the tilelang golden
 (ptodsl differs in SSA naming, constant hoisting, index-vs-i32 carry, subview rank).
 """
 
+import unittest
 from pathlib import Path
 
 from ptodsl.tilelib import TileSpec, f32
@@ -43,32 +44,27 @@ def _render():
     return template_tadd.specialize(src0=spec, src1=spec, dst=spec).mlir_text()
 
 
-def test_tadd_renders_structured_abstraction():
-    text = _render()
-    for op in REQUIRED_OPS:
-        assert op in text, f"expected {op!r} in rendered MLIR:\n{text}"
-    for op in FORBIDDEN_OPS:
-        assert op not in text, f"did not expect bare-pointer {op!r} in rendered MLIR:\n{text}"
+class TileLibRenderTest(unittest.TestCase):
+    def test_renders_structured_abstraction(self):
+        text = _render()
+        for op in REQUIRED_OPS:
+            self.assertIn(op, text)
+        for op in FORBIDDEN_OPS:
+            self.assertNotIn(op, text)
 
+    def test_func_is_a_tilelang_instance(self):
+        text = _render()
+        self.assertIn('pto.target_arch = "a5"', text)
+        self.assertIn("pto.tilelang.instance", text)
+        self.assertIn("#pto.kernel_kind<vector>", text)
+        self.assertIn("func.func @template_tadd", text)
 
-def test_tadd_func_is_a_tilelang_instance():
-    text = _render()
-    assert 'pto.target_arch = "a5"' in text
-    assert "pto.tilelang.instance" in text
-    assert "#pto.kernel_kind<vector>" in text
-    assert "func.func @template_tadd" in text
-
-
-def test_golden_fixture_uses_same_abstraction():
-    # Sanity: the committed reference contains the same structured ops we require of ours.
-    assert FIXTURE.exists(), f"missing golden fixture {FIXTURE}"
-    golden = FIXTURE.read_text(encoding="utf-8")
-    for op in ("pto.tile_buf_addr", "memref.subview", "pto.vlds", "pto.vadd", "pto.vsts", "pto.plt_b32"):
-        assert op in golden
+    def test_golden_fixture_uses_same_abstraction(self):
+        self.assertTrue(FIXTURE.exists(), f"missing golden fixture {FIXTURE}")
+        golden = FIXTURE.read_text(encoding="utf-8")
+        for op in ("pto.tile_buf_addr", "memref.subview", "pto.vlds", "pto.vadd", "pto.vsts", "pto.plt_b32"):
+            self.assertIn(op, golden)
 
 
 if __name__ == "__main__":
-    test_tadd_renders_structured_abstraction()
-    test_tadd_func_is_a_tilelang_instance()
-    test_golden_fixture_uses_same_abstraction()
-    print("ok")
+    unittest.main()
