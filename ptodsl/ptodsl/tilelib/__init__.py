@@ -7,37 +7,31 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib: ptodsl-native templates for ExpandTileOp (migration of tilelang-dsl).
 
-MVP surface — the registry/selector/serving layers land in later phases. For now this
-re-exports the renderer + authoring surface so a template can be specialized to MLIR.
+Layers:
+  - metadata     : TileSpec + dtypes + TemplateMetadata
+  - author       : body ops (for_/get_lanes/make_mask/vlds/vadd/vsts), engine-routed
+  - decorator    : @tile_template (registers a version + its metadata)
+  - registry     : constraint/priority selection among registered versions
+  - render       : render_best(op, target, specs) + CLI  (the ExpandTileOp seam)
+  - templates/   : the ported per-arch template bodies
 """
 
-from ._render_runtime import (
-    ScalarType,
-    Tile,
-    TileSpec,
-    TileTemplate,
-    SpecializedTileTemplate,
-    bf16,
-    f16,
-    f32,
-    for_,
-    get_lanes,
-    i8,
-    i16,
-    i32,
-    make_mask,
-    tile_template,
-    vadd,
-    vlds,
-    vsts,
+from .author import Tile, for_, get_lanes, make_mask, vadd, vlds, vsts
+from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
+from .metadata import ScalarType, TemplateMetadata, TileSpec, bf16, f16, f32, i8, i16, i32
+from .registry import (
+    AmbiguousTemplate,
+    NoMatchingTemplate,
+    TileTemplateRegistry,
+    default_registry,
+    register,
+    select,
 )
+from .render import render_best, select_and_specialize
 
 __all__ = [
-    "ScalarType",
+    # authoring surface
     "Tile",
-    "TileSpec",
-    "TileTemplate",
-    "SpecializedTileTemplate",
     "tile_template",
     "for_",
     "get_lanes",
@@ -45,10 +39,27 @@ __all__ = [
     "vlds",
     "vadd",
     "vsts",
+    # specs / metadata
+    "TileSpec",
+    "ScalarType",
+    "TemplateMetadata",
     "f32",
     "f16",
     "bf16",
     "i32",
     "i16",
     "i8",
+    # descriptors
+    "TileTemplate",
+    "SpecializedTileTemplate",
+    # registry / selection
+    "TileTemplateRegistry",
+    "default_registry",
+    "register",
+    "select",
+    "NoMatchingTemplate",
+    "AmbiguousTemplate",
+    # rendering
+    "render_best",
+    "select_and_specialize",
 ]

@@ -5,4 +5,9 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""Ported TileLib templates (tilelang-dsl bodies, ptodsl-native rendering)."""
+"""Ported TileLib templates (tilelang-dsl bodies, ptodsl-native rendering).
+
+Importing this package registers every per-arch template (decorator side effect).
+"""
+
+from . import a5  # noqa: F401
