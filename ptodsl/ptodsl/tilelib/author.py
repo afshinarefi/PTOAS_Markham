@@ -5,27 +5,22 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""Author-facing TileLib body ops.
+"""Author-facing TileLib body surface.
 
-These are the ``pto.*`` names a template body calls. They are thin wrappers that route
-to the existing ptodsl engine (``_ops``) — no MLIR lowering is reimplemented here. Tile
-indexing (``tile[row, col:]``) and ``tile.valid_shape`` come from the tile handle itself
-(see :class:`_render_runtime._TemplateTile`).
+A template imports this namespace as ``pto`` and writes a tilelang-style body. Control
+flow uses the **engine's** AST-rewrite surface (``for x in range(...)`` is rewritten to
+``pto.for_(...).carry(...)`` at trace time — see ``_render_runtime`` / ``_ast_rewrite``),
+so ``for_``/``static_range``/``if_``/``yield_`` are re-exported from ``_control_flow``
+rather than reimplemented. The body ops route to the existing ``_ops`` engine.
 """
 
 from __future__ import annotations
 
-from . import _render_runtime as _rt
+# Engine control-flow surface (target of the AST rewrite).
+from .._control_flow import const_expr, for_, if_, static_range, vecscope, yield_
 from .._surface_types import Tile
 from .. import _ops
-from .._tracing import require_active_runtime
 from .._types import _resolve
-
-
-def for_(start, stop, *, step, state=None):
-    """Structured loop. Returns the induction var, or a loop handle when ``state=`` is set."""
-    runtime = require_active_runtime("for_", expected_type=_rt._TemplateTrace)
-    return runtime.for_(start, stop, step=step, state=state)
 
 
 def get_lanes(dtype) -> int:
@@ -53,4 +48,17 @@ def vsts(vec, tile_slice, mask):
     return _ops.vsts(vec, tile_slice, mask)
 
 
-__all__ = ["Tile", "for_", "get_lanes", "make_mask", "vlds", "vadd", "vsts"]
+__all__ = [
+    "Tile",
+    "for_",
+    "static_range",
+    "if_",
+    "yield_",
+    "const_expr",
+    "vecscope",
+    "get_lanes",
+    "make_mask",
+    "vlds",
+    "vadd",
+    "vsts",
+]
