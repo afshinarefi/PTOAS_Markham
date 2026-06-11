@@ -80,11 +80,21 @@ bool DaemonManager::start(const std::string &socketPath,
 
   processInfo = std::make_pair(procInfo.Pid, socketPath);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  // Poll for the socket rather than a single fixed wait: daemon startup (Python
+  // interpreter + import) can exceed 1s, especially for the ptodsl backend whose
+  // import pulls the full engine + MLIR bindings. Wait up to ~10s, checking often.
+  bool socketReady = false;
+  for (int i = 0; i < 200; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (llvm::sys::fs::exists(socketPath)) {
+      socketReady = true;
+      break;
+    }
+  }
 
-  if (!llvm::sys::fs::exists(socketPath)) {
+  if (!socketReady) {
     llvm::errs() << "Error: Daemon socket not created at " << socketPath << "\n";
-    llvm::errs() << "Note: Daemon process started (pid=" << procInfo.Pid 
+    llvm::errs() << "Note: Daemon process started (pid=" << procInfo.Pid
                  << ") but socket not found. Check daemon logs.\n";
     return false;
   }
