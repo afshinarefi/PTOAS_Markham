@@ -5,4 +5,6 @@
 # THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
-"""A5 TileLib templates."""
+"""A5 TileLib templates. Importing this package registers every template."""
+
+from . import tadd, tadd_hp  # noqa: F401  (import side effect: @tile_template registration)
