@@ -27,7 +27,11 @@ from .author import (
     vadd,
     vecscope,
     vlds,
+    vmax,
+    vmin,
+    vmul,
     vsts,
+    vsub,
     yield_,
 )
 from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
@@ -56,6 +60,10 @@ __all__ = [
     "make_mask",
     "vlds",
     "vadd",
+    "vsub",
+    "vmul",
+    "vmax",
+    "vmin",
     "vsts",
     # specs / metadata
     "TileSpec",

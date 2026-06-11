@@ -7,4 +7,11 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """A5 TileLib templates. Importing this package registers every template."""
 
-from . import tadd, tadd_hp  # noqa: F401  (import side effect: @tile_template registration)
+from . import (  # noqa: F401  (import side effect: @tile_template registration)
+    tadd,
+    tadd_hp,
+    tmax,
+    tmin,
+    tmul,
+    tsub,
+)
