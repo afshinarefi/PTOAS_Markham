@@ -39,10 +39,15 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             # MVP: tadd-family is all-tile. Non-tile operands (view/scalar) arrive once
             # those ops are ported; they don't contribute a TileSpec here.
             continue
+        config = spec.get("config") or {}
+        valid_shape = spec.get("valid_shape")
         tile_specs[name] = TileSpec(
             shape=tuple(spec["shape"]),
             dtype=ScalarType(spec["dtype"]),
             memory_space=spec.get("memory_space", "ub"),
+            valid_shape=tuple(valid_shape) if valid_shape else None,
+            b_layout=config.get("b_layout", "row_major"),
+            s_layout=config.get("s_layout", "none_box"),
         )
     return tile_specs
 
