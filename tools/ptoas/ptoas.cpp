@@ -380,6 +380,12 @@ static llvm::cl::opt<std::string> daemonSocketPath(
                    "(default: /tmp/tilelang_daemon_{pid}.sock)"),
     llvm::cl::init(""));
 
+static llvm::cl::opt<std::string> tileLibBackend(
+    "tile-lib-backend",
+    llvm::cl::desc("TileLib backend for ExpandTileOp: 'tilelang' (default) or 'ptodsl' "
+                   "(ptodsl spawns the ptodsl.tilelib.serving.daemon responder)"),
+    llvm::cl::init("tilelang"));
+
 static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
                                                            char **argv) {
   pto::ExpandTileOpOptions expandOpts;
@@ -408,8 +414,14 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     // Register cleanup handler (daemon will be stopped on PTOAS exit)
     ptoas::registerDaemonCleanup();
 
+    // Select the daemon responder module: legacy tilelang or the ptodsl TileLib.
+    std::string daemonModule = (tileLibBackend == "ptodsl")
+                                   ? "ptodsl.tilelib.serving.daemon"
+                                   : "tilelang_dsl.daemon";
+
     // Try to start daemon automatically
-    if (ptoas::DaemonManager::start(socket, expandOpts.tilelangPath, expandOpts.tilelangPkgPath)) {
+    if (ptoas::DaemonManager::start(socket, expandOpts.tilelangPath,
+                                    expandOpts.tilelangPkgPath, daemonModule)) {
       expandOpts.daemonSocketPath = socket;
       llvm::errs() << "Info: TileLang daemon started successfully\n";
     } else {
