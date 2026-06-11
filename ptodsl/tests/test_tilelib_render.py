@@ -27,6 +27,7 @@ REQUIRED_OPS = [
     "pto.tile_valid_rows",
     "pto.tile_valid_cols",
     "scf.for",
+    "iter_args",  # the inner loop carries `remained` (AST-rewrite .carry path)
     "pto.plt_b32",
     "memref.subview",
     "pto.vlds",
