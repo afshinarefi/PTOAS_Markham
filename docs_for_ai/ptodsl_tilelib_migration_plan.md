@@ -242,9 +242,13 @@ In `_render_runtime.py` (from `_tile_template_tracing.py`):
 5. Author the spike `tadd` body **without `vecscope`** (the golden has none); compare vs the golden
    structurally (normalize SSA names / drop tilelang `//` comment header — not a byte `diff`).
 
-> AST rewrite (`for…range` → loops) is a Phase-4 nicety: the prototype calls `py_fn` directly (no
-> rewrite), so the MVP body uses explicit `for_(...)`. Routing `trace_entry` through `_ast_rewrite`
-> later enables true copy-paste bodies.
+> **AST control-flow rewrite — ✅ ADOPTED (2026-06-11).** `_render_runtime.trace_entry` runs the
+> body through `_ast_rewrite.rewrite_jit_function` (PR #769's rewrite), so templates use plain
+> `for x in range(...)` — rewritten to `pto.for_(...).carry(...)` with loop-carried vars detected by
+> liveness. `tilelib.author` re-exports `_control_flow.{for_,static_range,if_,yield_,const_expr}`;
+> the bespoke `_ForCM`/`yield_state` was removed. Result: templates are verbatim tilelang bodies
+> (only the `import` + decorator differ). Verified: `tadd` renders the same golden loop (outer
+> `scf.for` + inner `scf.for … iter_args(%remained)`) as before; 12/12 tilelib tests pass.
 
 ### Phase 2 — Catalog layer (minimum to author) — ✅ DONE
 `metadata.py` (`TileSpec`/dtypes/`TemplateMetadata`), `decorator.py` (`@tile_template`),
