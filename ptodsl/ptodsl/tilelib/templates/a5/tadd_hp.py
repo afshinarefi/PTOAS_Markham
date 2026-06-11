@@ -7,25 +7,16 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """Second pto.tadd template (MVP) — identical body, higher priority.
 
-This intentionally duplicates the body of ``tadd.template_tadd``. Its only purpose is to
-validate multi-version registration and priority-based selection: with both registered,
-``registry.select(op="pto.tadd", ...)`` must pick this one (priority=10 > 0). Real
-alternative implementations (1D-contiguous, post-update, ...) replace this in Phase 5.
+Intentionally duplicates the body of ``tadd.template_tadd`` to validate multi-version
+registration + priority selection: with both registered, ``select(op="pto.tadd", ...)``
+must pick this one (priority=10 > 0). Real alternative implementations (1D-contiguous,
+post-update, ...) replace this in Phase 5.
 """
 
-from ptodsl.tilelib import (
-    Tile,
-    for_,
-    get_lanes,
-    make_mask,
-    tile_template,
-    vadd,
-    vlds,
-    vsts,
-)
+import ptodsl.tilelib as pto
 
 
-@tile_template(
+@pto.tile_template(
     op="pto.tadd",
     target="a5",
     name="tadd_basic_2d_high_priority",
@@ -36,16 +27,15 @@ from ptodsl.tilelib import (
     fusible=False,
     tags=["placeholder", "duplicate-body"],
 )
-def tadd_basic_2d_high_priority(src0: Tile, src1: Tile, dst: Tile):
+def tadd_basic_2d_high_priority(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
 
-    with for_(0, valid_rows, step=1) as row:
-        with for_(0, valid_cols, step=get_lanes(dtype), state={"remained": valid_cols}) as loop:
-            col = loop.iv
-            mask, remained = make_mask(dtype, loop.state.remained)
-            lhs = vlds(src0[row, col:])
-            rhs = vlds(src1[row, col:])
-            summed = vadd(lhs, rhs, mask)
-            vsts(summed, dst[row, col:], mask)
-            loop.yield_state(remained=remained)
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            summed = pto.vadd(lhs, rhs, mask)
+            pto.vsts(summed, dst[row, col:], mask)

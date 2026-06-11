@@ -10,11 +10,14 @@ TileLib render runtime.
 
 Traces a tilelang-style template body into a standalone ``func.func`` whose MLIR is on
 par with the legacy tilelang-dsl render (``tile_buf_addr`` -> memref, ``memref.subview``,
-``pto.vlds/vadd/vsts``, dynamic ``pto.tile_valid_rows/cols``). The body emitters are NOT
-reimplemented here: tile slicing / valid-shape / mask / vector ops route through the
-existing ptodsl engine (``_surface_values`` / ``_ops``, via :mod:`author`). This module
-owns only the entry tile_buf typing, the golden-shaped module/func container, and thin
-loop wrappers that keep all values engine-native.
+``pto.vlds/vadd/vsts``, dynamic ``pto.tile_valid_rows/cols``).
+
+Control flow is handled by the engine's AST rewrite (``rewrite_jit_function``): plain
+``for x in range(...)`` in the template body is rewritten at trace time to
+``pto.for_(...).carry(...)`` (the ``_control_flow`` surface, re-exported via :mod:`author`),
+with loop-carried variables detected by liveness. This module therefore owns only the
+entry tile_buf typing and the golden-shaped module/func container; loops, slicing,
+valid-shape, mask and vector ops all come from the existing ptodsl engine.
 """
 
 from __future__ import annotations
@@ -22,19 +25,15 @@ from __future__ import annotations
 import inspect
 
 from .metadata import TileSpec, scalar_descriptor
+from .._ast_rewrite import rewrite_jit_function
 from .._bootstrap import make_context
 from .._surface_types import Tile
-from .._surface_values import (
-    TileValue,
-    _coerce_index_value,
-    unwrap_surface_value,
-    wrap_surface_value,
-)
+from .._surface_values import TileValue
 from .._tracing import KernelModuleSpec, ModuleStyle, TracingRuntime
 from .._tracing.active import activate_runtime, activate_session
 from .._types import _resolve
 
-from mlir.dialects import func, scf
+from mlir.dialects import func
 from mlir.ir import Attribute, InsertionPoint, Location, Module, StringAttr, UnitAttr
 
 
@@ -69,73 +68,6 @@ class _TemplateTile(TileValue):
         return self.dtype
 
 
-# ── loop authoring (engine-native values) ───────────────────────────────────────────
-
-class _StateView:
-    def __init__(self, names, values):
-        self._values = dict(zip(names, values))
-
-    def __getattr__(self, name):
-        try:
-            return self._values[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
-class _LoopHandle:
-    def __init__(self, for_op, state_names, inner_iter_args):
-        self.for_op = for_op
-        self.iv = wrap_surface_value(for_op.induction_variable)
-        self._state_names = tuple(state_names)
-        self._inner = tuple(inner_iter_args)
-        self.state = _StateView(self._state_names, [wrap_surface_value(a) for a in self._inner])
-        self.yielded = False
-
-    def yield_state(self, **kwargs):
-        if not self._state_names:
-            raise RuntimeError("yield_state(...) requires for_(..., state={...})")
-        missing = [n for n in self._state_names if n not in kwargs]
-        extra = [n for n in kwargs if n not in self._state_names]
-        if missing or extra:
-            raise RuntimeError(f"yield_state names must match state exactly; missing={missing} extra={extra}")
-        ordered = [unwrap_surface_value(kwargs[n]) for n in self._state_names]
-        scf.YieldOp(ordered)
-        self.yielded = True
-
-
-class _ForCM:
-    def __init__(self, trace, start, stop, step, state):
-        self._trace = trace
-        self._start = start
-        self._stop = stop
-        self._step = step
-        self._state = tuple(state.items()) if state else ()
-        self._handle = None
-        self._ip = None
-
-    def __enter__(self):
-        start = _coerce_index_value(self._start)
-        stop = _coerce_index_value(self._stop)
-        step = _coerce_index_value(self._step)
-        inits = [unwrap_surface_value(v) for _, v in self._state]
-        for_op = scf.ForOp(start, stop, step, inits if inits else None)
-        self._ip = InsertionPoint(for_op.body)
-        self._ip.__enter__()
-        state_names = tuple(n for n, _ in self._state)
-        self._handle = _LoopHandle(for_op, state_names, for_op.inner_iter_args)
-        self._trace._loop_stack.append(self._handle)
-        return self._handle if state_names else self._handle.iv
-
-    def __exit__(self, exc_type, exc, tb):
-        handle = self._trace._loop_stack.pop()
-        if exc_type is None:
-            if handle._state_names and not handle.yielded:
-                raise RuntimeError("for_(..., state=...) requires an explicit loop.yield_state(...)")
-            if not handle._state_names:
-                scf.YieldOp([])
-        self._ip.__exit__(exc_type, exc, tb)
-
-
 # ── tracing runtime ────────────────────────────────────────────────────────────────
 
 class _TemplateTrace(TracingRuntime):
@@ -153,7 +85,6 @@ class _TemplateTrace(TracingRuntime):
         )
         self.descriptor = descriptor
         self.tile_specs = tile_specs
-        self._loop_stack: list = []
         self._ordered_specs: list = []
         self._signature_parameters = tuple(inspect.signature(descriptor.py_fn).parameters.items())
 
@@ -179,15 +110,10 @@ class _TemplateTrace(TracingRuntime):
         )
 
     def trace_entry(self, *args):
-        self.descriptor.py_fn(*args)
-
-    def validate_trace_state(self):
-        if self._loop_stack:
-            raise RuntimeError("tile-template trace exited with an open scf.for block")
-
-    # Author-facing loop entry (called via require_active_runtime from author.for_).
-    def for_(self, start, stop, *, step, state=None):
-        return _ForCM(self, start, stop, step, state)
+        # Apply the engine's AST control-flow rewrite so the template body can use plain
+        # `for x in range(...)` (rewritten to pto.for_(...).carry(...)) like tilelang.
+        rewritten = rewrite_jit_function(self.descriptor.py_fn)
+        rewritten(*args)
 
     # Custom golden-shaped container: single module(target_arch) + func(instance, kernel_kind).
     def build_module(self):

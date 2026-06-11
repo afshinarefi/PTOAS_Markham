@@ -7,24 +7,16 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib template for pto.tadd (ported from lib/TileOps/tadd_template.py).
 
-Body is near-verbatim from the tilelang template; the only differences are the
-``@tile_template`` decorator/metadata and explicit ``for_`` control flow (the MVP does
-not yet route the body through ptodsl's AST control-flow rewrite).
+Body is the tilelang template verbatim; the only changes are the import line
+(`import tilelang_dsl as pto` -> `import ptodsl.tilelib as pto`) and the decorator
+(`@pto.vkernel` -> `@pto.tile_template` + metadata). The `for ... in range(...)` control
+flow is rewritten to pto.for_(...).carry(...) by the engine's AST rewrite at trace time.
 """
 
-from ptodsl.tilelib import (
-    Tile,
-    for_,
-    get_lanes,
-    make_mask,
-    tile_template,
-    vadd,
-    vlds,
-    vsts,
-)
+import ptodsl.tilelib as pto
 
 
-@tile_template(
+@pto.tile_template(
     op="pto.tadd",
     target="a5",
     name="template_tadd",
@@ -33,16 +25,15 @@ from ptodsl.tilelib import (
     memory_spaces=["ub"],
     priority=0,
 )
-def template_tadd(src0: Tile, src1: Tile, dst: Tile):
+def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
     valid_rows, valid_cols = dst.valid_shape
 
-    with for_(0, valid_rows, step=1) as row:
-        with for_(0, valid_cols, step=get_lanes(dtype), state={"remained": valid_cols}) as loop:
-            col = loop.iv
-            mask, remained = make_mask(dtype, loop.state.remained)
-            lhs = vlds(src0[row, col:])
-            rhs = vlds(src1[row, col:])
-            summed = vadd(lhs, rhs, mask)
-            vsts(summed, dst[row, col:], mask)
-            loop.yield_state(remained=remained)
+    for row in range(0, valid_rows, 1):
+        remained = valid_cols
+        for col in range(0, valid_cols, pto.get_lanes(dtype)):
+            mask, remained = pto.make_mask(dtype, remained)
+            lhs = pto.vlds(src0[row, col:])
+            rhs = pto.vlds(src1[row, col:])
+            summed = pto.vadd(lhs, rhs, mask)
+            pto.vsts(summed, dst[row, col:], mask)
