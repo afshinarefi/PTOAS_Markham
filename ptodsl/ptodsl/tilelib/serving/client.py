@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+"""Synchronous client for the TileLib daemon (used by tests; mirrors the C++/helper client)."""
+
+from __future__ import annotations
+
+import socket
+
+from .wire import recv_message, send_message
+
+
+class DaemonError(Exception):
+    pass
+
+
+class DaemonClient:
+    def __init__(self, socket_path: str):
+        self.socket_path = socket_path
+
+    def _call(self, method: str, params: dict | None = None):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.socket_path)
+            send_message(sock, {"method": method, "params": params or {}})
+            response = recv_message(sock)
+        finally:
+            sock.close()
+        if not response.get("success"):
+            raise DaemonError(response.get("error", "unknown error"))
+        return response["result"]
+
+    def ping(self):
+        return self._call("ping")
+
+    def instantiate(self, target, op, operand_specs, context_attrs=None):
+        return self._call("instantiate", {
+            "target": target,
+            "op": op,
+            "operand_specs": operand_specs,
+            "context_attrs": context_attrs or {},
+        })
+
+
+__all__ = ["DaemonClient", "DaemonError"]

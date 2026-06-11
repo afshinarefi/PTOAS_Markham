@@ -1,0 +1,86 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+"""End-to-end TileLib daemon test: ExpandTileOp RPC contract -> rendered MLIR, in-process.
+
+Drives the daemon with the exact ``operand_specs`` JSON shape the C++ ExpandTileOp builds
+for ``pto.tadd`` (see lib/PTO/Transforms/ExpandTileOp.cpp buildOperandSpecsJson), over the
+real socket protocol — without any C++ / rebuild.
+"""
+
+import os
+import tempfile
+import threading
+import unittest
+
+from ptodsl.tilelib.serving.client import DaemonClient
+from ptodsl.tilelib.serving.daemon import TileLibDaemonServer
+
+
+def _tile_spec(dtype="f32"):
+    return {
+        "kind": "tile",
+        "dtype": dtype,
+        "shape": [8, 64],
+        "valid_shape": [8, 64],
+        "memory_space": "ub",
+        "config": {
+            "b_layout": "row_major",
+            "s_layout": "none_box",
+            "s_fractal_size": 512,
+            "pad_value": "0x0",
+        },
+    }
+
+
+# operand order matches `pto.tadd ins(src0, src1) outs(dst)` == template params (src0, src1, dst).
+TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
+
+
+class TileLibDaemonTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.mkdtemp()
+        self.socket_path = os.path.join(self._dir, "ptodsl_tilelib.sock")
+        self.server = TileLibDaemonServer(self.socket_path)
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+        self.client = DaemonClient(self.socket_path)
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        if os.path.exists(self.socket_path):
+            os.unlink(self.socket_path)
+
+    def test_ping(self):
+        self.assertEqual(self.client.ping(), "pong")
+
+    def test_instantiate_tadd_returns_structured_mlir(self):
+        mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        for op in ("pto.tile_buf_addr", "memref.subview", "pto.vlds", "pto.vadd",
+                   "pto.vsts", "pto.plt_b32", "pto.tilelang.instance"):
+            self.assertIn(op, mlir)
+        self.assertNotIn("pto.castptr", mlir)
+
+    def test_instantiate_selects_highest_priority(self):
+        mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        self.assertIn("func.func @tadd_basic_2d_high_priority", mlir)
+
+    def test_cache_hit_on_repeat(self):
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        self.assertEqual(self.server.stats["misses"], 1)
+        self.assertEqual(self.server.stats["hits"], 1)
+
+    def test_unknown_op_errors(self):
+        from ptodsl.tilelib.serving.client import DaemonError
+        with self.assertRaises(DaemonError):
+            self.client.instantiate("a5", "pto.tnope", TADD_OPERANDS)
+
+
+if __name__ == "__main__":
+    unittest.main()
