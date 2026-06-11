@@ -25,7 +25,8 @@ public:
   
   static bool start(const std::string &socketPath,
                     const std::string &templateDir,
-                    const std::string &pkgPath);
+                    const std::string &pkgPath,
+                    const std::string &daemonModule = "tilelang_dsl.daemon");
   
   static void stop();
   

@@ -29,7 +29,8 @@ std::string DaemonManager::generateSocketPath() {
 
 bool DaemonManager::start(const std::string &socketPath,
                           const std::string &templateDir,
-                          const std::string &pkgPath) {
+                          const std::string &pkgPath,
+                          const std::string &daemonModule) {
   auto pythonPath = llvm::sys::findProgramByName("python3");
   if (!pythonPath) {
     llvm::errs() << "Error: Cannot find python3 executable for daemon\n";
@@ -37,7 +38,7 @@ bool DaemonManager::start(const std::string &socketPath,
   }
 
   llvm::SmallVector<llvm::StringRef, 8> args = {
-      *pythonPath, "-m", "tilelang_dsl.daemon",
+      *pythonPath, "-m", daemonModule,
       "--socket", socketPath,
       "--template-dir", templateDir,
   };
