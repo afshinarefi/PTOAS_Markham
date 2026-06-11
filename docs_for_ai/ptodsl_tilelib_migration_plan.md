@@ -4,7 +4,14 @@
 > selection). Supersedes the former `06-ptodsl-tilelib-migration-plan.md` and
 > `ptodsl_tilelang_expandtileop_summary.md`. Background: [00-overview.md](00-overview.md),
 > [01](01-compiler-pipeline.md), [02](02-ptodsl-frontend.md), [03](03-tilelang-dsl-and-expandtileop.md),
-> [05](05-pto-isa-library.md). **Status: PLAN — not implemented in code yet.**
+> [05](05-pto-isa-library.md).
+>
+> **Status (2026-06-10): Phases 0–3 DONE — MVP working.** `ptodsl/ptodsl/tilelib/` exists
+> (metadata/author/decorator/registry/render/_render_runtime + `templates/a5/{tadd,tadd_hp}`).
+> `tadd` renders at the golden abstraction, two versions register, priority selection picks the
+> winner, 7 unittests pass (`ptodsl/tests/test_tilelib_{render,select}.py`), and the render is
+> PTOAS-equivalent to the tilelang golden (identical ptoas behavior). **Remaining: Phases 4–6**
+> (port the rest of the templates, wire `ExpandTileOp`, cutover).
 
 ---
 
@@ -204,11 +211,17 @@ yes; DMA-stride/matmul need static), then let MLIR canonicalization fold concret
 
 ## 6. Phased plan
 
-### Phase 0 — Verify & spike *(see §9 checklist)*
+### Phase 0 — Verify & spike *(see §9 checklist)* — ✅ DONE
 Confirm the reuse assumptions (engine emitters, func shape, attribute name, bindings) and regenerate
 the golden. No large code.
 
-### Phase 1 — Renderer via the engine *(highest risk; do first)*
+### Phase 1 — Renderer via the engine *(highest risk; do first)* — ✅ DONE
+> `_render_runtime.py`: binds entry args as `_TemplateTile(TileValue)` with explicit spec
+> metadata (raw tile_buf types aren't introspectable — the regex/binding parse paths both miss),
+> forces dynamic `valid_shape`, custom single-module+func-attr container. Body ops route to the
+> engine. Known benign diffs vs golden: `tile_buf_addr` per-slice (not hoisted), constants
+> re-emitted, `remained` carried as `index` (vs i32), rank-1 subview (vs rank-2) — all "same
+> abstraction, not byte-identical". `plt_b32` needed no work (binding present).
 In `_render_runtime.py` (from `_tile_template_tracing.py`):
 1. **Bind entry args as `TileValue`** — change `bind_entry_arguments` to return `TileValue(arg)`
    instead of `_TileProxy(arg)` (metadata auto-parses from the `!pto.tile_buf` type — §9.4). Delete
@@ -229,12 +242,15 @@ In `_render_runtime.py` (from `_tile_template_tracing.py`):
 > rewrite), so the MVP body uses explicit `for_(...)`. Routing `trace_entry` through `_ast_rewrite`
 > later enables true copy-paste bodies.
 
-### Phase 2 — Catalog layer (minimum to author)
-`metadata.py`, `decorator.py`, `author.py`. Export `tile_template` from `tilelib/__init__.py`.
+### Phase 2 — Catalog layer (minimum to author) — ✅ DONE
+`metadata.py` (`TileSpec`/dtypes/`TemplateMetadata`), `decorator.py` (`@tile_template`),
+`author.py` (engine-routed body ops). Public surface exported from `tilelib/__init__.py`.
 
-### Phase 3 — Registry + selector
-`registry.py`: `register` + `select` (op/target → dtype-signature → constraints → priority).
-`constraints.py` starts as a stub (returns legal) until a second real variant exists.
+### Phase 3 — Registry + selector — ✅ DONE
+`registry.py`: `register` + `select` (op/target → dtype-signature → priority; ties → error).
+Proven with `templates/a5/tadd.py` (prio 0) + `tadd_hp.py` (prio 10): selection picks prio-10.
+`constraints.py` deferred (stub-equivalent — `select` currently filters op/target/dtype only) until
+a second *real* variant needs it in Phase 5.
 
 ### Phase 4 — Port the template library
 Mechanically port `lib/TileOps/*_template.py` (~85) into `templates/a5/`: bodies near-verbatim,
