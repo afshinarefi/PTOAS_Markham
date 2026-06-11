@@ -25,6 +25,7 @@ from .author import (
     make_mask,
     static_range,
     vadd,
+    vdiv,
     vecscope,
     vlds,
     vmax,
@@ -64,6 +65,7 @@ __all__ = [
     "vmul",
     "vmax",
     "vmin",
+    "vdiv",
     "vsts",
     # specs / metadata
     "TileSpec",

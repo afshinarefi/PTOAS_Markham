@@ -19,6 +19,7 @@ ELEMENTWISE = {
     "pto.tmul": ("template_tmul", "pto.vmul"),
     "pto.tmax": ("template_tmax", "pto.vmax"),
     "pto.tmin": ("template_tmin", "pto.vmin"),
+    "pto.tdiv": ("template_tdiv", "pto.vdiv"),
 }
 
 # Structured abstraction every elementwise template must preserve.

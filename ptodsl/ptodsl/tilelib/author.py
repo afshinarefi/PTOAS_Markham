@@ -63,6 +63,11 @@ def vmin(lhs, rhs, mask):
     return _ops.vmin(lhs, rhs, mask)
 
 
+def vdiv(lhs, rhs, mask):
+    """``pto.vdiv`` element-wise divide (default precision)."""
+    return _ops.vdiv(lhs, rhs, mask)
+
+
 def vsts(vec, tile_slice, mask):
     """``pto.vsts`` to a ``tile[row, col:]`` slice."""
     return _ops.vsts(vec, tile_slice, mask)
@@ -84,5 +89,6 @@ __all__ = [
     "vmul",
     "vmax",
     "vmin",
+    "vdiv",
     "vsts",
 ]
