@@ -114,10 +114,11 @@ wants to lift up so the choice becomes MLIR-visible.
   similar surfaces (`tile[row, col:]`, simd/cube notions) that must be changed in lockstep. No
   TODO/FIXME/DEPRECATED markers in templates/daemon/ExpandTileOp — the migration is tracked in #739,
   not in code comments.
-- ❌ **No migration code exists yet.** Per the team there is no proposal wiring `ptodsl`
-  into `ExpandTileOp`; it must be designed (registration, matching, constraints, version selection,
-  instantiation interface, optimization pipeline). The design discussion is captured in
-  [ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md).
+- ⚠️ **Migration MVP exists (Phases 0–3), not yet wired to `ExpandTileOp`.** `ptodsl/ptodsl/tilelib/`
+  now renders a ptodsl-native `tadd` template to MLIR on par with the tilelang golden, with a
+  metadata-driven registry + priority selection (`tests/test_tilelib_{render,select}.py`). What
+  remains is porting the rest of the templates and wiring the C++ `ExpandTileOp`/serving path
+  (Phases 4–6). Full plan + status: [ptodsl_tilelib_migration_plan.md](ptodsl_tilelib_migration_plan.md).
 
 Evolution of `tilelang-dsl` itself (`docs/matcher-and-advanced-surface-migration.md`):
 v1 core (monomorphic) → v1 lowering (DMA/vector/loops) → matcher + advanced surface (multi-signature,
