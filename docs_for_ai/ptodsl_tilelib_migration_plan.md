@@ -6,16 +6,35 @@
 > [01](01-compiler-pipeline.md), [02](02-ptodsl-frontend.md), [03](03-tilelang-dsl-and-expandtileop.md),
 > [05](05-pto-isa-library.md).
 >
-> **Status (2026-06-11): Phases 0–3 + 5 DONE for `tadd` — full pipeline proven end-to-end.**
+> **Status (2026-06-11): Phases 0–3 + 5 DONE; Phase 4 elementwise underway.**
 > `ptodsl/ptodsl/tilelib/` exists (metadata/author/decorator/registry/render/_render_runtime +
-> `serving/` daemon + `templates/a5/{tadd,tadd_hp}`). `tadd` renders at the golden abstraction; two
-> versions register; priority selection picks the winner; 12 unittests pass
-> (`test_tilelib_{render,select,daemon}.py`). The C++ `ExpandTileOp` now expands a real kernel's
-> `pto.tadd` through the ptodsl daemon (`--tile-lib-backend=ptodsl`), inlines, folds, and lowers
-> through vpto to valid output — semantically equivalent to tilelang (only diff: a loop-invariant
-> `castptr` not hoisted; LICM/canonicalize folds it). **Remaining: Phase 4** (port the other ~84
-> templates), **Phase 6** (parity cutover), and polish (LICM hoist, swap helper to
-> `ptodsl.tilelib.serving.helper`, faster daemon startup).
+> `serving/` daemon + `templates/a5/`). Templates are verbatim tilelang bodies (via the #769 AST
+> rewrite). **Ported (f32):** binary elementwise `tadd, tsub, tmul, tmax, tmin, tdiv` (default
+> precision) + reduction `tcolmax`. **Constraint-driven selection is real** — `constraints.py` ports
+> tilelang's introspection eval; `tcolmax` is selected only for row-major/none-box + 1-row output,
+> rejected otherwise. Priority selection also works (two `tadd` versions). 17 unittests pass
+> (`test_tilelib_{render,select,daemon,elementwise,constraints}.py`). The C++ `ExpandTileOp` expands a real
+> kernel's `pto.tadd` through the ptodsl daemon (`--tile-lib-backend=ptodsl`), inlines, folds, and
+> lowers through vpto to valid output — semantically equivalent to tilelang (only diff: a
+> loop-invariant `castptr` not hoisted; LICM folds it).
+>
+> **⚠️ Scope (verified):** templates are a **VPTO-backend mechanism only** — `ExpandTileOp` runs
+> solely in `lowerPTOToVPTOBackend` (`ptoas.cpp`/`createExpandTileOpPass`). The default **EmitC→C++**
+> path does **not** use templates (ours or tilelang's); it lowers `pto.t*` directly to `pto-isa`
+> library calls. So the TileLib migration only affects the VPTO/expansion path.
+>
+> **🧭 Design direction (upstream review):** daemon flow is acceptable for now. Version selection
+> must split into **functional/legal** (PTODSL: constraints + render — done at the legality level)
+> vs **performance** (PTOAS/MLIR, with full kernel/fusion context). Target flow evolves from "PTODSL
+> picks one" to "**PTODSL returns all legal candidates + metadata; PTOAS performance-selects;
+> PTODSL renders the chosen one**" — see §5. Next op to exercise real constraint-based selection:
+> `tmov` (UB2UB+ND2ND), not more `tadd`-style duplicates.
+>
+> **Remaining:** Phase 4 — reduction siblings (`tcolmin`/`tcolsum` = same body, swap op; `trow*`
+> use cross-lane `vc*` — different body; `tcolargmax`/`argmin` track indices — different body),
+> `tcvt` (round-mode `context_attrs`), `tsel`, `tmatmul` (`@pto.cube`/`pto.mad`); HP-`tdiv`
+> (`get_op_attr` bridge + port `div_hp.py`); broaden dtypes (f16/i32). Phase 6 — parity cutover.
+> Polish — LICM hoist, swap relay to `ptodsl.tilelib.serving.helper`, faster daemon startup.
 
 ---
 
@@ -191,25 +210,95 @@ into the existing engine**. Everything above is pure Python catalog/dispatch —
 
 ## 5. Version selection (Goal 2)
 
-**Today:** tilelang has a real selector — `select_kernel` filters by target/op/param-kinds/
-dtype-signature/constraints and tie-breaks by `priority` (`daemon_core.py`/`kernel.py`). It is
-**legality + priority**, not a cost model; typically one template per op. ptodsl has none of it.
+Version selection splits into **two kinds**, owned by **two different layers**. Getting this split
+right is the core of Goal 2 (refined in upstream review).
 
-**Target:** lift the pto-isa-hidden perf variants (1D/2D, post-update, tail — see [05](05-pto-isa-library.md))
-up to *this* layer as **multiple constraint-tagged versions per op**, selected among the *legal*
-ones. Two constraint flavors, both already present in `lib/TileOps`:
-- **algorithm-legality** (e.g. `tcolmax` needs row-major + 1-row output) — wrong otherwise;
-- **optimization-applicability** (e.g. a `tadd_1d` version needs contiguity) — correct but only
-  valid under that condition.
+### 5.1 Functional/legal selection vs. performance selection
 
-**Selection order:** filter by hard constraints → one legal → use it → several → rank by priority
-(deterministic first). Add a cost model **only later**, when multiple versions are simultaneously
-legal *and* a wrong pick measurably hurts.
+- **Functional / legal selection — PTODSL's job.** *Which implementations are correct/applicable*
+  for a concrete TileOp. Inputs: op, target, dtype signature, and **per-template constraint
+  functions** (predicates like "both operands UB + ND/none-box layout"). Purely local to the op.
+- **Performance version selection — PTOAS/MLIR's job.** *Which legal implementation is best.* This
+  needs the **full kernel/graph context** — producer/consumer relationships, fusion opportunities,
+  loop structure, surrounding TileOps — which only the compiler IR has. PTODSL can't decide this
+  locally; some optimizations depend on multiple TileOps together, not one op in isolation.
 
-**Note on the seam:** a fully type-erased template is not achievable — dtype is concrete (drives
-`vreg` lanes + `plt_b` width) and memory space is in the type. Render **parameterized by the
-SpecKey**, keep **valid_shape dynamic** (and physical dims dynamic where the op allows — elementwise
-yes; DMA-stride/matmul need static), then let MLIR canonicalization fold concrete sizes downstream.
+So PTODSL is the **legal-candidate provider + renderer**; PTOAS owns the **global performance**
+decision.
+
+### 5.2 What's implemented (MVP)
+
+`constraints.py` + a hook in `registry.select`: filter op → target → dtype-signature →
+**constraint functions**, then rank legal candidates by `priority`. `tcolmax` demonstrates a real
+legality constraint (row-major/none-box + 1-row output).
+
+> **Correction adopted (upstream review):** selection is **not** just `op + target + dtype +
+> priority`. Per-template **constraint functions are first-class metadata** — matching tilelang,
+> e.g. `lib/TileOps/tmov_template.py`'s `_tmov_ub2ub_nd2nd_constraint(src, dst)` (both UB, both
+> ND/none-box; rejects GM2UB/UB2GM and specialized layouts). Our `constraints=[...]` + introspection
+> evaluator already cover this — the design gap is closed at the legality level.
+
+The current **priority** ranking is an acceptable MVP stand-in (fine with one legal candidate, or to
+break ties). It is **not** a substitute for global performance selection (§5.3).
+
+### 5.3 Target flow: PTODSL provides candidates, PTOAS selects
+
+The agreed long-term direction changes selection from *"PTODSL picks one final candidate by
+priority"* to *"PTODSL returns **all legal candidates + metadata**; PTOAS performs performance
+selection with full IR context; PTODSL then renders the chosen candidate(s)."*
+
+```
+PTOAS / MLIR side                          PTODSL / Python side (daemon)
+─────────────────                          ────────────────────────────
+ExpandTileOp
+  └─ send specs for the TileOp(s) ────────▶ legal/functional lookup
+                                              (op+target+dtype+constraints)
+     all legal candidates + metadata   ◀──── return candidates + metadata
+performance version selection
+  (kernel/graph context: producer/
+   consumer, fusion, loop structure)
+  └─ pick best candidate per TileOp ──────▶ render MLIR for the selected candidate(s)
+     rendered MLIR                     ◀──── (the existing render path)
+fusion pass → rest of pipeline
+```
+
+**RPC implication:** the current single `instantiate` (legal-filter + priority + render in one call)
+splits into two phases — **(a) list legal candidates + metadata**, then **(b) render a
+named/selected candidate**. The daemon grows a candidate-listing method; the render path stays.
+
+> **This is a design direction, not yet implemented.** The MVP's single-call priority select (§5.2)
+> remains the working mechanism until the two-phase flow is built.
+
+### 5.4 Candidate metadata for performance
+
+A single `fusible=True/False` flag is **too weak** — fusion/perf passes need richer, structured
+metadata to reason about a candidate without re-deriving it from rendered IR. Exact schema is
+**TBD** (design it against what the fusion/perf passes actually consume); a working wishlist:
+
+- op category (elementwise / reduction / expansion / movement / conversion / matmul …)
+- loop-nest structure (levels; which are row/col/tile/lane loops); pointwise vs. has reduction axes
+- expands/broadcasts rows or columns; input/output tile roles; read/write behavior; pure vs. side-effecting
+- memory spaces used; layouts supported; preserves vs. changes shape/layout; in-place / post-update
+- estimated vector/cube usage; temporary-buffer usage; optional cost/priority hints
+
+**Ownership:** the performance-selection *algorithm* (heuristic / profiling / later model-based) is
+**owned and designed by the compiler/PTOAS side** — not something we should over-design. PTODSL's
+job is to **expose enough structured metadata** for that selector to work.
+
+### 5.5 Next design step (before porting many ops)
+
+Inspect tilelang templates + pto-isa/PTOAS TileOp implementations and **separate, per op**:
+1. **functional conditions** — whether an implementation is legal at all (→ a constraint function);
+2. **performance conditions** — when one legal impl beats another (→ metadata for the PTOAS selector).
+
+`tmov` is the concrete next candidate: a real tilelang constraint (`UB2UB + ND2ND`) + likely multiple
+movement/layout variants — a far better test of constraint-based legal selection than `tadd`'s
+priority-only duplicates.
+
+**Note on the render seam:** a fully type-erased template isn't achievable — dtype is concrete
+(drives `vreg` lanes + `plt_b` width) and memory space is in the type. Render **parameterized by the
+SpecKey**, keep **valid_shape dynamic** (physical dims dynamic where the op allows — elementwise yes;
+DMA-stride/matmul need static); MLIR canonicalization folds concrete sizes downstream.
 
 ---
 
@@ -260,10 +349,30 @@ Proven with `templates/a5/tadd.py` (prio 0) + `tadd_hp.py` (prio 10): selection 
 `constraints.py` deferred (stub-equivalent — `select` currently filters op/target/dtype only) until
 a second *real* variant needs it in Phase 5.
 
-### Phase 4 — Port the template library
+### Phase 4 — Port the template library — ⏳ IN PROGRESS
 Mechanically port `lib/TileOps/*_template.py` (~85) into `templates/a5/`: bodies near-verbatim,
 keep per-op legality constraints (`tcolmax` row-major+1-row; `tnot` int-only; `tcvt` pair whitelist).
-Order: elementwise (`tadd/tsub/tmul/…`) → reductions (`tcolmax/…`) → `tcvt`/`tsel`/`tmatmul`.
+Order: elementwise → reductions → `tcvt`/`tsel`/`tmatmul`.
+- ✅ **Binary elementwise (f32, default precision):** `tadd, tsub, tmul, tmax, tmin, tdiv`. Each is a
+  verbatim tilelang body (`for…range`, `pto.vlds/v*/vsts`) with only the import + decorator changed;
+  `tdiv` is default-precision only (HP path deferred). Covered by `test_tilelib_elementwise.py`.
+- ✅ **Constraint mechanism + first reduction:** `constraints.py` (introspection eval ported from
+  tilelang, `BLayout`/`SLayout` enums) + a hook in `registry.select`; `tcolmax` ported with its
+  `_validate_tcolmax` predicate. Selection is now legality-driven. The reduction body (nested carry
+  loops + carry-var-used-after-loop) renders correctly through the #769 rewrite.
+- ⬜ **`tmov` — recommended next op.** Real legality constraint (`UB2UB + ND2ND`, rejects
+  GM2UB/UB2GM/specialized layouts) + multiple movement/layout variants. It's the proper test of
+  constraint-based *legal* selection (vs `tadd`'s priority-only duplicates) and the first op to
+  classify functional vs. performance conditions per §5.5.
+- ⬜ **Reduction siblings:** `tcolmin`/`tcolsum` (same body, swap `vmax`→`vmin`/`vadd`, same
+  constraint) are trivial; `trow*` use cross-lane `vc*` (different body); `tcolargmax`/`argmin`
+  track indices (different body).
+- ⬜ `tcvt` (round-mode `context_attrs`), `tsel`, `tmatmul` (`@pto.cube` + `pto.mad`); broaden dtypes.
+- ⏸ **HP-`tdiv` — speculative, deferred.** No kernel/test drives the template HP branch:
+  `tdiv_precision_emitc.pto` is EmitC (→ pto-isa, no templates), and `test/lit/vpto/` has no
+  `high_precision` case. The HP path also needs `pto.inline_proc` + 3 missing ops (`vmula`/`vshls`/
+  `vshrs`) + a `get_op_attr` bridge + the 454-line `div_hp.py`. Default-precision `tdiv` ships; HP
+  stays unported until a real VPTO consumer exists.
 
 ### Phase 5 — Wire to `ExpandTileOp` — ✅ DONE (for `tadd`)
 > Proven 2026-06-11: `ptoas --tile-lib-backend=ptodsl` on `test/lit/vpto/fold_tile_buf_intrinsics.pto`
@@ -350,6 +459,12 @@ python3 -m ptodsl.tilelib.render --op pto.tadd --target a5 \
 7. **Where `pto.simd/cube/simt` subkernels fit** as the TileOp→micro-instruction bridge (likely the
    cube/matmul templates use `@pto.cube` + `pto.mad`).
 8. **Daemon vs in-process** — keep the warm-daemon model (cold Python per op is too slow).
+9. **Candidate-metadata schema (§5.4)** — what does the PTOAS fusion/perf selector actually need?
+   `fusible` is too weak; the wishlist in §5.4 is a starting point. Design against real pass needs.
+10. **Two-phase daemon RPC (§5.3)** — split the single `instantiate` into *list-legal-candidates +
+    metadata* and *render-selected-candidate*. Define the candidate-metadata wire format.
+11. **Perf-selector ownership** — the performance-selection *algorithm* is owned by the PTOAS/MLIR
+    side (heuristic/profiling/model). PTODSL only supplies metadata; don't over-design the algorithm.
 
 ---
 
