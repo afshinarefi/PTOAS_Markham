@@ -300,6 +300,112 @@ priority-only duplicates.
 SpecKey**, keep **valid_shape dynamic** (physical dims dynamic where the op allows — elementwise yes;
 DMA-stride/matmul need static); MLIR canonicalization folds concrete sizes downstream.
 
+### 5.6 Survey findings — functional vs. performance, grounded (2026-06-12)
+
+Surveyed tilelang templates (`lib/TileOps/*.py`), pto-isa kernels (`a2a3/`, `a5/` headers), and the
+PTOAS fusion pass (`lib/PTO/Transforms/TileFusion/`). Each compile-time branch / constraint
+falls into one of three classes:
+
+- **FUNCTIONAL:** determines whether a candidate is legal.
+- **PERFORMANCE:** multiple candidates are legal; this condition helps rank them.
+- **BOTH:** one side is required for legality, while the other leaves multiple legal choices that
+  should be ranked with kernel/fusion context.
+
+| # | Condition type | Keys on | Class | PTO-ISA anchor |
+|---:|---|---|---|---|
+| 1 | Contiguity (1D vs. 2D traversal) | `ValidCol == Cols` or `Rows == 1` | **BOTH** — non-contiguous must use 2D; when contiguous, 1D and 2D are legal and 1D is normally faster | `a5/TBinOp.hpp:233-244`, `a2a3/TBinOp.hpp:259` |
+| 2 | Post-update vs. no-post-update addressing | Contiguity / regular access | **BOTH** — both are legal for contiguous access; post-update uses fewer instructions, while generic addressing may be more fusion-friendly | `a5/TBinOp.hpp:94-119`, `a5/TBinOp.hpp:179-195` |
+| 3 | Column / lane-length alignment | `Cols % elementsPerRepeat == 0` | **BOTH** — a non-multiple requires tail/count mode; an aligned width permits norm mode (fast) or count mode (generic) | `a2a3/TBinOp.hpp:198` |
+| 4 | Repeat / stride hardware limits | `totalRepeats > REPEAT_MAX`, `stride/blk > REPEAT_STRIDE_MAX` | **FUNCTIONAL** — exceeding a limit forces element-wise or absolute addressing | `a2a3/TBinOp.hpp:117`, `:120`, `:135`, `:199` |
+| 5 | Memory layout | ND / NZ / DN layout | **FUNCTIONAL** — selects the correct load/store implementation | `a2a3/TLoad.hpp:191-199`, `a2a3/TStore.hpp:134-143` |
+| 6 | Fractal format / SFractal compact mode | Fractal / box layout | **FUNCTIONAL** — selects the required extract/insert path | `a2a3/TMov.hpp:147-165` |
+| 7 | Data type | Element type | **FUNCTIONAL** — selects distinct intrinsics, reduction behavior, and mask width | `a2a3/TRowSum.hpp:94-141`, `a5/common.hpp:46` |
+| 8 | Quantization mode | Source/destination dtype pair | **FUNCTIONAL** — selects the required `QuantMode`, such as `F322F16` or `int32 -> int8` | `a2a3/common.hpp:21-58` |
+| 9 | Predicate width | `sizeof(T)` (`1/2/4`) | **FUNCTIONAL** — `plt_b8`, `plt_b16`, or `plt_b32` must match the dtype | `a5/common.hpp:46` |
+| 10 | Reduction strategy | Row count | **PERFORMANCE** — binary-tree and sequential forms are correct; tree reduction is generally faster for large row counts | `a2a3/TColSum.hpp:62-82` |
+| 11 | Small-shape fast path | `Rows * repeats < SMALL_RPT_BINOP` | **PERFORMANCE** — selects a lower-overhead implementation | `a2a3/TBinOp.hpp:230`, `:252` |
+| 12 | Channel-split flag | `f32` NZ2NZ store, `c0 == 8` | **PERFORMANCE** — enables channel-split quantization | `a2a3/TStore.hpp:376-379` |
+
+The design grouping is therefore:
+
+| Group | Conditions | TileLib / PTOAS treatment |
+|---|---|---|
+| **BOTH** | Contiguity; post-update addressing; column/lane alignment | TileLib returns every legal variant with structured metadata; PTOAS chooses using local cost and fusion context |
+| **FUNCTIONAL** | Hardware limits; layout; fractal format; dtype; quantization mode; predicate width | Encode as dtype signatures, hard constraint predicates, or required operand metadata during legal lookup |
+| **PERFORMANCE** | Reduction strategy; small-shape path; channel split | Keep all legal variants visible and rank them on the MLIR side |
+
+Additional op attributes follow the same rule: `precisionType` (`tdiv`/`texp`/`tlog`/…), `round_mode`
+(`tcvt`), and `pad_value`/`enable_ub_pad` (`tload`) must first be checked for legality; whenever more
+than one correct implementation remains, they become performance-selection inputs.
+
+**Implication (the canonical realization of §5.3):** for a "both" case like contiguity, the TileLib
+should expose **both** variants as legal candidates (e.g. `tadd_1d_fast` + `tadd_2d_generic`), each
+tagged with metadata, and let PTOAS choose — *fast when standalone, fusion-friendly when a neighbor
+can fuse*. This is precisely why performance selection needs global IR/fusion context and **cannot**
+live in PTODSL.
+
+**What the fusion pass actually keys on (→ which metadata matters most).** `PTOFusionPlan.cpp` /
+`FusionAnalysis.cpp` / `FusionOpSemantics.cpp` today **re-derive** from op *names* + tile *shapes*:
+op category (Elementwise / ScalarExpand / RowBroadcastBinary / ReduceRow / ReduceCol), a *proven
+static* **iteration domain** (vRow/vCol — dynamic shapes are rejected), reduction direction,
+data-flow deps, and hard boundaries (terminators/regions/calls/side-effects). So the highest-value
+candidate-metadata fields (prioritizing §5.4's wishlist) are exactly what fusion reconstructs today:
+- **HIGH (fusion re-derives these now):** `op_category`, `iteration_domain` (vRow/vCol + proven flag),
+  `reduction_axes`, `is_pointwise`.
+- **HIGH for perf paths:** `memory_space`, `layout_preserving`, `supports_in_place`,
+  `pipeline_category` (cube/vector/MTE), `temp_buffer` usage.
+- **MEDIUM:** tile-input/output arity, side-effect/purity, accumulation support, precision/dtype-pair.
+
+**Properties the conditions key on (candidate-metadata field seeds):** dtype, layout (`b_layout`/
+`s_layout`), memory-space, **contiguity**, valid-shape/alignment (cols vs lane count, dst-rows),
+op-attrs (`precisionType`/`round_mode`/`cmp_mode`), rank/stride, `pad_value`. The first three are
+already in our `TileSpec`; contiguity + alignment + op-attrs are the additions a richer schema needs.
+
+Candidate granularity should correspond one-to-one with meaningful PTO-ISA `T*` implementation
+variants that the compiler may need to distinguish. This is a mapping of semantics and metadata,
+not a requirement to duplicate the C++ implementation inside PTODSL.
+
+### 5.7 Fusion-aware performance selection
+
+Performance selection needs to model the current fusion pass rather than relying on a standalone
+per-op instruction estimate. Fusion has two decision levels: all hard gates must pass, then the
+cost-model score must be positive.
+
+#### Fusion hard gates
+
+| # | Condition | What it checks | PTOAS anchor |
+|---:|---|---|---|
+| 1 | Fusible op/category | The op must be a plannable `Compute` op. Elementwise, scalar, expand/broadcast, and row/column reductions are supported; `treshape` is a local boundary and other ops are hard boundaries. | `FusionOpSemantics.cpp:17-30`, `:70-81` |
+| 2 | Proven static iteration domain | Tile dimensions such as `(vRow, vCol)` must be statically provable; dynamic shapes are rejected. | `PTOFusionPlan.cpp:76-83`, `:291-294` |
+| 3 | Same iteration-domain class | Group members must have the same `(vRow, vCol)`. Elementwise domains merge inputs/outputs; expand/broadcast uses outputs; reductions use inputs. | `FusionAnalysis.cpp:130-149`, `PTOFusionPlan.cpp:314-322` |
+| 4 | No hard structural boundary | No terminator, region, call, or memory-side-effecting operation may separate the candidate from the group. | `PTOFusionPlan.cpp:85-99`, `PTOOpScheduling.cpp:79-99` |
+| 5 | Direct data-flow dependency | The candidate must share an SSA tile value with, or have a DFG edge to, the group. Unrelated islands do not fuse. | `PTOFusionPlan.cpp:202-228`, `:381-384` |
+
+#### Fusion cost model
+
+After the hard gates pass:
+
+```text
+accept fusion if net_score > 0
+```
+
+| # | Score term | Effect | PTOAS anchor |
+|---:|---|---|---|
+| 6 | Dependency benefit | Adds a positive score for each incoming edge from the group. | `PTOFusionPlan.cpp:329-331` |
+| 7 | Loop-merge benefit | Adds a positive score for appending an op; the DAG model uses `+4`. | `PTOFusionPlan.cpp:332`, `:392` |
+| 8 | Live-tile penalty | Subtracts `max(0, liveTileCount - limit)`; the model-dependent limit is approximately `4` or `10`. | `PTOFusionPlan.cpp:333-334`, `:394` |
+| 9 | VF-parameter penalty | Subtracts `max(0, vfParamCount - limit)`; the model-dependent limit is approximately `6` or `12`. | `PTOFusionPlan.cpp:335-336`, `:396` |
+
+Downstream scheduling can move operations toward contiguity only when tile dependencies, hard
+barriers, and side effects permit it (`PTOOpScheduling.cpp:101-153`). Last-use marking is likewise
+blocked by hard barriers between group members (`PTOMarkLastUse.cpp:212-225`).
+
+**Metadata consequence:** legal-candidate responses should carry enough information to estimate
+the gates and score before rendering: operation/boundary category, iteration-domain class and static
+dimensions, data-flow roles, side effects, temporary/live-tile pressure, VF parameter pressure,
+loop/access structure, and producer/consumer compatibility. PTOAS remains authoritative because it
+has the actual SSA graph and can validate or override candidate hints.
+
 ---
 
 ## 6. Phased plan
