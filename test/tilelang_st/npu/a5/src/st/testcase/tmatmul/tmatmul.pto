@@ -55,8 +55,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c48_i64, %c64_i64
-      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c48_i64, %c64_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c64_i64, %c64_i64), src_layout(%c128_i64),
@@ -67,8 +67,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c64_i64, %c64_i64 {transpose = true}
-      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c64_i64, %c64_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -132,8 +132,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64
-      : !pto.ptr<i8, l1>, !pto.ptr<i8, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64, %c0_i64, %c0_i64
+      : !pto.ptr<i8, l1>, !pto.ptr<i8, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c32_i64, %c32_i64), src_layout(%c32_i64),
@@ -144,8 +144,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c32_i64 {transpose = true}
-      : !pto.ptr<i8, l1>, !pto.ptr<i8, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c32_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<i8, l1>, !pto.ptr<i8, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -209,8 +209,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c128_i64
-      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c128_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c128_i64, %c64_i64), src_layout(%c128_i64),
@@ -221,8 +221,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c128_i64, %c64_i64 {transpose = true}
-      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c128_i64, %c64_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f16, l1>, !pto.ptr<f16, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -288,8 +288,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c112_i64
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c112_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c112_i64, %c64_i64), src_layout(%c256_i64),
@@ -300,8 +300,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c112_i64, %c64_i64 {transpose = true}
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c112_i64, %c64_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -367,8 +367,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c144_i64, %c80_i64
-      : !pto.ptr<bf16, l1>, !pto.ptr<bf16, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c144_i64, %c80_i64, %c0_i64, %c0_i64
+      : !pto.ptr<bf16, l1>, !pto.ptr<bf16, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c80_i64, %c48_i64), src_layout(%c96_i64),
@@ -379,8 +379,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c80_i64, %c48_i64 {transpose = true}
-      : !pto.ptr<bf16, l1>, !pto.ptr<bf16, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c80_i64, %c48_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<bf16, l1>, !pto.ptr<bf16, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -446,8 +446,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c16_i64, %c32_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c32_i64, %c64_i64), src_layout(%c256_i64),
@@ -458,8 +458,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c64_i64 {transpose = true}
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c32_i64, %c64_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
@@ -525,8 +525,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID0"]
-    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c96_i64
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64
+    pto.mte_l1_l0a %l1_a, %l0a, %c128_i64, %c96_i64, %c0_i64, %c0_i64
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0a>, i64, i64, i64, i64
 
     pto.mte_gm_l1_frac %b_gm, %l1_b, nd2nz,
       shape(%c96_i64, %c64_i64), src_layout(%c256_i64),
@@ -537,8 +537,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<cu
         dst_group i64, i64, i64, i64, ctrl i64, i1
     pto.set_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
     pto.wait_flag["PIPE_MTE2", "PIPE_MTE1", "EVENT_ID1"]
-    pto.mte_l1_l0b %l1_b, %l0b, %c96_i64, %c64_i64 {transpose = true}
-      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64
+    pto.mte_l1_l0b %l1_b, %l0b, %c96_i64, %c64_i64, %c0_i64, %c0_i64 {transpose = true}
+      : !pto.ptr<f32, l1>, !pto.ptr<f32, l0b>, i64, i64, i64, i64
 
     pto.set_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
     pto.wait_flag["PIPE_MTE1", "PIPE_M", "EVENT_ID0"]
