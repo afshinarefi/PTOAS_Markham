@@ -250,6 +250,9 @@ selection with full IR context; PTODSL then renders the chosen candidate(s)."*
 ```
 PTOAS / MLIR side                          PTODSL / Python side (daemon)
 ─────────────────                          ────────────────────────────
+fusion plan / scheduling
+  (tile-native PTO IR; annotate
+   group_id/order + last_use)
 ExpandTileOp
   └─ send specs for the TileOp(s) ────────▶ legal/functional lookup
                                               (op+target+dtype+constraints)
@@ -259,7 +262,7 @@ performance version selection
    consumer, fusion, loop structure)
   └─ pick best candidate per TileOp ──────▶ render MLIR for the selected candidate(s)
      rendered MLIR                     ◀──── (the existing render path)
-fusion pass → rest of pipeline
+expand + inline selected bodies → rest of VPTO pipeline
 ```
 
 **RPC implication:** the current single `instantiate` (legal-filter + priority + render in one call)
@@ -365,23 +368,30 @@ Candidate granularity should correspond one-to-one with meaningful PTO-ISA `T*` 
 variants that the compiler may need to distinguish. This is a mapping of semantics and metadata,
 not a requirement to duplicate the C++ implementation inside PTODSL.
 
-### 5.7 Fusion-aware performance selection
+### 5.7 Pre-expansion fusion planning
 
-Performance selection needs to model the current fusion pass rather than relying on a standalone
-per-op instruction estimate. Fusion has two decision levels: all hard gates must pass, then the
-cost-model score must be positive.
+**Verified pipeline placement:** when A5 frontend fusion is enabled, `pto-fusion-plan`,
+`pto-op-scheduling`, and `pto-mark-last-use` run on tile-native PTO IR in the shared mainline
+**before** the VPTO backend invokes `ExpandTileOp` (`tools/ptoas/ptoas.cpp:1751-1759`,
+`:1812-1825`; expansion is added at `:1494-1513`). This stage plans groups; it does not rewrite the
+TileOps into a physically fused loop body.
 
-#### Fusion hard gates
+The active planner is `ConservativeDAGGreedyStrategyEngine` with
+`ConservativeDAGGreedyCostModel` (`PTOFusionPlan.cpp:342-400`, `:458-510`, `:538-546`).
+It has two decision levels: a seed must be supported and statically provable, then every appended
+candidate must pass group gates and produce a positive score.
+
+#### Planning hard gates
 
 | # | Condition | What it checks | PTOAS anchor |
 |---:|---|---|---|
-| 1 | Fusible op/category | The op must be a plannable `Compute` op. Elementwise, scalar, expand/broadcast, and row/column reductions are supported; `treshape` is a local boundary and other ops are hard boundaries. | `FusionOpSemantics.cpp:17-30`, `:70-81` |
-| 2 | Proven static iteration domain | Tile dimensions such as `(vRow, vCol)` must be statically provable; dynamic shapes are rejected. | `PTOFusionPlan.cpp:76-83`, `:291-294` |
+| 1 | Fusible seed/category | `evaluateSeed` accepts only a supported `Compute` op. Elementwise, scalar, expand/broadcast, and row/column reductions are whitelisted; `treshape` is a local boundary and other ops are hard boundaries. | `FusionOpSemantics.cpp:17-33`, `:70-90`; `PTOFusionPlan.cpp:345-357` |
+| 2 | Proven static iteration domain | Tile dimensions such as `(vRow, vCol)` must be statically provable; dynamic shapes reject the seed/candidate. | `PTOFusionPlan.cpp:345-357` |
 | 3 | Same iteration-domain class | Group members must have the same `(vRow, vCol)`. Elementwise domains merge inputs/outputs; expand/broadcast uses outputs; reductions use inputs. | `FusionAnalysis.cpp:130-149`, `PTOFusionPlan.cpp:314-322` |
 | 4 | No hard structural boundary | No terminator, region, call, or memory-side-effecting operation may separate the candidate from the group. | `PTOFusionPlan.cpp:85-99`, `PTOOpScheduling.cpp:79-99` |
 | 5 | Direct data-flow dependency | The candidate must share an SSA tile value with, or have a DFG edge to, the group. Unrelated islands do not fuse. | `PTOFusionPlan.cpp:202-228`, `:381-384` |
 
-#### Fusion cost model
+#### Planning cost model
 
 After the hard gates pass:
 
@@ -391,10 +401,10 @@ accept fusion if net_score > 0
 
 | # | Score term | Effect | PTOAS anchor |
 |---:|---|---|---|
-| 6 | Dependency benefit | Adds a positive score for each incoming edge from the group. | `PTOFusionPlan.cpp:329-331` |
-| 7 | Loop-merge benefit | Adds a positive score for appending an op; the DAG model uses `+4`. | `PTOFusionPlan.cpp:332`, `:392` |
-| 8 | Live-tile penalty | Subtracts `max(0, liveTileCount - limit)`; the model-dependent limit is approximately `4` or `10`. | `PTOFusionPlan.cpp:333-334`, `:394` |
-| 9 | VF-parameter penalty | Subtracts `max(0, vfParamCount - limit)`; the model-dependent limit is approximately `6` or `12`. | `PTOFusionPlan.cpp:335-336`, `:396` |
+| 6 | Dependency benefit | Adds `4 * connectionCount` for graph connections from the candidate to the group. | `PTOFusionPlan.cpp:381-392` |
+| 7 | Loop-merge benefit | Adds `+4` for appending the candidate. | `PTOFusionPlan.cpp:392` |
+| 8 | Live-tile penalty | Subtracts `max(0, liveTileCount - 10)`. | `PTOFusionPlan.cpp:393-394` |
+| 9 | VF-parameter penalty | Subtracts `max(0, vfParamCount - 12)`. | `PTOFusionPlan.cpp:395-396` |
 
 Downstream scheduling can move operations toward contiguity only when tile dependencies, hard
 barriers, and side effects permit it (`PTOOpScheduling.cpp:101-153`). Last-use marking is likewise
@@ -405,6 +415,39 @@ the gates and score before rendering: operation/boundary category, iteration-dom
 dimensions, data-flow roles, side effects, temporary/live-tile pressure, VF parameter pressure,
 loop/access structure, and producer/consumer compatibility. PTOAS remains authoritative because it
 has the actual SSA graph and can validate or override candidate hints.
+
+### 5.8 Post-expansion fusion realization — current gap
+
+The proposed second stage — expand each planned TileOp, compare generated loop depth/lower
+bound/upper bound/step, run a "prelude legality" check, and physically fuse compatible loops — is
+**not present in this checkout**:
+
+- no low-level/loop-fusion pass or `checkPreludeLegality`-style function is registered or
+  implemented under `lib/PTO/Transforms/`, and no such implementation exists in the local Git refs;
+- `ExpandTileOp` expands each TileOp independently, creates a plain `func.call`, and erases the
+  original operation (`ExpandTileOp.cpp:1183-1223`);
+- that replacement does not copy `pto.fusion.group_id`, `pto.fusion.order`, or `pto.last_use` to the
+  call, and `ExpandTileOp` does not read those attributes;
+- the VPTO expansion sequence is only `ExpandTileOp` → inline template bodies →
+  `FoldTileBufIntrinsics` → SCCP/canonicalization (`ptoas.cpp:1494-1513`).
+
+Therefore the accurate current flow is:
+
+```text
+tile-native TileOps
+  → fusion planning / scheduling / last-use annotation
+  → shared PTO lowering
+  → ExpandTileOp expands each TileOp independently
+  → inline + fold + canonicalize
+  → VPTO emission
+```
+
+The planner currently affects tile-native scheduling and creates `pto.last_use` metadata (consumed
+by the EmitC path), but the current VPTO expansion does not transfer that metadata. It does **not**
+culminate in physical post-expansion loop fusion on this branch. A future realization pass would
+need an explicit metadata handoff across `ExpandTileOp` (or group-aware multi-op rendering),
+followed by the loop/prelude legality checks described above. Until that exists, those checks should
+be treated as a proposed or external design, not current PTOAS behavior.
 
 ---
 
