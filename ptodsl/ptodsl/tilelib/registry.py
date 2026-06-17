@@ -49,7 +49,8 @@ class TileTemplateRegistry:
     def lookup(self, op: str, target: str) -> list:
         return [d for d in self._descriptors if d.op == op and d.target == target]
 
-    def select(self, op: str, target: str, tile_specs: dict, context_attrs: dict | None = None):
+    def legal_candidates(self, op: str, target: str, tile_specs: dict,
+                         context_attrs: dict | None = None) -> list:
         candidates = self.lookup(op, target)
         if not candidates:
             raise NoMatchingTemplate(f"no template registered for op={op!r} target={target!r}")
@@ -70,10 +71,25 @@ class TileTemplateRegistry:
                 f"(layout/valid-shape) for the given operands"
             )
 
+        legal.sort(key=lambda d: d.metadata.priority, reverse=True)
+        return legal
+
+    def select(self, op: str, target: str, tile_specs: dict,
+               context_attrs: dict | None = None, candidate_id: str | None = None):
+        legal = self.legal_candidates(op, target, tile_specs, context_attrs)
+        if candidate_id:
+            for descriptor in legal:
+                if descriptor.name == candidate_id:
+                    return descriptor
+            legal_names = ", ".join(d.name for d in legal)
+            raise NoMatchingTemplate(
+                f"candidate {candidate_id!r} is not a legal template for op={op!r} "
+                f"target={target!r}; legal candidates: {legal_names}"
+            )
+
         if len(legal) == 1:
             return legal[0]
 
-        legal.sort(key=lambda d: d.metadata.priority, reverse=True)
         top_priority = legal[0].metadata.priority
         winners = [d for d in legal if d.metadata.priority == top_priority]
         if len(winners) > 1:
@@ -112,8 +128,14 @@ def register(descriptor) -> None:
     _DEFAULT_REGISTRY.register(descriptor)
 
 
-def select(op: str, target: str, tile_specs: dict, context_attrs: dict | None = None):
-    return _DEFAULT_REGISTRY.select(op, target, tile_specs, context_attrs)
+def legal_candidates(op: str, target: str, tile_specs: dict,
+                     context_attrs: dict | None = None):
+    return _DEFAULT_REGISTRY.legal_candidates(op, target, tile_specs, context_attrs)
+
+
+def select(op: str, target: str, tile_specs: dict, context_attrs: dict | None = None,
+           candidate_id: str | None = None):
+    return _DEFAULT_REGISTRY.select(op, target, tile_specs, context_attrs, candidate_id)
 
 
 __all__ = [
@@ -121,6 +143,7 @@ __all__ = [
     "NoMatchingTemplate",
     "AmbiguousTemplate",
     "default_registry",
+    "legal_candidates",
     "register",
     "select",
 ]

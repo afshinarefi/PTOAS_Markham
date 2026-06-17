@@ -24,6 +24,7 @@ import ptodsl.tilelib as pto
     layouts=["row_major"],
     memory_spaces=["ub"],
     priority=0,
+    loop_depth=1
 )
 def template_tadd(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type

@@ -8,7 +8,8 @@
 """One-shot client helper (drop-in for ``tilelang_dsl.daemon_helper``).
 
 Same CLI/contract ExpandTileOp invokes: connect to the daemon socket, issue an
-``instantiate`` RPC, print the rendered MLIR to stdout (exit non-zero on failure).
+``instantiate`` or ``get_metadata`` RPC, print the result to stdout (exit non-zero
+on failure).
 
     python3 -m ptodsl.tilelib.serving.helper --socket <path> --target a5 --op pto.tadd \\
         --operand-specs '[...]' [--context-attrs '{...}']
@@ -30,6 +31,9 @@ def main(argv=None):
     parser.add_argument("--op", required=True)
     parser.add_argument("--operand-specs", required=True)
     parser.add_argument("--context-attrs", default=None)
+    parser.add_argument("--method", choices=("instantiate", "get_metadata"),
+                        default="instantiate")
+    parser.add_argument("--candidate-id", default=None)
     args = parser.parse_args(argv)
 
     try:
@@ -40,14 +44,19 @@ def main(argv=None):
         sys.exit(1)
 
     try:
-        mlir_text = DaemonClient(args.socket).instantiate(
-            args.target, args.op, operand_specs, context_attrs
+        client = DaemonClient(args.socket)
+        if args.method == "get_metadata":
+            result = client.get_metadata(args.target, args.op, operand_specs, context_attrs)
+            sys.stdout.write(json.dumps(result))
+            return
+        result = client.instantiate(
+            args.target, args.op, operand_specs, context_attrs, args.candidate_id
         )
     except (DaemonError, OSError) as exc:
         sys.stderr.write(f"Error: daemon RPC failed: {exc}\n")
         sys.exit(1)
 
-    sys.stdout.write(mlir_text)
+    sys.stdout.write(result)
 
 
 if __name__ == "__main__":

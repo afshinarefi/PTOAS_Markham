@@ -56,7 +56,7 @@ class SpecializedTileTemplate(ModuleArtifact):
 
 def tile_template(*, op, target="a5", name=None, dtypes=(), layouts=(),
                   memory_spaces=(), constraints=(), priority=0, fusible=False,
-                  tags=(), register=True):
+                  loop_depth=None, tags=(), register=True):
     """Register a Python function as a TileLib implementation of *op* for *target*."""
     if target != "a5":
         raise ValueError("tile-template tracing currently only supports target='a5'")
@@ -74,6 +74,7 @@ def tile_template(*, op, target="a5", name=None, dtypes=(), layouts=(),
                 constraints=constraints,
                 priority=priority,
                 fusible=fusible,
+                loop_depth=loop_depth,
                 tags=tags,
             ),
             param_names=tuple(inspect.signature(fn).parameters.keys()),

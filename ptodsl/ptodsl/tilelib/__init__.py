@@ -43,6 +43,7 @@ from .registry import (
     NoMatchingTemplate,
     TileTemplateRegistry,
     default_registry,
+    legal_candidates,
     register,
     select,
 )
@@ -86,6 +87,7 @@ __all__ = [
     # registry / selection
     "TileTemplateRegistry",
     "default_registry",
+    "legal_candidates",
     "register",
     "select",
     "NoMatchingTemplate",
