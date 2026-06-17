@@ -391,6 +391,10 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
   pto::ExpandTileOpOptions expandOpts;
   expandOpts.tilelangPath = tilelangPath;
   expandOpts.tilelangPkgPath = tilelangPkgPath;
+  const bool usePTODSLTileLib = tileLibBackend == "ptodsl";
+  if (usePTODSLTileLib) {
+    expandOpts.daemonHelperModule = "ptodsl.tilelib.serving.helper";
+  }
 
   if (!hasCLIOption(argc, argv, "--tilelang-path")) {
     std::string detectedTilelangPath = detectInstalledTilelangPath(argv[0]);
@@ -415,7 +419,7 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     ptoas::registerDaemonCleanup();
 
     // Select the daemon responder module: legacy tilelang or the ptodsl TileLib.
-    std::string daemonModule = (tileLibBackend == "ptodsl")
+    std::string daemonModule = usePTODSLTileLib
                                    ? "ptodsl.tilelib.serving.daemon"
                                    : "tilelang_dsl.daemon";
 
@@ -423,6 +427,8 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     if (ptoas::DaemonManager::start(socket, expandOpts.tilelangPath,
                                     expandOpts.tilelangPkgPath, daemonModule)) {
       expandOpts.daemonSocketPath = socket;
+      if (usePTODSLTileLib)
+        expandOpts.enableTileLibMetadata = true;
       llvm::errs() << "Info: TileLang daemon started successfully\n";
     } else {
       // Fallback: daemon failed, use subprocess mode (current approach)

@@ -52,18 +52,64 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
     return tile_specs
 
 
-def render_request(target: str, op: str, operand_specs: list, context_attrs: dict | None = None) -> str:
-    """Select + render a registered template for one ExpandTileOp request -> MLIR text."""
-    # Importing the templates package registers every template (decorator side effect).
-    from .. import templates  # noqa: F401
+def _constraint_name(predicate) -> str:
+    return getattr(predicate, "__name__", repr(predicate))
 
+
+def _metadata_for_descriptor(descriptor) -> dict:
+    metadata = descriptor.metadata
+    return {
+        "op": metadata.op,
+        "target": metadata.target,
+        "name": metadata.name,
+        "dtypes": [list(sig) for sig in metadata.dtypes],
+        "layouts": list(metadata.layouts),
+        "memory_spaces": list(metadata.memory_spaces),
+        "constraints": [_constraint_name(predicate) for predicate in metadata.constraints],
+        "priority": metadata.priority,
+        "fusible": metadata.fusible,
+        "loop_depth": metadata.loop_depth,
+        "tags": list(metadata.tags),
+    }
+
+
+def _tile_specs_for_request(target: str, op: str, operand_specs: list) -> dict:
     candidates = _registry.default_registry().lookup(op, target)
     if not candidates:
         raise _registry.NoMatchingTemplate(f"no template for op={op!r} target={target!r}")
 
     # Versions of one op share parameter order; use any candidate to map operands -> names.
-    tile_specs = _build_tile_specs(candidates[0], operand_specs)
-    descriptor = _registry.select(op, target, tile_specs, context_attrs)
+    return _build_tile_specs(candidates[0], operand_specs)
+
+
+def metadata_request(target: str, op: str, operand_specs: list,
+                     context_attrs: dict | None = None) -> dict:
+    """Return legal template candidates + metadata for one ExpandTileOp request."""
+    # Importing the templates package registers every template (decorator side effect).
+    from .. import templates  # noqa: F401
+
+    tile_specs = _tile_specs_for_request(target, op, operand_specs)
+    legal = _registry.legal_candidates(op, target, tile_specs, context_attrs)
+    return {
+        "target": target,
+        "op": op,
+        "ordered_candidates": [descriptor.name for descriptor in legal],
+        "candidates": {
+            descriptor.name: _metadata_for_descriptor(descriptor)
+            for descriptor in legal
+        },
+    }
+
+
+def render_request(target: str, op: str, operand_specs: list,
+                   context_attrs: dict | None = None,
+                   candidate_id: str | None = None) -> str:
+    """Select + render a registered template for one ExpandTileOp request -> MLIR text."""
+    # Importing the templates package registers every template (decorator side effect).
+    from .. import templates  # noqa: F401
+
+    tile_specs = _tile_specs_for_request(target, op, operand_specs)
+    descriptor = _registry.select(op, target, tile_specs, context_attrs, candidate_id)
     return descriptor.specialize(**tile_specs).mlir_text()
 
 
@@ -86,6 +132,8 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
         try:
             if method == "instantiate":
                 return {"success": True, "result": self._instantiate(**params)}
+            if method == "get_metadata":
+                return {"success": True, "result": self._get_metadata(**params)}
             if method == "ping":
                 return {"success": True, "result": "pong"}
             if method == "get_stats":
@@ -98,9 +146,19 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
         except Exception as exc:  # report rendering/selection failures back over RPC
             return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def _instantiate(self, target, op, operand_specs, context_attrs=None):
+    def _get_metadata(self, target, op, operand_specs, context_attrs=None):
+        return metadata_request(target, op, operand_specs, context_attrs)
+
+    def _instantiate(self, target, op, operand_specs, context_attrs=None,
+                     candidate_id=None):
         key = json.dumps(
-            {"target": target, "op": op, "operand_specs": operand_specs, "context_attrs": context_attrs},
+            {
+                "target": target,
+                "op": op,
+                "operand_specs": operand_specs,
+                "context_attrs": context_attrs,
+                "candidate_id": candidate_id,
+            },
             sort_keys=True,
         )
         with self._cache_lock:
@@ -110,7 +168,7 @@ class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):
             return cached
 
         self.stats["misses"] += 1
-        mlir_text = render_request(target, op, operand_specs, context_attrs)
+        mlir_text = render_request(target, op, operand_specs, context_attrs, candidate_id)
 
         with self._cache_lock:
             if len(self._cache) >= self._max_entries:
@@ -172,4 +230,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["TileLibDaemonServer", "render_request", "main"]
+__all__ = ["TileLibDaemonServer", "metadata_request", "render_request", "main"]

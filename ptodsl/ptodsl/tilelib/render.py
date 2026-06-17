@@ -30,14 +30,18 @@ def _ensure_templates_loaded():
     from . import templates  # noqa: F401  (re-exports load the per-arch template modules)
 
 
-def select_and_specialize(op: str, target: str, tile_specs: dict, context_attrs: dict | None = None):
+def select_and_specialize(op: str, target: str, tile_specs: dict,
+                          context_attrs: dict | None = None,
+                          candidate_id: str | None = None):
     _ensure_templates_loaded()
-    descriptor = _registry.select(op, target, tile_specs, context_attrs)
+    descriptor = _registry.select(op, target, tile_specs, context_attrs, candidate_id)
     return descriptor.specialize(**tile_specs)
 
 
-def render_best(op: str, target: str, tile_specs: dict, context_attrs: dict | None = None) -> str:
-    return select_and_specialize(op, target, tile_specs, context_attrs).mlir_text()
+def render_best(op: str, target: str, tile_specs: dict,
+                context_attrs: dict | None = None,
+                candidate_id: str | None = None) -> str:
+    return select_and_specialize(op, target, tile_specs, context_attrs, candidate_id).mlir_text()
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────────

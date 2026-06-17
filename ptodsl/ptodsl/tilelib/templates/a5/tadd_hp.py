@@ -25,6 +25,7 @@ import ptodsl.tilelib as pto
     memory_spaces=["ub"],
     priority=10,
     fusible=False,
+    loop_depth=2,
     tags=["placeholder", "duplicate-body"],
 )
 def tadd_basic_2d_high_priority(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):

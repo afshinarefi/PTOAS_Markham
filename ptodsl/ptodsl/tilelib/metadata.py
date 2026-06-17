@@ -118,11 +118,12 @@ class TemplateMetadata:
     # Selection hints
     priority: int = 0
     fusible: bool = False
+    loop_depth: int | None = None
     tags: tuple = ()
 
     @staticmethod
     def build(*, op, target, name, dtypes=(), layouts=(), memory_spaces=(),
-              constraints=(), priority=0, fusible=False, tags=()):
+              constraints=(), priority=0, fusible=False, loop_depth=None, tags=()):
         return TemplateMetadata(
             op=op,
             target=target,
@@ -133,6 +134,7 @@ class TemplateMetadata:
             constraints=tuple(constraints),
             priority=priority,
             fusible=fusible,
+            loop_depth=loop_depth,
             tags=tuple(tags),
         )
 

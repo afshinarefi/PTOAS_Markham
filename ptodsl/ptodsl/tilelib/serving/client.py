@@ -37,12 +37,21 @@ class DaemonClient:
     def ping(self):
         return self._call("ping")
 
-    def instantiate(self, target, op, operand_specs, context_attrs=None):
+    def get_metadata(self, target, op, operand_specs, context_attrs=None):
+        return self._call("get_metadata", {
+            "target": target,
+            "op": op,
+            "operand_specs": operand_specs,
+            "context_attrs": context_attrs or {},
+        })
+
+    def instantiate(self, target, op, operand_specs, context_attrs=None, candidate_id=None):
         return self._call("instantiate", {
             "target": target,
             "op": op,
             "operand_specs": operand_specs,
             "context_attrs": context_attrs or {},
+            "candidate_id": candidate_id,
         })
 
 
