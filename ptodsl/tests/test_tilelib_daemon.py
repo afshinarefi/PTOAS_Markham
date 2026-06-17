@@ -73,7 +73,6 @@ class TileLibDaemonTest(unittest.TestCase):
     def test_get_metadata_returns_legal_candidates(self):
         metadata = self.client.get_metadata("a5", "pto.tadd", TADD_OPERANDS)
         candidates = metadata["candidates"]
-        self.assertEqual(metadata["ordered_candidates"][0], "tadd_basic_2d_high_priority")
         self.assertEqual(candidates["tadd_basic_2d_high_priority"]["loop_depth"], 2)
         self.assertEqual(candidates["template_tadd"]["loop_depth"], 1)
 

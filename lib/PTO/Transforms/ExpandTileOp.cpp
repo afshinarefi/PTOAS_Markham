@@ -56,6 +56,7 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
@@ -191,7 +192,12 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
 
 struct TileLibMetadataResult {
   std::string jsonText;
-  std::string selectedCandidate;
+};
+
+struct TileLibCandidateChoice {
+  std::string name;
+  int64_t priority = 0;
+  int64_t loopDepth = -1;
 };
 
 static constexpr llvm::StringLiteral kTileLibMetadataAttr =
@@ -795,7 +801,7 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
 }
 
 static std::optional<std::string>
-selectFirstCandidateFromMetadata(StringRef metadataJson) {
+selectCandidateFromMetadata(StringRef metadataJson) {
   auto parsed = llvm::json::parse(metadataJson);
   if (!parsed) {
     llvm::errs() << "ExpandTileOp: failed to parse TileLib metadata JSON\n";
@@ -809,18 +815,48 @@ selectFirstCandidateFromMetadata(StringRef metadataJson) {
     return std::nullopt;
   }
 
-  llvm::json::Array *orderedCandidates = root->getArray("ordered_candidates");
-  if (!orderedCandidates || orderedCandidates->empty()) {
+  llvm::json::Object *candidates = root->getObject("candidates");
+  if (!candidates || candidates->empty()) {
     llvm::errs() << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
     return std::nullopt;
   }
 
-  std::optional<StringRef> candidate = orderedCandidates->front().getAsString();
-  if (!candidate || candidate->empty()) {
-    llvm::errs() << "ExpandTileOp: first TileLib metadata candidate is not a string\n";
+  SmallVector<TileLibCandidateChoice, 4> choices;
+  for (const auto &entry : *candidates) {
+    StringRef candidateName = entry.getFirst();
+    if (candidateName.empty())
+      continue;
+
+    const llvm::json::Object *candidateMetadata =
+        entry.getSecond().getAsObject();
+    if (!candidateMetadata) {
+      llvm::errs() << "ExpandTileOp: TileLib candidate metadata for "
+                   << candidateName << " is not a JSON object\n";
+      return std::nullopt;
+    }
+
+    TileLibCandidateChoice choice;
+    choice.name = candidateName.str();
+    choice.priority = candidateMetadata->getInteger("priority").value_or(0);
+    choice.loopDepth = candidateMetadata->getInteger("loop_depth").value_or(-1);
+    choices.push_back(std::move(choice));
+  }
+
+  if (choices.empty()) {
+    llvm::errs() << "ExpandTileOp: TileLib metadata response has no selectable candidates\n";
     return std::nullopt;
   }
-  return candidate->str();
+
+  llvm::sort(choices, [](const TileLibCandidateChoice &lhs,
+                         const TileLibCandidateChoice &rhs) {
+    if (lhs.priority != rhs.priority)
+      return lhs.priority > rhs.priority;
+    if (lhs.loopDepth != rhs.loopDepth)
+      return lhs.loopDepth > rhs.loopDepth;
+    return lhs.name < rhs.name;
+  });
+
+  return choices.front().name;
 }
 
 // ============================================================================
@@ -922,13 +958,7 @@ ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
     return std::nullopt;
   }
 
-  std::optional<std::string> selectedCandidate =
-      selectFirstCandidateFromMetadata(metadataJson);
-  if (!selectedCandidate)
-    return std::nullopt;
-
-  return TileLibMetadataResult{std::move(metadataJson),
-                               std::move(*selectedCandidate)};
+  return TileLibMetadataResult{std::move(metadataJson)};
 }
 
 // ============================================================================
@@ -1374,6 +1404,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       return failure();
     }
 
+    // Phase 1: ask PTODSL for legal candidate metadata for every TileOp.
     for (auto *op : tileOps) {
       auto specKeyOpt = buildSpecKey(op);
       if (!specKeyOpt) {
@@ -1393,11 +1424,34 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
 
       op->setAttr(kTileLibMetadataAttr,
                   StringAttr::get(ctx, metadata->jsonText));
+    }
+
+    // Phase 2: select one version per TileOp. For now this is a minimal
+    // compiler-side selector: rank legal candidates by priority, then
+    // loop_depth, then name. Later this is where the global performance /
+    // fusion-aware selector should use the metadata collected above.
+    for (auto *op : tileOps) {
+      auto metadataAttr = op->getAttrOfType<StringAttr>(kTileLibMetadataAttr);
+      if (!metadataAttr) {
+        op->emitError("ExpandTileOp: missing TileLib metadata for version selection");
+        return failure();
+      }
+
+      std::optional<std::string> selectedCandidate =
+          selectCandidateFromMetadata(metadataAttr.getValue());
+      if (!selectedCandidate) {
+        StringRef opName = getTileOpName(op);
+        op->emitError("ExpandTileOp: failed to select TileLib candidate for " +
+                      opName);
+        return failure();
+      }
+
       op->setAttr(kTileLibSelectedTemplateAttr,
-                  StringAttr::get(ctx, metadata->selectedCandidate));
+                  StringAttr::get(ctx, *selectedCandidate));
     }
   }
 
+  // Phase 3: render the selected template to MLIR and replace each TileOp.
   for (auto *op : tileOps) {
     auto specKeyOpt = buildSpecKey(op);
     if (!specKeyOpt) {

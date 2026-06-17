@@ -93,7 +93,6 @@ def metadata_request(target: str, op: str, operand_specs: list,
     return {
         "target": target,
         "op": op,
-        "ordered_candidates": [descriptor.name for descriptor in legal],
         "candidates": {
             descriptor.name: _metadata_for_descriptor(descriptor)
             for descriptor in legal
