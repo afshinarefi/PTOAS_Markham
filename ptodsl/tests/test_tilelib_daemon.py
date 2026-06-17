@@ -70,6 +70,19 @@ class TileLibDaemonTest(unittest.TestCase):
         mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
         self.assertIn("func.func @tadd_basic_2d_high_priority", mlir)
 
+    def test_get_metadata_returns_legal_candidates(self):
+        metadata = self.client.get_metadata("a5", "pto.tadd", TADD_OPERANDS)
+        candidates = metadata["candidates"]
+        self.assertEqual(metadata["ordered_candidates"][0], "tadd_basic_2d_high_priority")
+        self.assertEqual(candidates["tadd_basic_2d_high_priority"]["loop_depth"], 2)
+        self.assertEqual(candidates["template_tadd"]["loop_depth"], 1)
+
+    def test_instantiate_can_render_named_candidate(self):
+        mlir = self.client.instantiate(
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+        )
+        self.assertIn("func.func @template_tadd", mlir)
+
     def test_cache_hit_on_repeat(self):
         self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
         self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
