@@ -465,7 +465,13 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
            "Python executable for tilelang DSL invocation">,
     Option<"daemonSocketPath", "daemon-socket-path", "std::string",
            /*default=*/"\"\"",
-           "Path to Unix domain socket for daemon RPC (if empty, uses subprocess)">
+           "Path to Unix domain socket for daemon RPC (if empty, uses subprocess)">,
+    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
+           /*default=*/"\"tilelang_dsl.daemon_helper\"",
+           "Python module used for daemon helper RPC calls">,
+    Option<"enableTileLibMetadata", "enable-tilelib-metadata", "bool",
+           /*default=*/"false",
+           "Query TileLib metadata before expansion and instantiate the selected candidate">
   ];
 }
 
