@@ -265,12 +265,19 @@ performance version selection
 expand + inline selected bodies → rest of VPTO pipeline
 ```
 
-**RPC implication:** the current single `instantiate` (legal-filter + priority + render in one call)
-splits into two phases — **(a) list legal candidates + metadata**, then **(b) render a
-named/selected candidate**. The daemon grows a candidate-listing method; the render path stays.
+**RPC implication:** the former single `instantiate` (legal-filter + priority + render in one call)
+now has a first two-phase slice for the PTODSL daemon backend:
 
-> **This is a design direction, not yet implemented.** The MVP's single-call priority select (§5.2)
-> remains the working mechanism until the two-phase flow is built.
+- `get_metadata`: returns every legal candidate plus existing template metadata (`dtypes`,
+  `layouts`, `memory_spaces`, `priority`, `fusible`, `tags`) and the first new perf-facing key,
+  `loop_depth`.
+- `instantiate`: still renders MLIR, but can now receive a selected candidate name and render that
+  exact template.
+
+`ExpandTileOp` only enables this path when PTOAS is using the PTODSL daemon. Legacy TileLang keeps
+the previous one-call path. Current version selection is intentionally trivial: PTOAS records the
+metadata on each TileOp and chooses the first legal candidate; the future compiler-side selector will
+replace that placeholder with loop/fusion-aware ranking.
 
 ### 5.4 Candidate metadata for performance
 
@@ -610,8 +617,9 @@ python3 -m ptodsl.tilelib.render --op pto.tadd --target a5 \
 8. **Daemon vs in-process** — keep the warm-daemon model (cold Python per op is too slow).
 9. **Candidate-metadata schema (§5.4)** — what does the PTOAS fusion/perf selector actually need?
    `fusible` is too weak; the wishlist in §5.4 is a starting point. Design against real pass needs.
-10. **Two-phase daemon RPC (§5.3)** — split the single `instantiate` into *list-legal-candidates +
-    metadata* and *render-selected-candidate*. Define the candidate-metadata wire format.
+10. **Two-phase daemon RPC (§5.3)** — first slice implemented for the PTODSL daemon:
+    `get_metadata` + render-selected `instantiate`. Remaining work is the real PTOAS-side
+    performance selector and a richer candidate-metadata schema.
 11. **Perf-selector ownership** — the performance-selection *algorithm* is owned by the PTOAS/MLIR
     side (heuristic/profiling/model). PTODSL only supplies metadata; don't over-design the algorithm.
 
