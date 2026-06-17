@@ -10,7 +10,7 @@
 import unittest
 
 import ptodsl.tilelib.templates  # noqa: F401  (registers tadd + tadd_hp)
-from ptodsl.tilelib import ScalarType, TileSpec, default_registry, select
+from ptodsl.tilelib import ScalarType, TileSpec, default_registry, legal_candidates, select
 from ptodsl.tilelib.registry import NoMatchingTemplate
 
 
@@ -28,6 +28,16 @@ class TileLibSelectTest(unittest.TestCase):
         chosen = select("pto.tadd", "a5", _f32_specs())
         self.assertEqual(chosen.name, "tadd_basic_2d_high_priority")
         self.assertEqual(chosen.metadata.priority, 10)
+
+    def test_legal_candidates_include_loop_depth_metadata(self):
+        candidates = legal_candidates("pto.tadd", "a5", _f32_specs())
+        by_name = {candidate.name: candidate for candidate in candidates}
+        self.assertEqual(by_name["tadd_basic_2d_high_priority"].metadata.loop_depth, 2)
+        self.assertEqual(by_name["template_tadd"].metadata.loop_depth, 1)
+
+    def test_can_select_named_legal_candidate(self):
+        chosen = select("pto.tadd", "a5", _f32_specs(), candidate_id="template_tadd")
+        self.assertEqual(chosen.name, "template_tadd")
 
     def test_no_matching_dtype_raises(self):
         spec = TileSpec(shape=(8, 64), dtype=ScalarType("i8"))
