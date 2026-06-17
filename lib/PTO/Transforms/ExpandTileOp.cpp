@@ -49,6 +49,8 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
@@ -190,6 +192,17 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
     return lhs == rhs;
   }
 };
+
+struct TileLibMetadataResult {
+  std::string jsonText;
+  std::string selectedCandidate;
+};
+
+static constexpr llvm::StringLiteral kTileLibMetadataAttr =
+    "pto.tilelib.metadata";
+static constexpr llvm::StringLiteral kTileLibSelectedTemplateAttr =
+    "pto.tilelib.selected_template";
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -702,11 +715,17 @@ struct ExpandState {
   std::string tilelangPkgPath;
   std::string pythonExe;
   std::string daemonSocketPath;
+  std::string daemonHelperModule = "tilelang_dsl.daemon_helper";
+  bool enableTileLibMetadata = false;
 
   func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
-                                  ModuleOp mod, MLIRContext *ctx);
+                                  ModuleOp mod, MLIRContext *ctx,
+                                  StringRef candidateId = {});
   func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
-                                     ModuleOp mod, MLIRContext *ctx);
+                                     ModuleOp mod, MLIRContext *ctx,
+                                     StringRef candidateId = {});
+  std::optional<TileLibMetadataResult> invokeTileLibMetadata(const SpecKey &key,
+                                                             Operation *tileOp);
 
   LogicalResult expandTileOpsInFunction(func::FuncOp func, ModuleOp mod,
                                         MLIRContext *ctx);
@@ -869,12 +888,150 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
   return json;
 }
 
+static std::optional<std::string>
+selectFirstCandidateFromMetadata(StringRef metadataJson) {
+  auto parsed = llvm::json::parse(metadataJson);
+  if (!parsed) {
+    llvm::errs() << "ExpandTileOp: failed to parse TileLib metadata JSON\n";
+    llvm::consumeError(parsed.takeError());
+    return std::nullopt;
+  }
+
+  llvm::json::Object *root = parsed->getAsObject();
+  if (!root) {
+    llvm::errs() << "ExpandTileOp: TileLib metadata response is not a JSON object\n";
+    return std::nullopt;
+  }
+
+  llvm::json::Array *orderedCandidates = root->getArray("ordered_candidates");
+  if (!orderedCandidates || orderedCandidates->empty()) {
+    llvm::errs() << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
+    return std::nullopt;
+  }
+
+  std::optional<StringRef> candidate = orderedCandidates->front().getAsString();
+  if (!candidate || candidate->empty()) {
+    llvm::errs() << "ExpandTileOp: first TileLib metadata candidate is not a string\n";
+    return std::nullopt;
+  }
+  return candidate->str();
+}
+
+// ============================================================================
+// Invoke PTODSL TileLib metadata RPC.
+// ============================================================================
+std::optional<TileLibMetadataResult>
+ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
+  (void)tileOp;
+  if (daemonSocketPath.empty()) {
+    llvm::errs() << "ExpandTileOp: TileLib metadata requires daemon mode\n";
+    return std::nullopt;
+  }
+
+  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
+  if (!pythonPath) {
+    llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
+    return std::nullopt;
+  }
+
+  std::string operandSpecsJson = buildOperandSpecsJson(key);
+  std::string contextAttrsJson = buildContextAttrsJson(key);
+  if (key.targetArch.empty()) {
+    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
+    return std::nullopt;
+  }
+
+  SmallString<128> tmpPath;
+  int tmpFD;
+  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_metadata", "json",
+                                                   tmpFD, tmpPath)) {
+    llvm::errs() << "ExpandTileOp: cannot create temp file: "
+                 << ec.message() << "\n";
+    return std::nullopt;
+  }
+  ::close(tmpFD);
+
+  std::string opName = "pto." + key.opName;
+  SmallVector<StringRef> args = {
+      *pythonPath, "-m", daemonHelperModule,
+      "--method", "get_metadata",
+      "--socket", daemonSocketPath,
+      "--target", key.targetArch,
+      "--op", opName,
+      "--operand-specs", operandSpecsJson,
+  };
+  if (!key.contextAttrs.empty()) {
+    args.push_back("--context-attrs");
+    args.push_back(contextAttrsJson);
+  }
+
+  std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
+                                          std::nullopt};
+
+  SmallVector<StringRef> envp;
+  std::string pythonPathEnv;
+  std::vector<std::string> envStorage;
+  bool hasPythonPath = !tilelangPkgPath.empty();
+  if (hasPythonPath) {
+    const char *existingPath = ::getenv("PYTHONPATH");
+    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
+    if (existingPath && existingPath[0] != '\0') {
+      pythonPathEnv += ":";
+      pythonPathEnv += existingPath;
+    }
+    for (char **e = environ; *e; ++e) {
+      StringRef entry(*e);
+      if (entry.starts_with("PYTHONPATH="))
+        continue;
+      envStorage.push_back(std::string(entry));
+    }
+    envStorage.push_back(pythonPathEnv);
+    for (auto &s : envStorage)
+      envp.push_back(s);
+  }
+
+  std::string errMsg;
+  int rc = llvm::sys::ExecuteAndWait(
+      *pythonPath, args,
+      hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
+      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
+
+  if (rc != 0) {
+    llvm::errs() << "ExpandTileOp: TileLib metadata helper failed (rc=" << rc
+                 << "): " << errMsg << "\n";
+    llvm::sys::fs::remove(tmpPath);
+    return std::nullopt;
+  }
+
+  auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
+  llvm::sys::fs::remove(tmpPath);
+  if (!bufOrErr) {
+    llvm::errs() << "ExpandTileOp: cannot read TileLib metadata output\n";
+    return std::nullopt;
+  }
+
+  std::string metadataJson = (*bufOrErr)->getBuffer().str();
+  if (metadataJson.empty()) {
+    llvm::errs() << "ExpandTileOp: empty TileLib metadata output\n";
+    return std::nullopt;
+  }
+
+  std::optional<std::string> selectedCandidate =
+      selectFirstCandidateFromMetadata(metadataJson);
+  if (!selectedCandidate)
+    return std::nullopt;
+
+  return TileLibMetadataResult{std::move(metadataJson),
+                               std::move(*selectedCandidate)};
+}
+
 // ============================================================================
 // Invoke Python DSL daemon RPC to generate a specialized template function.
 // ============================================================================
 func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
                                                Operation *tileOp,
-                                               ModuleOp mod, MLIRContext *ctx) {
+                                               ModuleOp mod, MLIRContext *ctx,
+                                               StringRef candidateId) {
   // 1. Locate the Python executable.
   auto pythonPath = llvm::sys::findProgramByName(pythonExe);
   if (!pythonPath) {
@@ -904,7 +1061,7 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   // 4. Build command args for daemon helper.
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.daemon_helper",
+      *pythonPath, "-m", daemonHelperModule,
       "--socket",      daemonSocketPath,
       "--target",      key.targetArch,
       "--op",          opName,
@@ -913,6 +1070,10 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
     args.push_back(contextAttrsJson);
+  }
+  if (!candidateId.empty()) {
+    args.push_back("--candidate-id");
+    args.push_back(candidateId);
   }
 
   // 5. Set up environment with PYTHONPATH.
@@ -1045,12 +1206,20 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
 // ============================================================================
 func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
                                               Operation *tileOp,
-                                              ModuleOp mod, MLIRContext *ctx) {
+                                              ModuleOp mod, MLIRContext *ctx,
+                                              StringRef candidateId) {
   // Try daemon first if daemon socket path is provided.
   if (!daemonSocketPath.empty()) {
-    func::FuncOp daemonResult = invokeTilelangDaemon(key, tileOp, mod, ctx);
+    func::FuncOp daemonResult =
+        invokeTilelangDaemon(key, tileOp, mod, ctx, candidateId);
     if (daemonResult)
       return daemonResult;
+    if (!candidateId.empty()) {
+      llvm::errs() << "ExpandTileOp: daemon RPC failed for selected TileLib "
+                      "candidate @"
+                   << candidateId << "; subprocess fallback disabled\n";
+      return nullptr;
+    }
     // Daemon failed, fall back to subprocess mode.
     llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
   }
@@ -1093,6 +1262,11 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
     args.push_back(contextAttrsJson);
+  }
+  if (!candidateId.empty()) {
+    llvm::errs() << "ExpandTileOp: selected template @" << candidateId
+                 << " requires daemon helper mode; subprocess fallback ignores"
+                    " candidate selection\n";
   }
 
   // 5. Set up environment with PYTHONPATH.
@@ -1188,6 +1362,8 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   llvm::StringMap<std::string> renamedSymbols;
 
   std::string uniqueName = buildUniqueFunctionBaseName(key);
+  if (!candidateId.empty())
+    uniqueName += "_tpl_" + candidateId.str();
 
   // Check if function already exists in module (deduplication)
   SymbolTable targetSymTable(mod);
@@ -1258,6 +1434,37 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       tileOps.push_back(op);
   });
 
+  if (enableTileLibMetadata) {
+    if (daemonSocketPath.empty()) {
+      func.emitError("ExpandTileOp: TileLib metadata is enabled, but daemon "
+                     "mode is unavailable");
+      return failure();
+    }
+
+    for (auto *op : tileOps) {
+      auto specKeyOpt = buildSpecKey(op);
+      if (!specKeyOpt) {
+        op->emitError(
+            "ExpandTileOp: cannot build specialization key for this operand schema");
+        return failure();
+      }
+
+      std::optional<TileLibMetadataResult> metadata =
+          invokeTileLibMetadata(*specKeyOpt, op);
+      if (!metadata) {
+        StringRef opName = getTileOpName(op);
+        op->emitError("ExpandTileOp: failed to query TileLib metadata for " +
+                      opName);
+        return failure();
+      }
+
+      op->setAttr(kTileLibMetadataAttr,
+                  StringAttr::get(ctx, metadata->jsonText));
+      op->setAttr(kTileLibSelectedTemplateAttr,
+                  StringAttr::get(ctx, metadata->selectedCandidate));
+    }
+  }
+
   for (auto *op : tileOps) {
     auto specKeyOpt = buildSpecKey(op);
     if (!specKeyOpt) {
@@ -1266,8 +1473,14 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       return failure();
     }
 
+    StringRef selectedTemplate;
+    if (auto selectedAttr =
+            op->getAttrOfType<StringAttr>(kTileLibSelectedTemplateAttr))
+      selectedTemplate = selectedAttr.getValue();
+
     // Invoke tilelang DSL (with caching).
-    func::FuncOp dslFn = invokeTilelangDSL(*specKeyOpt, op, mod, ctx);
+    func::FuncOp dslFn =
+        invokeTilelangDSL(*specKeyOpt, op, mod, ctx, selectedTemplate);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
       op->emitError("ExpandTileOp: failed to instantiate tilelang template for " +
@@ -1316,6 +1529,8 @@ void ExpandTileOpPass::runOnOperation() {
   state.tilelangPkgPath = std::string(tilelangPkgPath);
   state.pythonExe = std::string(pythonExe);
   state.daemonSocketPath = std::string(daemonSocketPath);
+  state.daemonHelperModule = std::string(daemonHelperModule);
+  state.enableTileLibMetadata = enableTileLibMetadata;
 
   for (auto func : mod.getOps<func::FuncOp>()) {
     if (func.isExternal())
