@@ -25,6 +25,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 	exit 1
 fi
 
+conda activate ptoas
+
 _PTOAS_ENV_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 _PTOAS_REPO_DIR="$(cd -- "${_PTOAS_ENV_SCRIPT_DIR}/.." && pwd)"
 
@@ -32,15 +34,22 @@ _PTOAS_REPO_DIR="$(cd -- "${_PTOAS_ENV_SCRIPT_DIR}/.." && pwd)"
 #   <workspace>/
 #     ├── PTOAS/
 #     └── llvm-project/
-export PTO_SOURCE_DIR="${PTO_SOURCE_DIR:-${_PTOAS_REPO_DIR}}"
-export WORKSPACE_DIR="${WORKSPACE_DIR:-$(cd -- "${PTO_SOURCE_DIR}/.." && pwd)}"
+export WORKSPACE_DIR="${WORKSPACE_DIR:-/home/m84446336/PTOAS}"
+export PTO_SOURCE_DIR="${PTO_SOURCE_DIR:-/home/m84446336/PTOAS/PTOAS_Markham}"
+export PTOAS_REPO_ROOT="${PTOAS_REPO_ROOT:-${PTO_SOURCE_DIR}}"
+
 export LLVM_SOURCE_DIR="${LLVM_SOURCE_DIR:-${WORKSPACE_DIR}/llvm-project}"
 export LLVM_BUILD_DIR="${LLVM_BUILD_DIR:-${LLVM_SOURCE_DIR}/build-shared}"
+
 export PTO_INSTALL_DIR="${PTO_INSTALL_DIR:-${PTO_SOURCE_DIR}/install}"
-export PTO_ISA_PATH="${PTO_ISA_PATH:-${WORKSPACE_DIR}/pto-isa}"
+
+export PTO_ISA_ROOT="${PTO_ISA_ROOT:-/home/m84446336/pto-isa}"
+export PTO_ISA_PATH="${PTO_ISA_PATH:-${PTO_ISA_ROOT}}"
+
 export ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
 
 export MLIR_PYTHON_ROOT="${MLIR_PYTHON_ROOT:-${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core}"
+
 if [[ -z "${PTOAS_PYTHON_SITE:-}" ]]; then
 	PTOAS_PYTHON_SITE="$(
 		PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" python3 - <<'PY' 2>/dev/null || true
@@ -53,31 +62,41 @@ PY
 	)"
 fi
 export PTOAS_PYTHON_SITE
+
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
-export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
+export PTODSL_PYTHON_ROOT="${PTODSL_PYTHON_ROOT:-${PTO_SOURCE_DIR}/ptodsl}"
+export TILELANG_DSL_PYTHON_ROOT="${TILELANG_DSL_PYTHON_ROOT:-${PTO_SOURCE_DIR}/tilelang-dsl/python}"
+
+export PYBIND11_CMAKE_DIR="$(python3 -m pybind11 --cmakedir 2>/dev/null || true)"
 export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 export PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-${PTO_SOURCE_DIR}/build/output}"
 
 _ptoas_prepend_path() {
-	local var_name="$1"
-	local value="$2"
-	local current="${!var_name:-}"
-	if [[ -z "${value}" ]]; then
-		return 0
-	fi
-	if [[ ! -e "${value}" ]]; then
-		return 0
-	fi
-	if [[ ":${current}:" == *":${value}:"* ]]; then
-		return 0
-	fi
-	if [[ -z "${current}" ]]; then
-		printf -v "${var_name}" '%s' "${value}"
-	else
-		printf -v "${var_name}" '%s:%s' "${value}" "${current}"
-	fi
-	export "${var_name}"
+local var_name="$1"
+local value="$2"
+local current="${!var_name:-}"
+
+if [[ -z "${value}" ]]; then
+	return 
+fi
+
+if [[ ! -e "${value}" ]]; then
+	return 0
+fi
+
+if [[ ":${current}:" == *":${value}:"* ]]; then
+	return 0
+fi
+
+if [[ -z "${current}" ]]; then
+	printf -v "${var_name}" '%s' "${value}"
+else
+	printf -v "${var_name}" '%s:%s' "${value}" "${current}"
+fi
+
+export "${var_name}"
+
 }
 
 _ptoas_run_legacy_smoke_test() {
@@ -108,14 +127,13 @@ _ptoas_run_legacy_smoke_test() {
 	echo "test set_env: OK"
 }
 
-# Prefer the in-tree PTO Python overlay plus LLVM's full MLIR package first.
-# The install prefix may only contain the PTO overlay fragments, and when it is
-# placed ahead of mlir_core it can shadow the real MLIR Python bindings.
+_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${PTODSL_PYTHON_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${TILELANG_DSL_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTO_INSTALL_DIR}"
+_ptoas_prepend_path PYTHONPATH "${MLIR_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTOAS_PYTHON_SITE}"
-_ptoas_prepend_path PYTHONPATH "${MLIR_PYTHON_ROOT}"
-_ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
 
 _ptoas_prepend_path LD_LIBRARY_PATH "${LLVM_BUILD_DIR}/lib"
 _ptoas_prepend_path LD_LIBRARY_PATH "${PTO_INSTALL_DIR}/lib"
@@ -128,10 +146,18 @@ if [[ -n "${PTO_PYTHON_BIN:-}" && -x "${PTO_PYTHON_BIN}" ]]; then
 fi
 
 echo "[ptoas_env] PTO_SOURCE_DIR=${PTO_SOURCE_DIR}"
+echo "[ptoas_env] PTOAS_REPO_ROOT=${PTOAS_REPO_ROOT}"
+echo "[ptoas_env] WORKSPACE_DIR=${WORKSPACE_DIR}"
+echo "[ptoas_env] LLVM_SOURCE_DIR=${LLVM_SOURCE_DIR}"
 echo "[ptoas_env] LLVM_BUILD_DIR=${LLVM_BUILD_DIR}"
 echo "[ptoas_env] PTO_INSTALL_DIR=${PTO_INSTALL_DIR}"
+echo "[ptoas_env] PTO_ISA_ROOT=${PTO_ISA_ROOT}"
 echo "[ptoas_env] PTO_ISA_PATH=${PTO_ISA_PATH}"
 echo "[ptoas_env] ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
+echo "[ptoas_env] MLIR_PYTHON_ROOT=${MLIR_PYTHON_ROOT}"
+echo "[ptoas_env] PTOAS_PYTHON_SITE=${PTOAS_PYTHON_SITE}"
+echo "[ptoas_env] PTODSL_PYTHON_ROOT=${PTODSL_PYTHON_ROOT}"
+echo "[ptoas_env] TILELANG_DSL_PYTHON_ROOT=${TILELANG_DSL_PYTHON_ROOT}"
 echo "[ptoas_env] PATH/PYTHONPATH/LD_LIBRARY_PATH updated"
 
 if [[ "${PTOAS_ENV_SKIP_SMOKE_TEST:-${CI:-0}}" != "1" ]]; then
