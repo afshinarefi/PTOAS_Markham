@@ -2157,10 +2157,6 @@ int mlir::pto::compilePTOASModule(
     printSharedPreBackendSeamIR(*module);
   if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
     return 1;
-  if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
-    result.kind = PTOASCompileResultKind::Text;
-    return 0;
-  }
 
   PassManager emitcPM(module->getContext());
   emitcPM.enableVerifier();

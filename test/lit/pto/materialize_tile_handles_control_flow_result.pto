@@ -1,4 +1,7 @@
-// RUN: ptoas --pto-arch=a3 --pto-print-seam-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: rm -f %t.seam
+// RUN: ptoas --pto-arch=a3 --pto-seam-ir-file=%t.seam %s -o %t.cpp
+// RUN: FileCheck %s --check-prefix=IR < %t.seam
+// RUN: FileCheck %s --check-prefix=SEAM-EMITC < %t.cpp
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s --check-prefix=EMITC
 
 module {
@@ -62,6 +65,9 @@ module {
 // IR:   scf.yield %{{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // IR: }
 // IR: pto.tmul ins(%[[RES]], %[[RES]]
+
+// SEAM-EMITC-LABEL: AICORE void control_flow_result_tile_materialization
+// SEAM-EMITC: TADD(
 
 // EMITC-LABEL: AICORE void control_flow_result_tile_materialization
 // EMITC: if (
