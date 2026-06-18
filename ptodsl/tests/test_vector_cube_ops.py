@@ -28,6 +28,28 @@ def _identity(value):
 
 
 class VectorCubeSurfaceTest(unittest.TestCase):
+    def test_row_reduction_auto_tmp_uses_row_major_layout(self):
+        src = SimpleNamespace(type="!pto.tile_buf<vec, 8x64xf32, valid=8x64, blayout=col_major>")
+        auto_tmp = object()
+        dst = object()
+        sentinel = object()
+
+        with patch.object(_ops, "unwrap_surface_value", return_value=src), \
+             patch.object(_ops, "alloc_tile", return_value=auto_tmp) as alloc_tile, \
+             patch.object(_ops, "trowmax", return_value=sentinel) as trowmax:
+            result = pto.tile.rowmax(src, dst=dst, tmp=None)
+
+        self.assertIs(result, sentinel)
+        alloc_tile.assert_called_once_with(
+            shape=[8, 64],
+            dtype=F32Type.get(),
+            memory_space="vec",
+            valid_shape=[8, 64],
+            blayout="RowMajor",
+            slayout="NoneBox",
+        )
+        trowmax.assert_called_once_with(src, auto_tmp, dst)
+
     def test_public_namespace_exports_new_vector_and_cube_apis(self):
         names = [
             "vsub", "vmin", "vand", "vor", "vxor", "vshl", "vshr",

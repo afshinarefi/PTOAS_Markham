@@ -12,7 +12,17 @@ from . import _ops
 def _resolve_row_reduction_tmp(src, tmp):
     if tmp is not None:
         return tmp
-    return _ops.alloc_tile(tile_type=_ops.unwrap_surface_value(src).type)
+    metadata = _ops.parse_tile_type_metadata(_ops.unwrap_surface_value(src).type)
+    if metadata is None:
+        return _ops.alloc_tile(tile_type=_ops.unwrap_surface_value(src).type)
+    return _ops.alloc_tile(
+        shape=list(metadata["shape_dims"]),
+        dtype=metadata["element_type"],
+        memory_space=metadata["memory_space"],
+        valid_shape=list(metadata["valid_dims"]),
+        blayout="RowMajor",
+        slayout="NoneBox",
+    )
 
 
 class _TileNamespace:
