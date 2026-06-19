@@ -25,6 +25,11 @@ def is_single_row_tile(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     return src0.shape[0] == 1 and src1.shape[0] == 1 and dst.shape[0] == 1
 
 
+def has_tail(operand_sizes, **_):
+    # Placeholder until this matches the final binop tail rule.
+    return operand_sizes[0] % 8 != 0
+
+
 def BinaryInstr(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op, version):
     """Dispatch a binary TileOp implementation variant, mirroring pto-isa BinaryInstr."""
     if version == VFIMPL_1D_NO_POST_UPDATE:
@@ -89,6 +94,7 @@ def TBinOps_2D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 __all__ = [
     "is_single_row_tile",
+    "has_tail",
     "BinaryInstr",
     "TBinOps_1D_NoPostUpdate",
     "TBinOps_1D_PostUpdate",
