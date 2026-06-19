@@ -31,6 +31,7 @@ def TAdd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
     op="pto.tadd",
     target="a5",
     name="template_tadd",
+    id=0,
     constraints=[
         pto.check_type(("f32", "f32", "f32")),
         pto.check_memory_space("ub"),
@@ -51,6 +52,7 @@ def template_tadd_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     op="pto.tadd",
     target="a5",
     name="template_tadd_1d_no_post_update",
+    id=1,
     constraints=[
         pto.check_type(("f32", "f32", "f32")),
         pto.check_memory_space("ub"),
@@ -71,6 +73,7 @@ def template_tadd_1d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     op="pto.tadd",
     target="a5",
     name="template_tadd_2d_post_update",
+    id=2,
     constraints=[
         pto.check_type(("f32", "f32", "f32")),
         pto.check_memory_space("ub"),
@@ -91,6 +94,7 @@ def template_tadd_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     op="pto.tadd",
     target="a5",
     name="template_tadd_1d_post_update",
+    id=3,
     constraints=[
         pto.check_type(("f32", "f32", "f32")),
         pto.check_memory_space("ub"),

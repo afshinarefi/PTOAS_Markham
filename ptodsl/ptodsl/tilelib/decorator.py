@@ -56,7 +56,7 @@ class SpecializedTileTemplate(ModuleArtifact):
 
 def tile_template(*, op, target="a5", name=None, dtypes=(), layouts=(),
                   memory_spaces=(), constraints=(), priority=0, fusible=False,
-                  loop_depth=None, Tail=None, is_post_update=False,
+                  loop_depth=None, id=None, Tail=None, is_post_update=False,
                   tags=(), register=True):
     """Register a Python function as a TileLib implementation of *op* for *target*."""
     if target != "a5":
@@ -76,6 +76,7 @@ def tile_template(*, op, target="a5", name=None, dtypes=(), layouts=(),
                 priority=priority,
                 fusible=fusible,
                 loop_depth=loop_depth,
+                id=id,
                 Tail=Tail,
                 is_post_update=is_post_update,
                 tags=tags,
