@@ -36,7 +36,7 @@ class TileLibElementwiseTest(unittest.TestCase):
     def test_each_op_selects_and_renders(self):
         for op, (name, vop) in ELEMENTWISE.items():
             with self.subTest(op=op):
-                descriptor = select(op, "a5", _f32_specs())
+                descriptor = select(op, "a5", _f32_specs(), candidate_id=name)
                 self.assertEqual(descriptor.name, name)
 
                 mlir = descriptor.specialize(**_f32_specs()).mlir_text()
