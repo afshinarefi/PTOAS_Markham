@@ -119,11 +119,14 @@ class TemplateMetadata:
     priority: int = 0
     fusible: bool = False
     loop_depth: int | None = None
+    Tail: object = None
+    is_post_update: bool = False
     tags: tuple = ()
 
     @staticmethod
     def build(*, op, target, name, dtypes=(), layouts=(), memory_spaces=(),
-              constraints=(), priority=0, fusible=False, loop_depth=None, tags=()):
+              constraints=(), priority=0, fusible=False, loop_depth=None,
+              Tail=None, is_post_update=False, tags=()):
         return TemplateMetadata(
             op=op,
             target=target,
@@ -135,6 +138,8 @@ class TemplateMetadata:
             priority=priority,
             fusible=fusible,
             loop_depth=loop_depth,
+            Tail=Tail,
+            is_post_update=bool(is_post_update),
             tags=tuple(tags),
         )
 

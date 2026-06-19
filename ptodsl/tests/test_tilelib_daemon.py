@@ -18,6 +18,7 @@ import threading
 import unittest
 
 from ptodsl.tilelib.serving.client import DaemonClient
+from ptodsl.tilelib.serving.client import DaemonError
 from ptodsl.tilelib.serving.daemon import TileLibDaemonServer
 
 
@@ -60,21 +61,43 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertEqual(self.client.ping(), "pong")
 
     def test_instantiate_tadd_returns_structured_mlir(self):
-        mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        mlir = self.client.instantiate(
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+        )
         for op in ("pto.tile_buf_addr", "memref.subview", "pto.vlds", "pto.vadd",
                    "pto.vsts", "pto.plt_b32", "pto.tilelang.instance"):
             self.assertIn(op, mlir)
         self.assertNotIn("pto.castptr", mlir)
 
-    def test_instantiate_selects_highest_priority(self):
-        mlir = self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
-        self.assertIn("func.func @tadd_basic_2d_high_priority", mlir)
+    def test_instantiate_requires_candidate_when_tadd_is_ambiguous(self):
+        with self.assertRaises(DaemonError):
+            self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+
+    def test_instantiate_can_render_2d_no_post_update_tadd(self):
+        mlir = self.client.instantiate(
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+        )
+        self.assertIn("func.func @template_tadd", mlir)
 
     def test_get_metadata_returns_legal_candidates(self):
         metadata = self.client.get_metadata("a5", "pto.tadd", TADD_OPERANDS)
         candidates = metadata["candidates"]
-        self.assertEqual(candidates["tadd_basic_2d_high_priority"]["loop_depth"], 2)
-        self.assertEqual(candidates["template_tadd"]["loop_depth"], 1)
+        self.assertEqual(set(candidates), {
+            "template_tadd",
+            "template_tadd_1d_no_post_update",
+            "template_tadd_2d_post_update",
+            "template_tadd_1d_post_update",
+        })
+        self.assertEqual(candidates["template_tadd"]["loop_depth"], 2)
+        self.assertEqual(candidates["template_tadd"]["Tail"], {"callable": "has_tail"})
+        self.assertFalse(candidates["template_tadd"]["is_post_update"])
+        self.assertEqual(candidates["template_tadd"]["tags"], ["binop", "2d", "no_post_update"])
+        self.assertEqual(candidates["template_tadd_1d_no_post_update"]["loop_depth"], 1)
+        self.assertEqual(candidates["template_tadd_1d_no_post_update"]["Tail"], {"callable": "has_tail"})
+        self.assertTrue(candidates["template_tadd_2d_post_update"]["is_post_update"])
+        self.assertEqual(candidates["template_tadd_2d_post_update"]["Tail"], {"callable": "has_tail"})
+        self.assertTrue(candidates["template_tadd_1d_post_update"]["is_post_update"])
+        self.assertEqual(candidates["template_tadd_1d_post_update"]["Tail"], {"callable": "has_tail"})
 
     def test_instantiate_can_render_named_candidate(self):
         mlir = self.client.instantiate(
@@ -83,13 +106,12 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn("func.func @template_tadd", mlir)
 
     def test_cache_hit_on_repeat(self):
-        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
-        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS)
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd")
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd")
         self.assertEqual(self.server.stats["misses"], 1)
         self.assertEqual(self.server.stats["hits"], 1)
 
     def test_unknown_op_errors(self):
-        from ptodsl.tilelib.serving.client import DaemonError
         with self.assertRaises(DaemonError):
             self.client.instantiate("a5", "pto.tnope", TADD_OPERANDS)
 
