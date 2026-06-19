@@ -12,11 +12,6 @@ import ptodsl.tilelib as pto
 from . import tbinop
 
 
-def has_tail(operand_sizes, **_):
-    # Placeholder
-    return operand_sizes[0] % 8 != 0
-
-
 class AddOp:
     @staticmethod
     def BinInstr(reg_src0, reg_src1, preg):
@@ -40,7 +35,7 @@ def TAdd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
     ],
     priority=0,
     loop_depth=2,
-    Tail=has_tail,
+    Tail=tbinop.has_tail,
     is_post_update=False,
     tags=["binop", "2d", "no_post_update"],
 )
@@ -61,7 +56,7 @@ def template_tadd_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     ],
     priority=0,
     loop_depth=1,
-    Tail=has_tail,
+    Tail=tbinop.has_tail,
     is_post_update=False,
     tags=["binop", "1d", "no_post_update"],
 )
@@ -82,7 +77,7 @@ def template_tadd_1d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
     ],
     priority=0,
     loop_depth=2,
-    Tail=has_tail,
+    Tail=tbinop.has_tail,
     is_post_update=True,
     tags=["binop", "2d", "post_update"],
 )
@@ -103,7 +98,7 @@ def template_tadd_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     ],
     priority=0,
     loop_depth=2,
-    Tail=has_tail,
+    Tail=tbinop.has_tail,
     is_post_update=True,
     tags=["binop", "1d", "post_update"],
 )
