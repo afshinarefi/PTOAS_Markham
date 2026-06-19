@@ -75,6 +75,7 @@ def _metadata_for_descriptor(descriptor) -> dict:
         "priority": metadata.priority,
         "fusible": metadata.fusible,
         "loop_depth": metadata.loop_depth,
+        "id": metadata.id,
         "Tail": _metadata_value(metadata.Tail),
         "is_post_update": metadata.is_post_update,
         "tags": list(metadata.tags),
