@@ -56,6 +56,12 @@ def _constraint_name(predicate) -> str:
     return getattr(predicate, "__name__", repr(predicate))
 
 
+def _metadata_value(value):
+    if callable(value):
+        return {"callable": _constraint_name(value)}
+    return value
+
+
 def _metadata_for_descriptor(descriptor) -> dict:
     metadata = descriptor.metadata
     return {
@@ -69,6 +75,8 @@ def _metadata_for_descriptor(descriptor) -> dict:
         "priority": metadata.priority,
         "fusible": metadata.fusible,
         "loop_depth": metadata.loop_depth,
+        "Tail": _metadata_value(metadata.Tail),
+        "is_post_update": metadata.is_post_update,
         "tags": list(metadata.tags),
     }
 

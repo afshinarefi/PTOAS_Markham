@@ -35,7 +35,14 @@ from .author import (
     vsub,
     yield_,
 )
-from .constraints import BLayout, SLayout
+from .constraints import (
+    BLayout,
+    SLayout,
+    check_layout,
+    check_memory_space,
+    check_type,
+    require_contiguous,
+)
 from .decorator import SpecializedTileTemplate, TileTemplate, tile_template
 from .metadata import ScalarType, TemplateMetadata, TileSpec, bf16, f16, f32, i8, i16, i32
 from .registry import (
@@ -75,6 +82,10 @@ __all__ = [
     "TemplateMetadata",
     "BLayout",
     "SLayout",
+    "check_type",
+    "check_memory_space",
+    "check_layout",
+    "require_contiguous",
     "f32",
     "f16",
     "bf16",
