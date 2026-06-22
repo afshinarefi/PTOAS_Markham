@@ -17,7 +17,9 @@ Layers:
 """
 
 from .author import (
+    PostUpdate,
     Tile,
+    addptr,
     const_expr,
     for_,
     get_lanes,
@@ -59,6 +61,7 @@ from .render import render_best, select_and_specialize
 __all__ = [
     # authoring surface
     "Tile",
+    "PostUpdate",
     "tile_template",
     "for_",
     "static_range",
@@ -68,6 +71,7 @@ __all__ = [
     "vecscope",
     "get_lanes",
     "make_mask",
+    "addptr",
     "vlds",
     "vadd",
     "vsub",

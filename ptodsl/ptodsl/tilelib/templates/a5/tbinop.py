@@ -65,8 +65,40 @@ def TBinOps_1D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 
 def TBinOps_1D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
-    """Placeholder post-update 1D variant; currently emits the no-post-update body."""
-    TBinOps_1D_NoPostUpdate(dst, src0, src1, op)
+    """Emit a contiguous post-update binary op."""
+    dtype = dst.element_type
+    valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.get_lanes(dtype)
+    valid_elems = valid_rows * valid_cols
+
+    src0_ptr = src0.as_ptr()
+    src1_ptr = src1.as_ptr()
+    dst_ptr = dst.as_ptr()
+
+    elem_loop = pto.for_(0, valid_elems, step=lanes).carry(
+        remained=valid_elems,
+        src0_ptr=src0_ptr,
+        src1_ptr=src1_ptr,
+        dst_ptr=dst_ptr,
+    )
+    with elem_loop:
+        mask, remained = pto.make_mask(dtype, elem_loop.remained)
+        vreg0, src0_next = pto.vlds(
+            elem_loop.src0_ptr, lanes, post_update=pto.PostUpdate.ON
+        )
+        vreg1, src1_next = pto.vlds(
+            elem_loop.src1_ptr, lanes, post_update=pto.PostUpdate.ON
+        )
+        vreg2 = op.BinInstr(vreg0, vreg1, mask)
+        dst_next = pto.vsts(
+            vreg2, elem_loop.dst_ptr, lanes, mask, post_update=pto.PostUpdate.ON
+        )
+        elem_loop.update(
+            remained=remained,
+            src0_ptr=src0_next,
+            src1_ptr=src1_next,
+            dst_ptr=dst_next,
+        )
 
 
 def TBinOps_2D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
@@ -88,8 +120,69 @@ def TBinOps_2D_NoPostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
 
 
 def TBinOps_2D_PostUpdate(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, op):
-    """Placeholder post-update 2D variant; currently emits the no-post-update body."""
-    TBinOps_2D_NoPostUpdate(dst, src0, src1, op)
+    """Emit a row-wise post-update binary op."""
+    dtype = dst.element_type
+    valid_rows, valid_cols = dst.valid_shape
+    lanes = pto.get_lanes(dtype)
+    full_cols = (valid_cols // lanes) * lanes
+    tail_count = valid_cols % lanes
+    full_mask = pto.make_mask(dtype, "PAT_ALL")
+    dst_row_stride = dst.shape[1]
+    src0_row_stride = src0.shape[1]
+    src1_row_stride = src1.shape[1]
+
+    src0_base = src0.as_ptr()
+    src1_base = src1.as_ptr()
+    dst_base = dst.as_ptr()
+
+    with pto.for_(0, valid_rows, step=1) as row:
+        src0_row = pto.addptr(src0_base, row * src0_row_stride)
+        src1_row = pto.addptr(src1_base, row * src1_row_stride)
+        dst_row = pto.addptr(dst_base, row * dst_row_stride)
+
+        col_loop = pto.for_(0, full_cols, step=lanes).carry(
+            src0_ptr=src0_row,
+            src1_ptr=src1_row,
+            dst_ptr=dst_row,
+        )
+        with col_loop:
+            vreg0, src0_next = pto.vlds(
+                col_loop.src0_ptr, lanes, post_update=pto.PostUpdate.ON
+            )
+            vreg1, src1_next = pto.vlds(
+                col_loop.src1_ptr, lanes, post_update=pto.PostUpdate.ON
+            )
+            vreg2 = op.BinInstr(vreg0, vreg1, full_mask)
+            dst_next = pto.vsts(
+                vreg2,
+                col_loop.dst_ptr,
+                lanes,
+                full_mask,
+                post_update=pto.PostUpdate.ON,
+            )
+            col_loop.update(
+                src0_ptr=src0_next,
+                src1_ptr=src1_next,
+                dst_ptr=dst_next,
+            )
+
+        with pto.if_(tail_count != 0) as tail:
+            with tail.then_:
+                mask, _ = pto.make_mask(dtype, tail_count)
+                vreg0, _ = pto.vlds(
+                    col_loop.final("src0_ptr"), lanes, post_update=pto.PostUpdate.ON
+                )
+                vreg1, _ = pto.vlds(
+                    col_loop.final("src1_ptr"), lanes, post_update=pto.PostUpdate.ON
+                )
+                vreg2 = op.BinInstr(vreg0, vreg1, mask)
+                pto.vsts(
+                    vreg2,
+                    col_loop.final("dst_ptr"),
+                    lanes,
+                    mask,
+                    post_update=pto.PostUpdate.ON,
+                )
 
 
 __all__ = [
