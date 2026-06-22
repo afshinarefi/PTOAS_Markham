@@ -116,6 +116,9 @@ std::unique_ptr<Pass> createPTOInlineBackendHelpersPass(
     const PTOInlineBackendHelpersOptions &options = {});
 void registerPTOViewToMemrefPass();
 
+// Create a pass to add available as attribute to pto ops
+std::unique_ptr<Pass> createPTOAddTemplateAttributePass();
+
 //===----------------------------------------------------------------------===//
 // Registration
 //===----------------------------------------------------------------------===//
