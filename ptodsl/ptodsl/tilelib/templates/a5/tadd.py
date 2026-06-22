@@ -97,7 +97,7 @@ def template_tadd_2d_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
         pto.require_contiguous(True),
     ],
     priority=0,
-    loop_depth=2,
+    loop_depth=1,
     Tail=tbinop.has_tail,
     is_post_update=True,
     tags=["binop", "1d", "post_update"],
