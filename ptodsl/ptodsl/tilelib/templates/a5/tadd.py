@@ -25,7 +25,7 @@ def TAdd(dst: pto.Tile, src0: pto.Tile, src1: pto.Tile, version):
 @pto.tile_template(
     op="pto.tadd",
     target="a5",
-    name="template_tadd",
+    name="template_tadd_2d_no_post_update",
     id=0,
     constraints=[
         pto.check_type(("f32", "f32", "f32")),
