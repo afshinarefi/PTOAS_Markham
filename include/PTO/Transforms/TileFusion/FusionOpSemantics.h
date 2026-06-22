@@ -63,6 +63,7 @@ struct FusionOpSemantics {
 };
 
 bool isSupportedPreFusionComputeOp(StringRef opName);
+FailureOr<SmallVector<FusionTileOpVersions>> getFusionTileOpVersions(Operation *op);
 FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op);
 
 } // namespace pto

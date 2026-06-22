@@ -79,14 +79,14 @@ static FailureOr<FusionTailKind> parseTailKind(StringRef value) {
 // Parse the canonical implementation metadata:
 //   versions = [{id = 1 : i64, loop_depth = 1 : i64,
 //                vf_impl_kind = "PostUpdate", tail = "has_tail"}, ...]
-static FailureOr<SmallVector<FusionTileOpVersions>>
-parseFusionTileOpVersions(Operation *op) {
+FailureOr<SmallVector<FusionTileOpVersions>>
+getFusionTileOpVersions(Operation *op) {
   Attribute versionsAttr = op->getAttr("versions");
   if (!versionsAttr)
     return SmallVector<FusionTileOpVersions>{};
 
   auto versions = dyn_cast<ArrayAttr>(versionsAttr);
-  if (!versions)
+  if (!versions || versions.empty())
     return failure();
 
   SmallVector<FusionTileOpVersions> result;
@@ -103,7 +103,8 @@ parseFusionTileOpVersions(Operation *op) {
     auto implKindAttr = version.getAs<StringAttr>("vf_impl_kind");
     auto tailAttr = version.getAs<StringAttr>("tail");
     if (!idAttr || !depthAttr || !implKindAttr || !tailAttr ||
-        idAttr.getInt() <= 0 || depthAttr.getInt() <= 0)
+        idAttr.getInt() <= 0 ||
+        (depthAttr.getInt() != 1 && depthAttr.getInt() != 2))
       return failure();
 
     unsigned id = static_cast<unsigned>(idAttr.getInt());
@@ -182,7 +183,7 @@ FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op) {
   }
 
   FailureOr<SmallVector<FusionTileOpVersions>> versions =
-      parseFusionTileOpVersions(op);
+      getFusionTileOpVersions(op);
 
   if (failed(versions))
     return op->emitError("invalid TileOp implementation metadata");

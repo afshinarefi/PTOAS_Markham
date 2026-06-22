@@ -519,6 +519,12 @@ static llvm::cl::opt<bool> enableOpFusion(
                    "last-use annotation; VPTO uses fusion-region lifecycle."),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableFusionVersionSelection(
+    "enable-fusion-version-selection",
+    llvm::cl::desc(
+        "Enable implementation-aware FusionPlan version selection"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -1848,18 +1854,28 @@ int mlir::pto::compilePTOASModule(OwningOpRef<ModuleOp> &module,
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOValidateIntToPtrUsesPass());
-
+  auto addFusionPlan = [&]() {
+    if (enableFusionVersionSelection) {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createFusionPlanVersionSelectionPass());
+    } else {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createFusionPlanPass());
+    }
+  };
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
   if (enableA5EmitCFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    addFusionPlan();
+    // pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
   } else if (enableA5VPTOFusionPath) {
     pto::PTOAddTemplateAttributePassOptions templateOpts =
         resolveTemplateAttributeOptions(argc, argv);
     pm.addPass(pto::createPTOAddTemplateAttributePass(templateOpts));
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
+    addFusionPlan();
+    // pm.addNestedPass<mlir::func::FuncOp>(pto::createFusionPlanPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }
