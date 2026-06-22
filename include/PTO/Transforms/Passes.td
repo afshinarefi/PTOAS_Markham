@@ -783,4 +783,16 @@ def VPTOPtrCastCleanup
                            "mlir::memref::MemRefDialect"];
 }
 
+def PTOAddTemplateAttributePass : Pass<"pto-add-template-attribute", "func::FuncOp"> {
+  let summary = "Add available template as attribute to pto tops";
+  let description = [{
+    Add available templates as attribute to pto ops.
+  }];
+  let constructor = "mlir::pto::createPTOAddTemplateAttributePass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::func::FuncDialect"
+                          ];
+}
+
+
 #endif // MLIR_DIALECT_PTO_PASSES
