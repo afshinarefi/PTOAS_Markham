@@ -36,7 +36,7 @@ class TileLibSelectTest(unittest.TestCase):
     def test_four_tadd_versions_registered(self):
         names = {d.name for d in default_registry().lookup("pto.tadd", "a5")}
         self.assertEqual({
-            "template_tadd",
+            "template_tadd_2d_no_post_update",
             "template_tadd_1d_no_post_update",
             "template_tadd_2d_post_update",
             "template_tadd_1d_post_update",
@@ -47,8 +47,13 @@ class TileLibSelectTest(unittest.TestCase):
             select("pto.tadd", "a5", _f32_specs())
 
     def test_named_tadd_selects_2d_no_post_update_template(self):
-        chosen = select("pto.tadd", "a5", _f32_specs(), candidate_id="template_tadd")
-        self.assertEqual(chosen.name, "template_tadd")
+        chosen = select(
+            "pto.tadd",
+            "a5",
+            _f32_specs(),
+            candidate_id="template_tadd_2d_no_post_update",
+        )
+        self.assertEqual(chosen.name, "template_tadd_2d_no_post_update")
         self.assertFalse(chosen.metadata.is_post_update)
         self.assertEqual(chosen.metadata.loop_depth, 2)
         self.assertTrue(callable(chosen.metadata.Tail))
@@ -62,14 +67,14 @@ class TileLibSelectTest(unittest.TestCase):
         candidates = legal_candidates("pto.tadd", "a5", _f32_specs())
         by_name = {candidate.name: candidate for candidate in candidates}
         self.assertEqual(set(by_name), {
-            "template_tadd",
+            "template_tadd_2d_no_post_update",
             "template_tadd_1d_no_post_update",
             "template_tadd_2d_post_update",
             "template_tadd_1d_post_update",
         })
-        self.assertEqual(by_name["template_tadd"].metadata.loop_depth, 2)
-        self.assertFalse(by_name["template_tadd"].metadata.is_post_update)
-        self.assertTrue(callable(by_name["template_tadd"].metadata.Tail))
+        self.assertEqual(by_name["template_tadd_2d_no_post_update"].metadata.loop_depth, 2)
+        self.assertFalse(by_name["template_tadd_2d_no_post_update"].metadata.is_post_update)
+        self.assertTrue(callable(by_name["template_tadd_2d_no_post_update"].metadata.Tail))
         self.assertEqual(by_name["template_tadd_1d_no_post_update"].metadata.loop_depth, 1)
         self.assertTrue(callable(by_name["template_tadd_1d_no_post_update"].metadata.Tail))
         self.assertTrue(by_name["template_tadd_2d_post_update"].metadata.is_post_update)
@@ -80,8 +85,13 @@ class TileLibSelectTest(unittest.TestCase):
         self.assertFalse(by_name["template_tadd_1d_post_update"].metadata.Tail(**context))
 
     def test_can_select_named_legal_candidate(self):
-        chosen = select("pto.tadd", "a5", _f32_specs(), candidate_id="template_tadd")
-        self.assertEqual(chosen.name, "template_tadd")
+        chosen = select(
+            "pto.tadd",
+            "a5",
+            _f32_specs(),
+            candidate_id="template_tadd_2d_no_post_update",
+        )
+        self.assertEqual(chosen.name, "template_tadd_2d_no_post_update")
 
     def test_no_matching_dtype_raises(self):
         spec = TileSpec(shape=(8, 64), dtype=ScalarType("i8"))
