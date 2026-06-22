@@ -8,7 +8,7 @@
 
 #include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
 
-#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSwitch.h"
 
 namespace mlir {
@@ -60,6 +60,71 @@ static StringRef getTileFusionOpName(Operation *op) {
   StringRef opName = op->getName().getStringRef();
   opName.consume_front("pto.");
   return opName;
+}
+
+static FailureOr<FusionVFImplKind> parseVFImplKind(StringRef value) {
+  return llvm::StringSwitch<FailureOr<FusionVFImplKind>>(value)
+      .Case("PostUpdate", FusionVFImplKind::PostUpdate)
+      .Case("NoPostUpdate", FusionVFImplKind::NoPostUpdate)
+      .Default(failure());
+}
+
+static FailureOr<FusionTailKind> parseTailKind(StringRef value) {
+  return llvm::StringSwitch<FailureOr<FusionTailKind>>(value)
+      .Case("has_tail", FusionTailKind::HasTail)
+      .Case("no_tail", FusionTailKind::NoTail)
+      .Default(failure());
+}
+
+// Parse the canonical implementation metadata:
+//   versions = [{id = 1 : i64, loop_depth = 1 : i64,
+//                vf_impl_kind = "PostUpdate", tail = "has_tail"}, ...]
+static FailureOr<SmallVector<FusionTileOpVersions>>
+parseFusionTileOpVersions(Operation *op) {
+  Attribute versionsAttr = op->getAttr("versions");
+  if (!versionsAttr)
+    return SmallVector<FusionTileOpVersions>{};
+
+  auto versions = dyn_cast<ArrayAttr>(versionsAttr);
+  if (!versions)
+    return failure();
+
+  SmallVector<FusionTileOpVersions> result;
+  result.reserve(versions.size());
+  llvm::SmallDenseSet<unsigned, 4> ids;
+
+  for (Attribute versionAttr : versions) {
+    auto version = dyn_cast<DictionaryAttr>(versionAttr);
+    if (!version)
+      return failure();
+
+    auto idAttr = version.getAs<IntegerAttr>("id");
+    auto depthAttr = version.getAs<IntegerAttr>("loop_depth");
+    auto implKindAttr = version.getAs<StringAttr>("vf_impl_kind");
+    auto tailAttr = version.getAs<StringAttr>("tail");
+    if (!idAttr || !depthAttr || !implKindAttr || !tailAttr ||
+        idAttr.getInt() <= 0 || depthAttr.getInt() <= 0)
+      return failure();
+
+    unsigned id = static_cast<unsigned>(idAttr.getInt());
+    if (!ids.insert(id).second)
+      return failure();
+
+    FailureOr<FusionVFImplKind> implKind =
+        parseVFImplKind(implKindAttr.getValue());
+    FailureOr<FusionTailKind> tailKind = parseTailKind(tailAttr.getValue());
+    if (failed(implKind) || failed(tailKind))
+      return failure();
+
+    result.push_back({
+        id,
+        static_cast<unsigned>(depthAttr.getInt()),
+        *implKind,
+        *tailKind,
+    });
+  }
+
+  return result;
 }
 
 FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op) {
@@ -115,6 +180,14 @@ FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op) {
         return failure();
     }
   }
+
+  FailureOr<SmallVector<FusionTileOpVersions>> versions =
+      parseFusionTileOpVersions(op);
+
+  if (failed(versions))
+    return op->emitError("invalid TileOp implementation metadata");
+
+  semantics.versions = std::move(*versions);
 
   return semantics;
 }

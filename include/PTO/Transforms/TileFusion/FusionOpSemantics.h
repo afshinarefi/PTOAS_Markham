@@ -33,6 +33,24 @@ enum class FusionComputeFamily {
   ReduceCol,
 };
 
+enum class FusionVFImplKind {
+  PostUpdate,
+  NoPostUpdate,
+  // more implementation related fields can be added later
+};
+
+enum class FusionTailKind {
+  HasTail,
+  NoTail,
+};
+
+struct FusionTileOpVersions {
+  unsigned id;
+  unsigned loopDepth;
+  FusionVFImplKind vfImplKind;
+  FusionTailKind tailKind;
+};
+
 struct FusionOpSemantics {
   FusionOpKind kind = FusionOpKind::HardBoundary;
   FusionComputeFamily computeFamily = FusionComputeFamily::Unknown;
@@ -41,6 +59,7 @@ struct FusionOpSemantics {
   SmallVector<Value, 4> tileInputs;
   SmallVector<Value, 2> tileOutputs;
   SmallVector<Value, 2> scalarInputs;
+  SmallVector<FusionTileOpVersions, 2> versions;
 };
 
 bool isSupportedPreFusionComputeOp(StringRef opName);
