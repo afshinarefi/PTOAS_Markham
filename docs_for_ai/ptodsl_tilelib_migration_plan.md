@@ -568,6 +568,22 @@ which has a `pto.tadd` 16x64 kernel) with `--tile-lib-backend=ptodsl` and compar
 default tilelang path. This is where the standalone-instance-func limitation resolves (the func is
 inlined into the kernel) and true end-to-end lowering is exercised.
 
+**Debugging version selection / fusion.** For the local `tmul -> tadd` dependency input, dump both
+the selected TileLib instance functions and the low-level loop-fusion result:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+  --tile-lib-backend=ptodsl --pto-level=level2 \
+  --enable-op-fusion \
+  --mlir-print-ir-after=pto-low-level-loop-fusion \
+  --mlir-print-ir-after=pto-expand-tile-op \
+  ptodsl/tests/inputs/TMulTAdd_Attribute.mlir -o /dev/null &> out.log
+```
+
+Inspect `out.log` for `func.call @template_tmul...` / `func.call @template_tadd...` after
+`pto-expand-tile-op` to see which TileLib candidates were selected, then inspect the
+`pto-low-level-loop-fusion` dump for the post-expansion loop shape.
+
 ### Phase 6 — Cutover & retire tilelang-dsl
 Parity-test ptodsl vs tilelang MLIR per op (instance cache makes A/B easy). Flip the `ExpandTileOp`
 default to ptodsl; delete `tilelang-dsl` + `lib/TileOps` once green.

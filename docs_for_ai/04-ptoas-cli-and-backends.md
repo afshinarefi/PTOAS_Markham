@@ -47,6 +47,21 @@ The pipeline runs a **shared mainline** up to the **seam IR**, then forks on `--
 **IR-only outputs**: `--emit-pto-ir` (PTO IR text), `--emit-vpto` (VPTO IR), `--pto-seam-ir-file`
 (seam IR) — for inspection/testing without full codegen.
 
+Useful pass-dump recipe for PTODSL TileLib version selection plus A5 fusion debugging:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+  --tile-lib-backend=ptodsl --pto-level=level2 \
+  --enable-op-fusion \
+  --mlir-print-ir-after=pto-low-level-loop-fusion \
+  --mlir-print-ir-after=pto-expand-tile-op \
+  ptodsl/tests/inputs/TMulTAdd_Attribute.mlir -o /dev/null &> out.log
+```
+
+In the `pto-expand-tile-op` dump, `func.call @template_tmul...` and
+`func.call @template_tadd...` reveal which TileLib templates were selected. The
+`pto-low-level-loop-fusion` dump shows the post-expansion fusion result.
+
 ## 4. Pipeline construction summary
 
 `ptoas.cpp` builds one `PassManager`: shared mainline (`~1726–1798`) → conditional auto-sync (exactly
