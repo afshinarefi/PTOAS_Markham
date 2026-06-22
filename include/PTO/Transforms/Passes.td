@@ -894,7 +894,7 @@ def VPTOPtrCastCleanup
                            "mlir::memref::MemRefDialect"];
 }
 
-def PTOAddTemplateAttributePass : Pass<"pto-add-template-attribute", "func::FuncOp"> {
+def PTOAddTemplateAttributePass : Pass<"pto-add-template-attribute", "ModuleOp"> {
   let summary = "Add available template as attribute to pto tops";
   let description = [{
     Add available templates as attribute to pto ops.
@@ -903,6 +903,26 @@ def PTOAddTemplateAttributePass : Pass<"pto-add-template-attribute", "func::Func
   let dependentDialects = ["mlir::pto::PTODialect",
                            "mlir::func::FuncDialect"
                           ];
+  let options = [
+    Option<"tilelangPath", "tilelang-path", "std::string",
+           /*default=*/"\"\"",
+           "Path to directory of .py tilelang DSL template files">,
+    Option<"tilelangPkgPath", "tilelang-pkg-path", "std::string",
+           /*default=*/"\"\"",
+           "PYTHONPATH for tilelang_dsl package (added to env)">,
+    Option<"pythonExe", "python-exe", "std::string",
+           /*default=*/"\"python3\"",
+           "Python executable for tilelang DSL invocation">,
+    Option<"daemonSocketPath", "daemon-socket-path", "std::string",
+           /*default=*/"\"\"",
+           "Path to Unix domain socket for daemon RPC (if empty, uses subprocess)">,
+    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
+           /*default=*/"\"tilelang_dsl.daemon_helper\"",
+           "Python module used for daemon helper RPC calls">,
+    Option<"enableTileLibMetadata", "enable-tilelib-metadata", "bool",
+           /*default=*/"false",
+           "Query TileLib metadata before expansion and instantiate the selected candidate">
+  ];
 }
 
 

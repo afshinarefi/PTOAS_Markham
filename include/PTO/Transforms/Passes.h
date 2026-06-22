@@ -118,6 +118,9 @@ void registerPTOViewToMemrefPass();
 
 // Create a pass to add available as attribute to pto ops
 std::unique_ptr<Pass> createPTOAddTemplateAttributePass();
+std::unique_ptr<Pass>
+createPTOAddTemplateAttributePass(
+    const PTOAddTemplateAttributePassOptions &options);
 
 //===----------------------------------------------------------------------===//
 // Registration

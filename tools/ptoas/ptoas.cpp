@@ -1,66 +1,68 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "ptoas.h"
 #include "PTO/IR/PTO.h"
-#include "PTO/Transforms/VPTOLLVMEmitter.h"
-#include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/BufferizableOpInterfaceImpl.h"
-#include "VPTOHostStubEmission.h"
-#include "TilelangDaemon.h"
 #include "PTO/Transforms/CppPostprocess.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/IR/Diagnostics.h"
+#include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/VPTOLLVMEmitter.h"
+#include "TilelangDaemon.h"
+#include "VPTOHostStubEmission.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
+#include "mlir/Dialect/EmitC/Transforms/Passes.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/InitAllPasses.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include <cctype>
-#include <cstring>
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
-#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
-#include "llvm/Support/Path.h"
 #include "ptobc/ptobc_decode.h"
-#include "mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/EmitC/IR/EmitC.h"
-#include "mlir/Dialect/EmitC/Transforms/Passes.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Regex.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h" // [Fix] Required for OF_None
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
-#include <memory>
-#include <string>
-#include <thread>
+#include "llvm/Support/Regex.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ToolOutputFile.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cctype>
 #include <chrono>
-#include <unistd.h>
+#include <cstring>
+#include <memory>
 #include <signal.h>
+#include <string>
 #include <sys/types.h>
+#include <thread>
+#include <unistd.h>
 
 extern "C" {
 extern char **environ;
@@ -119,6 +121,7 @@ void mlir::pto::registerPTOASPassesAndCLOptions() {
   mlir::pto::registerPTOInlineLibCall();
   mlir::pto::registerFoldTileBufIntrinsics();
   mlir::pto::registerExpandTileOp();
+  mlir::pto::registerPTOAddTemplateAttributePass();
   mlir::registerPassManagerCLOptions();
 }
 
@@ -158,7 +161,8 @@ static std::string detectInstalledTilelangPath(const char *argv0) {
 
   const std::string exeDir = getParentDir(exePath);
   const std::string prefixDir = getParentDir(exeDir);
-  const std::string installedTileOps = joinPath(prefixDir, "share/ptoas/TileOps");
+  const std::string installedTileOps =
+      joinPath(prefixDir, "share/ptoas/TileOps");
   if (pathExists(installedTileOps))
     return installedTileOps;
   return {};
@@ -188,9 +192,10 @@ static bool hasCLIOption(int argc, char **argv, llvm::StringRef option) {
   return false;
 }
 
-static LogicalResult applyConfiguredPassManagerCLOptions(
-    PassManager &pm, llvm::StringRef pipelineName,
-    llvm::raw_ostream &diagOS = llvm::errs()) {
+static LogicalResult
+applyConfiguredPassManagerCLOptions(PassManager &pm,
+                                    llvm::StringRef pipelineName,
+                                    llvm::raw_ostream &diagOS = llvm::errs()) {
   if (succeeded(mlir::applyPassManagerCLOptions(pm)))
     return success();
   diagOS << "Error: failed to apply MLIR pass manager command-line options for "
@@ -266,8 +271,8 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
   }
 
   if (sortedDefinitions.size() != definitions.size()) {
-    return module.emitError()
-           << "cyclic function call graph is not supported for EmitC C++ emission";
+    return module.emitError() << "cyclic function call graph is not supported "
+                                 "for EmitC C++ emission";
   }
 
   if (declarations.empty() && definitions.size() <= 1)
@@ -313,9 +318,10 @@ static LogicalResult reorderEmitCFunctions(ModuleOp module) {
 // --------------------------------------------------------------------------
 // Command Line Options
 // --------------------------------------------------------------------------
-static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
-                                            llvm::cl::desc("Enable automatic synchronization insertion pass"),
-                                            llvm::cl::init(false));
+static llvm::cl::opt<bool> enableInsertSync(
+    "enable-insert-sync",
+    llvm::cl::desc("Enable automatic synchronization insertion pass"),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> enableBufidSync(
     "enable-bufid_sync",
@@ -370,8 +376,9 @@ static llvm::cl::opt<std::string> tilelangPath(
 
 static llvm::cl::opt<std::string> tilelangPkgPath(
     "tilelang-pkg-path",
-    llvm::cl::desc("PYTHONPATH for tilelang_dsl package "
-                   "(default: <source>/tilelang-dsl/python, baked in at build time)"),
+    llvm::cl::desc(
+        "PYTHONPATH for tilelang_dsl package "
+        "(default: <source>/tilelang-dsl/python, baked in at build time)"),
     llvm::cl::init(PTOAS_DEFAULT_TILELANG_PKG_PATH));
 
 static llvm::cl::opt<std::string> daemonSocketPath(
@@ -382,8 +389,9 @@ static llvm::cl::opt<std::string> daemonSocketPath(
 
 static llvm::cl::opt<std::string> tileLibBackend(
     "tile-lib-backend",
-    llvm::cl::desc("TileLib backend for ExpandTileOp: 'tilelang' (default) or 'ptodsl' "
-                   "(ptodsl spawns the ptodsl.tilelib.serving.daemon responder)"),
+    llvm::cl::desc(
+        "TileLib backend for ExpandTileOp: 'tilelang' (default) or 'ptodsl' "
+        "(ptodsl spawns the ptodsl.tilelib.serving.daemon responder)"),
     llvm::cl::init("tilelang"));
 
 static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
@@ -403,7 +411,8 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
   }
 
   if (!hasCLIOption(argc, argv, "--tilelang-pkg-path")) {
-    std::string detectedTilelangPkgPath = detectInstalledTilelangPkgPath(argv[0]);
+    std::string detectedTilelangPkgPath =
+        detectInstalledTilelangPkgPath(argv[0]);
     if (!detectedTilelangPkgPath.empty())
       expandOpts.tilelangPkgPath = detectedTilelangPkgPath;
   }
@@ -418,7 +427,8 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     // Register cleanup handler (daemon will be stopped on PTOAS exit)
     ptoas::registerDaemonCleanup();
 
-    // Select the daemon responder module: legacy tilelang or the ptodsl TileLib.
+    // Select the daemon responder module: legacy tilelang or the ptodsl
+    // TileLib.
     std::string daemonModule = usePTODSLTileLib
                                    ? "ptodsl.tilelib.serving.daemon"
                                    : "tilelang_dsl.daemon";
@@ -433,11 +443,74 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     } else {
       // Fallback: daemon failed, use subprocess mode (current approach)
       expandOpts.daemonSocketPath = "";
-      llvm::errs() << "Warning: Failed to start daemon, using subprocess mode (fallback)\n";
+      llvm::errs() << "Warning: Failed to start daemon, using subprocess mode "
+                      "(fallback)\n";
     }
   }
 
   return expandOpts;
+}
+
+static PTOAddTemplateAttributePassOptions
+resolveTemplateAttributeOptions(int argc, char **argv) {
+  PTOAddTemplateAttributePassOptions templateOpts;
+  templateOpts.tilelangPath = tilelangPath;
+  templateOpts.tilelangPkgPath = tilelangPkgPath;
+  const bool usePTODSLTileLib = tileLibBackend == "ptodsl";
+  if (usePTODSLTileLib) {
+    templateOpts.daemonHelperModule = "ptodsl.tilelib.serving.helper";
+  }
+
+  if (!hasCLIOption(argc, argv, "--tilelang-path")) {
+    std::string detectedTilelangPath = detectInstalledTilelangPath(argv[0]);
+    if (!detectedTilelangPath.empty())
+      templateOpts.tilelangPath = detectedTilelangPath;
+  }
+
+  if (!hasCLIOption(argc, argv, "--tilelang-pkg-path")) {
+    std::string detectedTilelangPkgPath =
+        detectInstalledTilelangPkgPath(argv[0]);
+    if (!detectedTilelangPkgPath.empty())
+      templateOpts.tilelangPkgPath = detectedTilelangPkgPath;
+  }
+
+  // Daemon mode is default (no CLI option needed)
+  // Automatically start daemon for instance caching
+  if (!templateOpts.tilelangPath.empty()) {
+    std::string socket = daemonSocketPath;
+    if (socket.empty())
+      socket = ptoas::DaemonManager::generateSocketPath();
+
+    // Register cleanup handler (daemon will be stopped on PTOAS exit)
+    ptoas::registerDaemonCleanup();
+
+    // Select the daemon responder module: legacy tilelang or the ptodsl
+    // TileLib.
+    std::string daemonModule = usePTODSLTileLib
+                                   ? "ptodsl.tilelib.serving.daemon"
+                                   : "tilelang_dsl.daemon";
+
+    // Try to start daemon automatically
+    if (ptoas::DaemonManager::start(socket, templateOpts.tilelangPath,
+                                    templateOpts.tilelangPkgPath,
+                                    daemonModule)) {
+      templateOpts.daemonSocketPath = socket;
+      if (usePTODSLTileLib){
+        templateOpts.enableTileLibMetadata = true;
+      }
+      llvm::errs() << "Info: TileLang daemon started successfully\n";
+    } else {
+      if (usePTODSLTileLib){
+        templateOpts.enableTileLibMetadata = true;
+      }
+      // Fallback: daemon failed, use subprocess mode (current approach)
+      templateOpts.daemonSocketPath = "";
+      llvm::errs() << "Warning: Failed to start daemon, using subprocess mode "
+                      "(fallback)\n";
+    }
+  }
+
+  return templateOpts;
 }
 
 static llvm::cl::opt<bool> enableOpFusion(
@@ -464,31 +537,31 @@ static llvm::cl::opt<bool> emitAddPtrTrace(
     llvm::cl::init(false));
 
 llvm::cl::opt<bool> mlir::pto::emitMlirIR(
-    "emit-pto-ir",
-    llvm::cl::desc("Emit PTO IR after lowering instead of C++"),
+    "emit-pto-ir", llvm::cl::desc("Emit PTO IR after lowering instead of C++"),
     llvm::cl::init(false));
 
 llvm::cl::opt<std::string> mlir::pto::ptoTargetArch(
     "pto-arch",
-    llvm::cl::desc("Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
-    llvm::cl::value_desc("a3|a5"),
-    llvm::cl::init("a3"));
+    llvm::cl::desc(
+        "Target Ascend architecture for codegen: a3 or a5 (default: a3)"),
+    llvm::cl::value_desc("a3|a5"), llvm::cl::init("a3"));
 
-static llvm::cl::opt<std::string> ptoBuildLevel(
-    "pto-level",
-    llvm::cl::desc("Build level for pass pipeline: level1, level2, or level3 (default: level2)"),
-    llvm::cl::value_desc("level1|level2|level3"),
-    llvm::cl::init("level2"));
+static llvm::cl::opt<std::string>
+    ptoBuildLevel("pto-level",
+                  llvm::cl::desc("Build level for pass pipeline: level1, "
+                                 "level2, or level3 (default: level2)"),
+                  llvm::cl::value_desc("level1|level2|level3"),
+                  llvm::cl::init("level2"));
 
 llvm::cl::opt<std::string> mlir::pto::ptoBackend(
     "pto-backend",
     llvm::cl::desc("Final PTOAS backend: emitc or vpto (default: emitc)"),
     llvm::cl::value_desc("emitc|vpto"), llvm::cl::init("emitc"));
 
-llvm::cl::opt<bool> mlir::pto::emitVPTO(
-    "emit-vpto",
-    llvm::cl::desc("Write final post-pass VPTO IR to -o"),
-    llvm::cl::init(false));
+llvm::cl::opt<bool>
+    mlir::pto::emitVPTO("emit-vpto",
+                        llvm::cl::desc("Write final post-pass VPTO IR to -o"),
+                        llvm::cl::init(false));
 
 llvm::cl::opt<bool> mlir::pto::emitVPTOLLVMDialect(
     "emit-vpto-llvm-ir",
@@ -502,14 +575,15 @@ static llvm::cl::opt<bool> vptoPrintIR(
 
 static llvm::cl::opt<std::string> vptoLoweringStrategy(
     "vpto-lowering-strategy",
-    llvm::cl::desc("VPTO vector lowering strategy: post-update or no-post-update"),
+    llvm::cl::desc(
+        "VPTO vector lowering strategy: post-update or no-post-update"),
     llvm::cl::value_desc("post-update|no-post-update"),
     llvm::cl::init("post-update"));
 
-static llvm::cl::opt<bool> dumpVPTOIR(
-    "dump-vpto-ir",
-    llvm::cl::desc("Print post-pass VPTO backend IR to stderr"),
-    llvm::cl::init(false));
+static llvm::cl::opt<bool>
+    dumpVPTOIR("dump-vpto-ir",
+               llvm::cl::desc("Print post-pass VPTO backend IR to stderr"),
+               llvm::cl::init(false));
 
 llvm::cl::opt<bool> mlir::pto::ptoPrintSeamIR(
     "pto-print-seam-ir",
@@ -519,8 +593,7 @@ llvm::cl::opt<bool> mlir::pto::ptoPrintSeamIR(
 llvm::cl::opt<std::string> mlir::pto::ptoSeamIRFile(
     "pto-seam-ir-file",
     llvm::cl::desc("Write shared pre-backend seam IR to a file"),
-    llvm::cl::value_desc("path"),
-    llvm::cl::init(""));
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string> mlir::pto::cannOutputVersion(
     "cann-output-version",
@@ -533,9 +606,7 @@ enum class PTOBuildLevel {
   Level3,
 };
 
-static PTOBuildLevel defaultBuildLevel() {
-  return PTOBuildLevel::Level2;
-}
+static PTOBuildLevel defaultBuildLevel() { return PTOBuildLevel::Level2; }
 
 static bool parseBuildLevel(llvm::StringRef levelStr, PTOBuildLevel &out) {
   std::string s = levelStr.str();
@@ -561,7 +632,8 @@ static constexpr llvm::StringLiteral kAutoSyncTailPolicyBarrierAll =
 static constexpr llvm::StringLiteral kAutoSyncTailPolicyMte3ToSEvent0 =
     "setwait_mte3_to_s_event0";
 
-static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normalized) {
+static bool parseAutoSyncTailHint(llvm::StringRef hintStr,
+                                  std::string &normalized) {
   std::string s = hintStr.str();
   for (char &c : s)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -570,8 +642,7 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normaliz
     return true;
   }
   if (s == "mte3-to-s-event0" || s == "mte3_to_s_event0" ||
-      s == "setwait-mte3-to-s-event0" ||
-      s == "setwait_mte3_to_s_event0") {
+      s == "setwait-mte3-to-s-event0" || s == "setwait_mte3_to_s_event0") {
     normalized = kAutoSyncTailPolicyMte3ToSEvent0.str();
     return true;
   }
@@ -741,7 +812,8 @@ static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
                                       llvm::StringRef memberName,
                                       unsigned expectedNumArgs) {
   return rewriteMarkerCalls(
-      cpp, marker, [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
+      cpp, marker,
+      [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
         if (call.args.size() != expectedNumArgs)
           return std::nullopt;
 
@@ -762,15 +834,15 @@ static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
       });
 }
 
-static void rewriteMarkerCallsToMembers(
-    std::string &cpp, llvm::ArrayRef<MarkerRewriteSpec> rewrites) {
+static void
+rewriteMarkerCallsToMembers(std::string &cpp,
+                            llvm::ArrayRef<MarkerRewriteSpec> rewrites) {
   bool changed = true;
   while (changed) {
     changed = false;
     for (const MarkerRewriteSpec &rewrite : rewrites) {
-      changed |= rewriteMarkerCallToMember(cpp, rewrite.marker,
-                                           rewrite.memberName,
-                                           rewrite.expectedNumArgs);
+      changed |= rewriteMarkerCallToMember(
+          cpp, rewrite.marker, rewrite.memberName, rewrite.expectedNumArgs);
     }
   }
 }
@@ -779,7 +851,8 @@ static bool rewriteMarkerCallToField(std::string &cpp, llvm::StringRef marker,
                                      llvm::StringRef fieldName,
                                      size_t expectedNumArgs) {
   return rewriteMarkerCalls(
-      cpp, marker, [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
+      cpp, marker,
+      [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
         if (call.args.size() != expectedNumArgs)
           return std::nullopt;
         if (call.args.empty())
@@ -811,8 +884,8 @@ static void rewriteAsyncEventMarkers(std::string &cpp) {
       {"PTOAS__ASYNC_EVENT_TEST", "Test", 2},
   };
   rewriteMarkerCallsToMembers(cpp, kAsyncEventMarkerRewrites);
-  (void)rewriteMarkerCallToField(cpp, "PTOAS__PREFETCH_CTX_SESSION",
-                                 "session", 1);
+  (void)rewriteMarkerCallToField(cpp, "PTOAS__PREFETCH_CTX_SESSION", "session",
+                                 1);
 }
 
 // --------------------------------------------------------------------------
@@ -847,7 +920,8 @@ static void dropEmptyEmitCExpressions(Operation *rootOp) {
     expr.erase();
 }
 
-static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
+static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder,
+                                                 Type type) {
   if (auto intTy = dyn_cast<IntegerType>(type))
     return builder.getIntegerAttr(intTy, 0);
   if (isa<IndexType>(type))
@@ -884,21 +958,23 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
-      Value tmp =
-          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
-                                            initAttr)
-              .getResult();
+      Value tmp = builder
+                      .create<emitc::VariableOp>(op->getLoc(), value.getType(),
+                                                 initAttr)
+                      .getResult();
       builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
       operand.set(tmp);
     }
   }
 }
 
-static bool rewriteMarkerCallToSubscript(std::string &cpp, llvm::StringRef marker,
+static bool rewriteMarkerCallToSubscript(std::string &cpp,
+                                         llvm::StringRef marker,
                                          unsigned expectedNumArgs,
                                          bool isStore) {
   return rewriteMarkerCalls(
-      cpp, marker, [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
+      cpp, marker,
+      [&](const ParsedMarkerCall &call) -> std::optional<std::string> {
         if (call.args.size() != expectedNumArgs)
           return std::nullopt;
         if (isStore) {
@@ -915,9 +991,8 @@ static void rewriteMarkerCallsToSubscripts(
   while (changed) {
     changed = false;
     for (const MarkerSubscriptRewriteSpec &rewrite : rewrites) {
-      changed |= rewriteMarkerCallToSubscript(cpp, rewrite.marker,
-                                              rewrite.expectedNumArgs,
-                                              rewrite.isStore);
+      changed |= rewriteMarkerCallToSubscript(
+          cpp, rewrite.marker, rewrite.expectedNumArgs, rewrite.isStore);
     }
   }
 }
@@ -966,8 +1041,7 @@ static void appendScalarGMFlush(std::string &out, llvm::StringRef indent) {
 }
 
 static bool stripScalarGMFlushMarkersFromLine(std::string &line) {
-  static constexpr llvm::StringLiteral kMarker =
-      "PTOAS__SCALAR_GM_STORE_FLUSH";
+  static constexpr llvm::StringLiteral kMarker = "PTOAS__SCALAR_GM_STORE_FLUSH";
 
   bool changed = false;
   size_t searchPos = 0;
@@ -1002,8 +1076,9 @@ static bool stripScalarGMFlushMarkersFromLine(std::string &line) {
   return changed;
 }
 
-static bool previousSignificantLineIsTailFlushPoint(
-    llvm::ArrayRef<std::string> lines, size_t index) {
+static bool
+previousSignificantLineIsTailFlushPoint(llvm::ArrayRef<std::string> lines,
+                                        size_t index) {
   for (size_t i = index; i > 0; --i) {
     llvm::StringRef prev = llvm::StringRef(lines[i - 1]).trim();
     if (prev.empty())
@@ -1014,14 +1089,14 @@ static bool previousSignificantLineIsTailFlushPoint(
   return false;
 }
 
-static bool previousSignificantLineIsExitOrTailFlushPoint(
-    llvm::ArrayRef<std::string> lines, size_t index) {
+static bool
+previousSignificantLineIsExitOrTailFlushPoint(llvm::ArrayRef<std::string> lines,
+                                              size_t index) {
   for (size_t i = index; i > 0; --i) {
     llvm::StringRef prev = llvm::StringRef(lines[i - 1]).trim();
     if (prev.empty())
       continue;
-    return prev.starts_with("return") ||
-           prev.starts_with("#endif // __DAV_") ||
+    return prev.starts_with("return") || prev.starts_with("#endif // __DAV_") ||
            prev.starts_with("ptoas_auto_sync_tail(");
   }
   return false;
@@ -1105,7 +1180,7 @@ static void rewriteScalarGMStoreFlushMarkers(std::string &cpp) {
 
   auto flushFunction = [&](bool hasTrailingNewline) {
     out.append(rewriteScalarGMStoreFlushMarkersInFunction(functionLines,
-                                                         hasTrailingNewline));
+                                                          hasTrailingNewline));
     functionLines.clear();
     inFunction = false;
     sawFunctionBrace = false;
@@ -1359,8 +1434,7 @@ static bool isLiteralInitializer(llvm::StringRef rhs) {
       R"(^[+-]?(([0-9]+\.[0-9]*|\.[0-9]+|[0-9]+)([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+)[fF]?$)");
   static const llvm::Regex kHexFloatLiteral(
       R"(^[+-]?0[xX]([0-9A-Fa-f]+\.[0-9A-Fa-f]*|[0-9A-Fa-f]+|\.[0-9A-Fa-f]+)[pP][+-]?[0-9]+[fF]?$)");
-  static const llvm::Regex kSpecialFloatLiteral(
-      R"(^[+-]?(nan|inf)[fF]?$)");
+  static const llvm::Regex kSpecialFloatLiteral(R"(^[+-]?(nan|inf)[fF]?$)");
 
   return kIntLiteral.match(rhs) || kFloatLiteral.match(rhs) ||
          kHexFloatLiteral.match(rhs) || kSpecialFloatLiteral.match(rhs);
@@ -1383,8 +1457,8 @@ static bool parseConstantDeclarationLine(llvm::StringRef line,
                                          ConstantDeclCandidate &candidate,
                                          std::string &valueName) {
   llvm::StringRef trimmed = line.trim();
-  if (trimmed.empty() || trimmed.starts_with("#") || trimmed.starts_with("//") ||
-      !trimmed.ends_with(";"))
+  if (trimmed.empty() || trimmed.starts_with("#") ||
+      trimmed.starts_with("//") || !trimmed.ends_with(";"))
     return false;
 
   llvm::StringRef body = trimmed.drop_back().rtrim();
@@ -1433,8 +1507,8 @@ static bool parseGeneratedValueAssignment(llvm::StringRef line,
                                           llvm::StringRef &valueName,
                                           llvm::StringRef &rhs) {
   llvm::StringRef trimmed = line.trim();
-  if (trimmed.empty() || trimmed.starts_with("#") || trimmed.starts_with("//") ||
-      !trimmed.ends_with(";"))
+  if (trimmed.empty() || trimmed.starts_with("#") ||
+      trimmed.starts_with("//") || !trimmed.ends_with(";"))
     return false;
 
   llvm::StringRef body = trimmed.drop_back().rtrim();
@@ -1539,7 +1613,9 @@ static void rewriteScalarConstantDecls(std::string &cpp) {
 }
 
 static bool shouldDeclareVariablesAtTop(ModuleOp module) {
-  auto hasMultiBlockFunc = [](auto func) { return func.getBlocks().size() > 1; };
+  auto hasMultiBlockFunc = [](auto func) {
+    return func.getBlocks().size() > 1;
+  };
   return llvm::any_of(module.getOps<func::FuncOp>(), hasMultiBlockFunc) ||
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
@@ -1557,8 +1633,7 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addPass(pto::createVPTOPtrNormalizePass());
   kernelModulePM.addPass(pto::createVPTOPtrCastCleanupPass());
   kernelModulePM.addPass(createReconcileUnrealizedCastsPass());
-  kernelModulePM.addNestedPass<func::FuncOp>(
-      createVPTOExpandWrapperOpsPass());
+  kernelModulePM.addNestedPass<func::FuncOp>(createVPTOExpandWrapperOpsPass());
   kernelModulePM.addPass(createCSEPass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTOInferVPTOVecScopePass());
@@ -1640,11 +1715,9 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
     }
   }
 
-  if (failed(
-          pto::lowerVPTOModuleToLLVMModules(module, options,
-                                            result.vptoCubeModule,
-                                            result.vptoVectorModule,
-                                            llvm::errs()))) {
+  if (failed(pto::lowerVPTOModuleToLLVMModules(
+          module, options, result.vptoCubeModule, result.vptoVectorModule,
+          llvm::errs()))) {
     llvm::errs() << "Error: Failed to lower VPTO to LLVM modules.\n";
     return 1;
   }
@@ -1674,10 +1747,11 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   return success();
 }
 
-int mlir::pto::compilePTOASModule(
-    OwningOpRef<ModuleOp> &module, PTOASContext &context,
-    PTOBackend effectiveBackend, PTOASCompileResult &result,
-    bool emitVPTOHostStub) {
+int mlir::pto::compilePTOASModule(OwningOpRef<ModuleOp> &module,
+                                  PTOASContext &context,
+                                  PTOBackend effectiveBackend,
+                                  PTOASCompileResult &result,
+                                  bool emitVPTOHostStub) {
   result.reset();
   llvm::StringRef arch = context.getArch();
   int argc = context.getArgc();
@@ -1713,8 +1787,7 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool enableA5FusionPath =
-      enableOpFusion && arch == "a5" &&
-      effectiveLevel != PTOBuildLevel::Level1;
+      enableOpFusion && arch == "a5" && effectiveLevel != PTOBuildLevel::Level1;
   const bool enableA5EmitCFusionPath =
       enableA5FusionPath && effectiveBackend == PTOBackend::EmitC;
   const bool enableA5VPTOFusionPath =
@@ -1796,8 +1869,8 @@ int mlir::pto::compilePTOASModule(
     bool hasAddr = false;
     module->walk([&](pto::AllocTileOp op) {
       if (op.getAddr()) {
-        op.emitError(
-            "unexpected 'addr' operand: only supported when --pto-level=level3");
+        op.emitError("unexpected 'addr' operand: only supported when "
+                     "--pto-level=level3");
         hasAddr = true;
       }
     });
@@ -1847,7 +1920,7 @@ int mlir::pto::compilePTOASModule(
       pto::createPTOAssignDefaultFrontendPipeIdPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOLowerFrontendPipeOpsPass());
-  //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
   if (!disableInferLayout)
@@ -1872,6 +1945,9 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
   } else if (enableA5VPTOFusionPath) {
+    pto::PTOAddTemplateAttributePassOptions templateOpts =
+        resolveTemplateAttributeOptions(argc, argv);
+    pm.addPass(pto::createPTOAddTemplateAttributePass(templateOpts));
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createFusionPlanPass(fusionPlanOpts));
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
@@ -1936,8 +2012,8 @@ int mlir::pto::compilePTOASModule(
   if (failed(applyConfiguredPassManagerCLOptions(pm, "main PTOAS pipeline")))
     return 1;
 
-  module->getOperation()->setAttr("pto.target_arch",
-                                  mlir::StringAttr::get(module->getContext(), arch));
+  module->getOperation()->setAttr(
+      "pto.target_arch", mlir::StringAttr::get(module->getContext(), arch));
 
   if (effectiveBackend == PTOBackend::VPTO) {
     if (failed(pm.run(*module))) {
@@ -1974,7 +2050,8 @@ int mlir::pto::compilePTOASModule(
   dropEmptyEmitCExpressions(module.get());
   materializeControlFlowOperands(module.get());
   if (failed(reorderEmitCFunctions(module.get()))) {
-    llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
+    llvm::errs()
+        << "Error: Failed to order emitted functions for C++ emission.\n";
     return 1;
   }
 
@@ -1985,8 +2062,9 @@ int mlir::pto::compilePTOASModule(
   // multiple blocks, requiring variables to be declared at the top for valid
   // C++ emission.
   bool declareVariablesAtTop = shouldDeclareVariablesAtTop(*module);
-  if (failed(emitc::translateToCpp(*module, cppOS,
-                                  /*declareVariablesAtTop=*/declareVariablesAtTop))) {
+  if (failed(emitc::translateToCpp(
+          *module, cppOS,
+          /*declareVariablesAtTop=*/declareVariablesAtTop))) {
     llvm::errs() << "Error: Failed to emit C++.\n";
     return 1;
   }
