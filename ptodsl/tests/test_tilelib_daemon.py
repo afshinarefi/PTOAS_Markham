@@ -40,6 +40,7 @@ def _tile_spec(dtype="f32"):
 
 # operand order matches `pto.tadd ins(src0, src1) outs(dst)` == template params (src0, src1, dst).
 TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
+TADD_2D_NO_POST_UPDATE = "template_tadd_2d_no_post_update"
 
 
 class TileLibDaemonTest(unittest.TestCase):
@@ -62,7 +63,7 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_instantiate_tadd_returns_structured_mlir(self):
         mlir = self.client.instantiate(
-            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE
         )
         for op in ("pto.tile_buf_addr", "memref.subview", "pto.vlds", "pto.vadd",
                    "pto.vsts", "pto.plt_b32", "pto.tilelang.instance"):
@@ -75,23 +76,23 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_instantiate_can_render_2d_no_post_update_tadd(self):
         mlir = self.client.instantiate(
-            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE
         )
-        self.assertIn("func.func @template_tadd", mlir)
+        self.assertIn(f"func.func @{TADD_2D_NO_POST_UPDATE}", mlir)
 
     def test_get_metadata_returns_legal_candidates(self):
         metadata = self.client.get_metadata("a5", "pto.tadd", TADD_OPERANDS)
         candidates = metadata["candidates"]
         self.assertEqual(set(candidates), {
-            "template_tadd",
+            TADD_2D_NO_POST_UPDATE,
             "template_tadd_1d_no_post_update",
             "template_tadd_2d_post_update",
             "template_tadd_1d_post_update",
         })
-        self.assertEqual(candidates["template_tadd"]["loop_depth"], 2)
-        self.assertEqual(candidates["template_tadd"]["Tail"], {"callable": "has_tail"})
-        self.assertFalse(candidates["template_tadd"]["is_post_update"])
-        self.assertEqual(candidates["template_tadd"]["tags"], ["binop", "2d", "no_post_update"])
+        self.assertEqual(candidates[TADD_2D_NO_POST_UPDATE]["loop_depth"], 2)
+        self.assertEqual(candidates[TADD_2D_NO_POST_UPDATE]["Tail"], {"callable": "has_tail"})
+        self.assertFalse(candidates[TADD_2D_NO_POST_UPDATE]["is_post_update"])
+        self.assertEqual(candidates[TADD_2D_NO_POST_UPDATE]["tags"], ["binop", "2d", "no_post_update"])
         self.assertEqual(candidates["template_tadd_1d_no_post_update"]["loop_depth"], 1)
         self.assertEqual(candidates["template_tadd_1d_no_post_update"]["Tail"], {"callable": "has_tail"})
         self.assertTrue(candidates["template_tadd_2d_post_update"]["is_post_update"])
@@ -101,13 +102,13 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_instantiate_can_render_named_candidate(self):
         mlir = self.client.instantiate(
-            "a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd"
+            "a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE
         )
-        self.assertIn("func.func @template_tadd", mlir)
+        self.assertIn(f"func.func @{TADD_2D_NO_POST_UPDATE}", mlir)
 
     def test_cache_hit_on_repeat(self):
-        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd")
-        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id="template_tadd")
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE)
+        self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE)
         self.assertEqual(self.server.stats["misses"], 1)
         self.assertEqual(self.server.stats["hits"], 1)
 
