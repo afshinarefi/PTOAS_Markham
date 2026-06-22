@@ -524,6 +524,11 @@ static llvm::cl::opt<bool> enableShapeInference(
     llvm::cl::desc("Enable shape inference (ShapeConstraintSolver) for A5 tile "
                   "fusion. Off by default: falls back to static/direct-bound "
                   "iteration-domain inference."),
+
+static llvm::cl::opt<bool> enableFusionVersionSelection(
+    "enable-fusion-version-selection",
+    llvm::cl::desc(
+        "Enable implementation-aware FusionPlan version selection"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<bool> disableInferLayout(
@@ -1928,7 +1933,6 @@ int mlir::pto::compilePTOASModule(OwningOpRef<ModuleOp> &module,
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOValidateIntToPtrUsesPass());
-
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
   // The shape-inference switch drives FusionPlan only: that is where the
@@ -1939,17 +1943,24 @@ int mlir::pto::compilePTOASModule(OwningOpRef<ModuleOp> &module,
   // so it takes no option here.
   pto::FusionPlanOptions fusionPlanOpts;
   fusionPlanOpts.enableShapeInference = enableShapeInference;
+  auto addFusionPlan = [&]() {
+    if (enableFusionVersionSelection) {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createFusionPlanVersionSelectionPass());
+    } else {
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createFusionPlanPass(fusionPlanOpts));
+    }
+  };
   if (enableA5EmitCFusionPath) {
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createFusionPlanPass(fusionPlanOpts));
+    addFusionPlan();
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());
   } else if (enableA5VPTOFusionPath) {
     pto::PTOAddTemplateAttributePassOptions templateOpts =
         resolveTemplateAttributeOptions(argc, argv);
     pm.addPass(pto::createPTOAddTemplateAttributePass(templateOpts));
-    pm.addNestedPass<mlir::func::FuncOp>(
-        pto::createFusionPlanPass(fusionPlanOpts));
+    addFusionPlan();
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }

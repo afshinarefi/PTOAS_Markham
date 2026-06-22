@@ -240,6 +240,14 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
   ];
 }
 
+def FusionPlanVersionSelection
+    : Pass<"pto-fusion-plan-version-selection", "func::FuncOp"> {
+  let summary = "Build fusion groups and select TileOp versions";
+  let constructor =
+      "mlir::pto::createFusionPlanVersionSelectionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
 def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
   let summary = "Compact planned fusion groups into block-local contiguous spans";
   let description = [{

@@ -82,6 +82,7 @@ std::unique_ptr<Pass> createPrintPreFusionAnalysisPass();
 std::unique_ptr<Pass> createFusionPlanPass();
 std::unique_ptr<Pass>
 createFusionPlanPass(const FusionPlanOptions &options);
+std::unique_ptr<Pass> createFusionPlanVersionSelectionPass();
 std::unique_ptr<Pass> createOpSchedulingPass();
 std::unique_ptr<Pass> createPTOMarkLastUsePass();
 std::unique_ptr<Pass> createPTOFusionRegionGenPass();
