@@ -18,7 +18,7 @@ from __future__ import annotations
 
 # Engine control-flow surface (target of the AST rewrite).
 from .._control_flow import const_expr, for_, if_, static_range, vecscope, yield_
-from .._surface_types import Tile
+from .._surface_types import PostUpdate, Tile
 from .. import _ops
 from .._types import _resolve
 
@@ -33,9 +33,20 @@ def make_mask(dtype, value):
     return _ops.make_mask(dtype, value)
 
 
-def vlds(tile_slice):
-    """``pto.vlds`` from a ``tile[row, col:]`` slice."""
-    return _ops.vlds(tile_slice)
+def addptr(base_ptr, index_offset):
+    """``pto.addptr`` – advance a pointer by an element offset."""
+    return _ops.addptr(base_ptr, index_offset)
+
+
+def vlds(src_ptr, offset=None, result_vreg_type=None, *, dist=None, post_update=PostUpdate.OFF):
+    """``pto.vlds`` from a tile slice or pointer."""
+    return _ops.vlds(
+        src_ptr,
+        offset,
+        result_vreg_type,
+        dist=dist,
+        post_update=post_update,
+    )
 
 
 def vadd(lhs, rhs, mask):
@@ -68,9 +79,9 @@ def vdiv(lhs, rhs, mask):
     return _ops.vdiv(lhs, rhs, mask)
 
 
-def vsts(vec, tile_slice, mask):
-    """``pto.vsts`` to a ``tile[row, col:]`` slice."""
-    return _ops.vsts(vec, tile_slice, mask)
+def vsts(vec, dst_ptr, offset, mask=None, *, dist=None, post_update=PostUpdate.OFF):
+    """``pto.vsts`` to a tile slice or pointer."""
+    return _ops.vsts(vec, dst_ptr, offset, mask, dist=dist, post_update=post_update)
 
 
 __all__ = [
@@ -83,6 +94,8 @@ __all__ = [
     "vecscope",
     "get_lanes",
     "make_mask",
+    "addptr",
+    "PostUpdate",
     "vlds",
     "vadd",
     "vsub",
