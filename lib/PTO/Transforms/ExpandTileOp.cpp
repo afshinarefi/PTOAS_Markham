@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 //===- ExpandTileOp.cpp ---------------------------------------------------===//
 //===----------------------------------------------------------------------===//
@@ -38,18 +40,18 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/FileSystem.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -69,10 +71,10 @@ using namespace mlir;
 
 namespace mlir {
 namespace pto {
-  namespace func = ::mlir::func;
+namespace func = ::mlir::func;
 
-  #define GEN_PASS_DEF_EXPANDTILEOP
-  #include "PTO/Transforms/Passes.h.inc"
+#define GEN_PASS_DEF_EXPANDTILEOP
+#include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
 
@@ -103,7 +105,8 @@ struct OperandTypeInfo {
   // --- Tile-only (TileBufType) ---
   SmallVector<int64_t, 2> tileShape;
   SmallVector<int64_t, 2> tileValidShape;
-  std::string tileMemorySpace; // e.g. "ub", "gm", "mat", "left", "right", "acc", "bias"
+  std::string
+      tileMemorySpace; // e.g. "ub", "gm", "mat", "left", "right", "acc", "bias"
   int32_t blayout = 0;
   int32_t slayout = 0;
   int32_t fractal = 0;
@@ -128,9 +131,8 @@ struct OperandTypeInfo {
     if (kind == OperandKind::Tile)
       return tileShape == rhs.tileShape &&
              tileValidShape == rhs.tileValidShape &&
-             tileMemorySpace == rhs.tileMemorySpace &&
-             blayout == rhs.blayout && slayout == rhs.slayout &&
-             fractal == rhs.fractal && pad == rhs.pad;
+             tileMemorySpace == rhs.tileMemorySpace && blayout == rhs.blayout &&
+             slayout == rhs.slayout && fractal == rhs.fractal && pad == rhs.pad;
     if (kind == OperandKind::Vector)
       return vectorShape == rhs.vectorShape;
     if (kind == OperandKind::Scalar)
@@ -165,8 +167,8 @@ struct SpecKeyInfo : public llvm::DenseMapInfo<SpecKey> {
     for (const auto &op : key.operands) {
       h = llvm::hash_combine(h, static_cast<int>(op.kind), op.dtype);
       if (op.kind == OperandKind::Tile) {
-        h = llvm::hash_combine(h, op.tileMemorySpace, op.blayout,
-                               op.slayout, op.fractal, op.pad);
+        h = llvm::hash_combine(h, op.tileMemorySpace, op.blayout, op.slayout,
+                               op.fractal, op.pad);
         for (int64_t d : op.tileShape)
           h = llvm::hash_combine(h, d);
         for (int64_t d : op.tileValidShape)
@@ -213,28 +215,50 @@ static constexpr llvm::StringLiteral kTileLibSelectedTemplateAttr =
 // Helpers
 // ============================================================================
 static std::string getDtypeString(Type elemTy) {
-  if (elemTy.isIndex()) return "i32";
-  if (elemTy.isInteger(1)) return "i1";
-  if (elemTy.isF32()) return "f32";
-  if (elemTy.isF16()) return "f16";
-  if (elemTy.isBF16()) return "bf16";
-  if (elemTy.isFloat8E4M3FN()) return "f8e4m3";
-  if (elemTy.isFloat8E5M2()) return "f8e5m2";
-  if (isa<pto::HiF8Type>(elemTy)) return "hif8";
-  if (isa<pto::F4E1M2x2Type>(elemTy)) return "f4e1m2x2";
-  if (isa<pto::F4E2M1x2Type>(elemTy)) return "f4e2m1x2";
-  if (elemTy.isUnsignedInteger(64)) return "ui64";
-  if (elemTy.isUnsignedInteger(32)) return "ui32";
-  if (elemTy.isUnsignedInteger(16)) return "ui16";
-  if (elemTy.isUnsignedInteger(8)) return "ui8";
-  if (elemTy.isSignedInteger(64)) return "si64";
-  if (elemTy.isSignedInteger(32)) return "si32";
-  if (elemTy.isSignedInteger(16)) return "si16";
-  if (elemTy.isSignedInteger(8)) return "si8";
-  if (elemTy.isSignlessInteger(64)) return "i64";
-  if (elemTy.isSignlessInteger(32)) return "i32";
-  if (elemTy.isSignlessInteger(16)) return "i16";
-  if (elemTy.isSignlessInteger(8)) return "i8";
+  if (elemTy.isIndex())
+    return "i32";
+  if (elemTy.isInteger(1))
+    return "i1";
+  if (elemTy.isF32())
+    return "f32";
+  if (elemTy.isF16())
+    return "f16";
+  if (elemTy.isBF16())
+    return "bf16";
+  if (elemTy.isFloat8E4M3FN())
+    return "f8e4m3";
+  if (elemTy.isFloat8E5M2())
+    return "f8e5m2";
+  if (isa<pto::HiF8Type>(elemTy))
+    return "hif8";
+  if (isa<pto::F4E1M2x2Type>(elemTy))
+    return "f4e1m2x2";
+  if (isa<pto::F4E2M1x2Type>(elemTy))
+    return "f4e2m1x2";
+  if (elemTy.isUnsignedInteger(64))
+    return "ui64";
+  if (elemTy.isUnsignedInteger(32))
+    return "ui32";
+  if (elemTy.isUnsignedInteger(16))
+    return "ui16";
+  if (elemTy.isUnsignedInteger(8))
+    return "ui8";
+  if (elemTy.isSignedInteger(64))
+    return "si64";
+  if (elemTy.isSignedInteger(32))
+    return "si32";
+  if (elemTy.isSignedInteger(16))
+    return "si16";
+  if (elemTy.isSignedInteger(8))
+    return "si8";
+  if (elemTy.isSignlessInteger(64))
+    return "i64";
+  if (elemTy.isSignlessInteger(32))
+    return "i32";
+  if (elemTy.isSignlessInteger(16))
+    return "i16";
+  if (elemTy.isSignlessInteger(8))
+    return "i8";
   return "";
 }
 
@@ -440,22 +464,15 @@ static StringRef getPrecisionTypeString(pto::SqrtPrecision precision) {
 // behavior.
 static const llvm::StringSet<> &highPrecisionImplementedOps() {
   static const llvm::StringSet<> kImplementedOps{
-    "pto.tlog",
-    "pto.tdiv",
-    "pto.tdivs",
-    "pto.trecip",
-    "pto.trowexpanddiv",
-    "pto.tcolexpanddiv",
-    "pto.texp",
-    "pto.tsqrt",
+      "pto.tlog",          "pto.tdiv",          "pto.tdivs", "pto.trecip",
+      "pto.trowexpanddiv", "pto.tcolexpanddiv", "pto.texp",  "pto.tsqrt",
   };
   return kImplementedOps;
 }
 
 template <typename OpT, typename PrecisionT>
 static bool tryAppendPrecisionType(
-    Operation *op,
-    SmallVectorImpl<std::pair<std::string, std::string>> &attrs,
+    Operation *op, SmallVectorImpl<std::pair<std::string, std::string>> &attrs,
     PrecisionT highPrecision) {
   auto typed = dyn_cast<OpT>(op);
   if (!typed)
@@ -560,8 +577,9 @@ static void recordStaticSizes(ArrayRef<OpFoldResult> inputs,
     out.push_back(getStaticIntOrDynamic(ofr));
 }
 
-static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
-                                                  ArrayRef<OpFoldResult> steps) {
+static SmallVector<int64_t>
+combineSubviewStrides(ArrayRef<int64_t> baseStrides,
+                      ArrayRef<OpFoldResult> steps) {
   SmallVector<int64_t> result;
   result.reserve(baseStrides.size());
   for (auto [baseStride, step] : llvm::zip(baseStrides, steps)) {
@@ -634,16 +652,18 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     info.tileShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
     auto validShape = tbTy.getValidShape();
     if (validShape.empty())
-      info.tileValidShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
+      info.tileValidShape.assign(tbTy.getShape().begin(),
+                                 tbTy.getShape().end());
     else
       info.tileValidShape.assign(validShape.begin(), validShape.end());
     info.tileMemorySpace = getMemorySpaceString(tbTy);
     if (auto config = tbTy.getConfigAttr()) {
       info.blayout = static_cast<int32_t>(config.getBLayout().getValue());
       info.slayout = static_cast<int32_t>(config.getSLayout().getValue());
-      info.fractal = config.getSFractalSize()
-                         ? static_cast<int32_t>(config.getSFractalSize().getInt())
-                         : 0;
+      info.fractal =
+          config.getSFractalSize()
+              ? static_cast<int32_t>(config.getSFractalSize().getInt())
+              : 0;
       info.pad = static_cast<uint64_t>(config.getPad().getValue());
     }
     return info;
@@ -715,7 +735,7 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
 // ExpandState: runtime state for a single pass invocation.
 // ============================================================================
 struct ExpandState {
-  std::vector<OwningOpRef<ModuleOp>> parsedModules;  // Keep parsed modules alive
+  std::vector<OwningOpRef<ModuleOp>> parsedModules; // Keep parsed modules alive
 
   std::string tilelangPath;
   std::string tilelangPkgPath;
@@ -725,11 +745,11 @@ struct ExpandState {
   bool enableTileLibMetadata = false;
 
   func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
-                                  ModuleOp mod, MLIRContext *ctx,
-                                  StringRef candidateId = {});
+                                 ModuleOp mod, MLIRContext *ctx,
+                                 StringRef candidateId = {});
   func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
-                                     ModuleOp mod, MLIRContext *ctx,
-                                     StringRef candidateId = {});
+                                    ModuleOp mod, MLIRContext *ctx,
+                                    StringRef candidateId = {});
   std::optional<TileLibMetadataResult> invokeTileLibMetadata(const SpecKey &key,
                                                              Operation *tileOp);
 
@@ -905,13 +925,15 @@ selectCandidateFromMetadata(StringRef metadataJson) {
 
   llvm::json::Object *root = parsed->getAsObject();
   if (!root) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata response is not a JSON object\n";
+    llvm::errs()
+        << "ExpandTileOp: TileLib metadata response is not a JSON object\n";
     return std::nullopt;
   }
 
   llvm::json::Object *candidates = root->getObject("candidates");
   if (!candidates || candidates->empty()) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
+    llvm::errs()
+        << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
     return std::nullopt;
   }
 
@@ -937,7 +959,8 @@ selectCandidateFromMetadata(StringRef metadataJson) {
   }
 
   if (choices.empty()) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata response has no selectable candidates\n";
+    llvm::errs() << "ExpandTileOp: TileLib metadata response has no selectable "
+                    "candidates\n";
     return std::nullopt;
   }
 
@@ -981,20 +1004,19 @@ ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
   int tmpFD;
   if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_metadata", "json",
                                                    tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
+    llvm::errs() << "ExpandTileOp: cannot create temp file: " << ec.message()
+                 << "\n";
     return std::nullopt;
   }
   ::close(tmpFD);
 
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", daemonHelperModule,
-      "--method", "get_metadata",
-      "--socket", daemonSocketPath,
-      "--target", key.targetArch,
-      "--op", opName,
-      "--operand-specs", operandSpecsJson,
+      *pythonPath,      "-m",           daemonHelperModule,
+      "--method",       "get_metadata", "--socket",
+      daemonSocketPath, "--target",     key.targetArch,
+      "--op",           opName,         "--operand-specs",
+      operandSpecsJson,
   };
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
@@ -1059,8 +1081,8 @@ ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
 // Invoke Python DSL daemon RPC to generate a specialized template function.
 // ============================================================================
 func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
-                                               Operation *tileOp,
-                                               ModuleOp mod, MLIRContext *ctx,
+                                               Operation *tileOp, ModuleOp mod,
+                                               MLIRContext *ctx,
                                                StringRef candidateId) {
   // 1. Locate the Python executable.
   auto pythonPath = llvm::sys::findProgramByName(pythonExe);
@@ -1081,9 +1103,9 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   SmallString<128> tmpPath;
   int tmpFD;
   if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_daemon", "mlir",
-                                                     tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
+                                                   tmpFD, tmpPath)) {
+    llvm::errs() << "ExpandTileOp: cannot create temp file: " << ec.message()
+                 << "\n";
     return nullptr;
   }
   ::close(tmpFD);
@@ -1091,11 +1113,17 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   // 4. Build command args for daemon helper.
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", daemonHelperModule,
-      "--socket",      daemonSocketPath,
-      "--target",      key.targetArch,
-      "--op",          opName,
-      "--operand-specs", operandSpecsJson,
+      *pythonPath,
+      "-m",
+      daemonHelperModule,
+      "--socket",
+      daemonSocketPath,
+      "--target",
+      key.targetArch,
+      "--op",
+      opName,
+      "--operand-specs",
+      operandSpecsJson,
   };
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
@@ -1199,10 +1227,11 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
     newNameStorage.push_back(newName);
     renamedSymbols[fn.getSymName()] = newNameStorage.back();
     cloned.setName(newNameStorage.back());
-    
-    // Set visibility to Private for template functions (required for inline pass)
+
+    // Set visibility to Private for template functions (required for inline
+    // pass)
     cloned.setVisibility(SymbolTable::Visibility::Private);
-    
+
     clonedFuncs.push_back(cloned);
   }
 
@@ -1235,9 +1264,9 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
 // Invoke Python DSL helper to generate a specialized template function.
 // ============================================================================
 func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
-                                              Operation *tileOp,
-                                              ModuleOp mod, MLIRContext *ctx,
-                                              StringRef candidateId) {
+                                            Operation *tileOp, ModuleOp mod,
+                                            MLIRContext *ctx,
+                                            StringRef candidateId) {
   // Try daemon first if daemon socket path is provided.
   if (!daemonSocketPath.empty()) {
     func::FuncOp daemonResult =
@@ -1251,7 +1280,8 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
       return nullptr;
     }
     // Daemon failed, fall back to subprocess mode.
-    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
+    llvm::errs()
+        << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
   }
 
   // 1. Locate the Python executable.
@@ -1273,9 +1303,9 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   SmallString<128> tmpPath;
   int tmpFD;
   if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_expand", "mlir",
-                                                     tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
+                                                   tmpFD, tmpPath)) {
+    llvm::errs() << "ExpandTileOp: cannot create temp file: " << ec.message()
+                 << "\n";
     return nullptr;
   }
   ::close(tmpFD);
@@ -1283,11 +1313,17 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   // 4. Build command args.
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.expand_helper",
-      "--template-dir", tilelangPath,
-      "--target",       key.targetArch,
-      "--op",           opName,
-      "--operand-specs", operandSpecsJson,
+      *pythonPath,
+      "-m",
+      "tilelang_dsl.expand_helper",
+      "--template-dir",
+      tilelangPath,
+      "--target",
+      key.targetArch,
+      "--op",
+      opName,
+      "--operand-specs",
+      operandSpecsJson,
   };
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
@@ -1399,7 +1435,8 @@ func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
   SymbolTable targetSymTable(mod);
   if (auto existingFunc = targetSymTable.lookup(uniqueName)) {
     // Function already exists, return it directly (avoid redefinition)
-    llvm::errs() << "ExpandTileOp: reuse existing function @" << uniqueName << "\n";
+    llvm::errs() << "ExpandTileOp: reuse existing function @" << uniqueName
+                 << "\n";
     return cast<func::FuncOp>(existingFunc);
   }
 
@@ -1475,8 +1512,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     for (auto *op : tileOps) {
       auto specKeyOpt = buildSpecKey(op);
       if (!specKeyOpt) {
-        op->emitError(
-            "ExpandTileOp: cannot build specialization key for this operand schema");
+        op->emitError("ExpandTileOp: cannot build specialization key for this "
+                      "operand schema");
         return failure();
       }
 
@@ -1500,7 +1537,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     for (auto *op : tileOps) {
       auto metadataAttr = op->getAttrOfType<StringAttr>(kTileLibMetadataAttr);
       if (!metadataAttr) {
-        op->emitError("ExpandTileOp: missing TileLib metadata for version selection");
+        op->emitError(
+            "ExpandTileOp: missing TileLib metadata for version selection");
         return failure();
       }
 
@@ -1522,8 +1560,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   for (auto *op : tileOps) {
     auto specKeyOpt = buildSpecKey(op);
     if (!specKeyOpt) {
-      op->emitError(
-          "ExpandTileOp: cannot build specialization key for this operand schema");
+      op->emitError("ExpandTileOp: cannot build specialization key for this "
+                    "operand schema");
       return failure();
     }
 
@@ -1532,13 +1570,16 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
             op->getAttrOfType<StringAttr>(kTileLibSelectedTemplateAttr))
       selectedTemplate = selectedAttr.getValue();
 
+    llvm::outs() << "Expand Tile Op Selected" << "\n";
+    llvm::outs() << selectedTemplate << "\n";
     // Invoke tilelang DSL (with caching).
     func::FuncOp dslFn =
         invokeTilelangDSL(*specKeyOpt, op, mod, ctx, selectedTemplate);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
-      op->emitError("ExpandTileOp: failed to instantiate tilelang template for " +
-                    opName);
+      op->emitError(
+          "ExpandTileOp: failed to instantiate tilelang template for " +
+          opName);
       return failure();
     }
 
@@ -1552,8 +1593,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     for (unsigned i = 0; i < op->getNumOperands(); ++i) {
       Value operand = op->getOperand(i);
       if (i < fnArgTypes.size() && operand.getType() != fnArgTypes[i]) {
-        operand = bridgeOperandToType(builder, op->getLoc(), operand,
-                                      fnArgTypes[i]);
+        operand =
+            bridgeOperandToType(builder, op->getLoc(), operand, fnArgTypes[i]);
       }
       operands.push_back(operand);
     }

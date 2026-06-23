@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 #include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
@@ -138,9 +140,9 @@ static bool isCurrentlyPlannableOp(StringRef opName) {
       .Default(false);
 }
 
-static bool isProvenIterationDomain(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &node) {
+static bool
+isProvenIterationDomain(const pto::FusionBlockAnalysis &blockAnalysis,
+                        const pto::FusionComputeNode &node) {
   if (node.iterationDomainClass >= blockAnalysis.iterationDomainClasses.size())
     return false;
   return blockAnalysis.iterationDomainClasses[node.iterationDomainClass]
@@ -149,10 +151,8 @@ static bool isProvenIterationDomain(
 
 static bool hasHardBoundaryBetween(const pto::FusionComputeNode &a,
                                    const pto::FusionComputeNode &b) {
-  const pto::FusionComputeNode &earlier =
-      a.blockOrder < b.blockOrder ? a : b;
-  const pto::FusionComputeNode &later =
-      a.blockOrder < b.blockOrder ? b : a;
+  const pto::FusionComputeNode &earlier = a.blockOrder < b.blockOrder ? a : b;
+  const pto::FusionComputeNode &later = a.blockOrder < b.blockOrder ? b : a;
 
   Operation *cursor = earlier.op->getNextNode();
   while (cursor && cursor != later.op) {
@@ -164,19 +164,18 @@ static bool hasHardBoundaryBetween(const pto::FusionComputeNode &a,
   return false;
 }
 
-static bool hasHardBoundaryToGroup(
-    ArrayRef<const pto::FusionComputeNode *> group,
-    const pto::FusionComputeNode &candidate) {
+static bool
+hasHardBoundaryToGroup(ArrayRef<const pto::FusionComputeNode *> group,
+                       const pto::FusionComputeNode &candidate) {
   for (const pto::FusionComputeNode *member : group)
     if (hasHardBoundaryBetween(*member, candidate))
       return true;
   return false;
 }
 
-static bool dependsOnPreviousNode(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &previous,
-    const pto::FusionComputeNode &current) {
+static bool dependsOnPreviousNode(const pto::FusionBlockAnalysis &blockAnalysis,
+                                  const pto::FusionComputeNode &previous,
+                                  const pto::FusionComputeNode &current) {
   for (unsigned edgeId : current.incomingEdges) {
     if (edgeId >= blockAnalysis.edges.size())
       continue;
@@ -205,8 +204,7 @@ buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
 }
 
 static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
-                                      MLIRContext *ctx,
-                                      int64_t &nextGroupId) {
+                                      MLIRContext *ctx, int64_t &nextGroupId) {
   SmallVector<const PlannedFusionGroup *, 8> orderedGroups;
   orderedGroups.reserve(groups.size());
   for (const PlannedFusionGroup &group : groups)
@@ -228,10 +226,9 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
     for (auto [order, node] : llvm::enumerate(stableOrder)) {
       node->op->setAttr(kFusionGroupIdAttr,
                         IntegerAttr::get(IntegerType::get(ctx, 64), groupId));
-      node->op->setAttr(
-          kFusionOrderAttr,
-          IntegerAttr::get(IntegerType::get(ctx, 64),
-                           static_cast<int64_t>(order)));
+      node->op->setAttr(kFusionOrderAttr,
+                        IntegerAttr::get(IntegerType::get(ctx, 64),
+                                         static_cast<int64_t>(order)));
 
       if (!group->implementation || node->semantics.versions.empty())
         continue;
@@ -283,9 +280,10 @@ struct GroupFootprint {
   unsigned vfParameterCount = 0;
 };
 
-static bool nodesHaveDirectDataFlowConnection(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &lhs, const pto::FusionComputeNode &rhs) {
+static bool
+nodesHaveDirectDataFlowConnection(const pto::FusionBlockAnalysis &blockAnalysis,
+                                  const pto::FusionComputeNode &lhs,
+                                  const pto::FusionComputeNode &rhs) {
   for (unsigned edgeId : lhs.outgoingEdges) {
     if (edgeId >= blockAnalysis.edges.size())
       continue;
@@ -353,9 +351,9 @@ class CostModel {
 public:
   virtual ~CostModel() = default;
 
-  virtual PlanningDecision evaluateSeed(const PlanningContext &ctx,
-                                        const pto::FusionComputeNode &candidate)
-      const = 0;
+  virtual PlanningDecision
+  evaluateSeed(const PlanningContext &ctx,
+               const pto::FusionComputeNode &candidate) const = 0;
 
   virtual PlanningDecision
   evaluateAppend(const PlanningContext &ctx,
@@ -416,8 +414,8 @@ public:
     GroupFootprint footprint = computeGroupFootprint(proposedGroup);
 
     decision.cost.dependencyBenefit =
-        4 * static_cast<int64_t>(
-                countEdgesFromGroup(ctx.blockAnalysis, currentGroup, candidate));
+        4 * static_cast<int64_t>(countEdgesFromGroup(ctx.blockAnalysis,
+                                                     currentGroup, candidate));
     decision.cost.loopMergeBenefit =
         2 * static_cast<int64_t>(decision.implementation
                                      ? decision.implementation->loopDepth
@@ -635,18 +633,39 @@ static LogicalResult selectStandaloneVersions(func::FuncOp func,
       op->emitError("invalid TileOp implementation metadata");
       return WalkResult::interrupt();
     }
+    SmallVector<Attribute> selectedVersion;
+    auto makeVersion = [&](int64_t id, StringRef name) {
+      return DictionaryAttr::get(
+          ctx,
+          {
+              NamedAttribute(StringAttr::get(ctx, "id"),
+                             IntegerAttr::get(IntegerType::get(ctx, 64), id)),
+              NamedAttribute(StringAttr::get(ctx, "name"),
+                             StringAttr::get(ctx, name)),
+          });
+    };
 
-    op->setAttr(kVersionIdAttr,
-                IntegerAttr::get(IntegerType::get(ctx, 64),
-                                 versions->front().id));
+    // Hard code version selection based on performance
+    if (op->getName().getStringRef() == "pto.tmul") {
+      selectedVersion.push_back(
+          makeVersion(versions->back().id, versions->back().name));
+    } else {
+      selectedVersion.push_back(
+          makeVersion(versions->front().id, versions->front().name));
+    }
+
+    op->setAttr("selected_version", ArrayAttr::get(ctx, selectedVersion));
     op->removeAttr(kVersionsAttr);
     return WalkResult::advance();
   });
   return success(!result.wasInterrupted());
 }
 
-struct FusionPlanVersionSelectionPass : public pto::impl::FusionPlanVersionSelectionBase<FusionPlanVersionSelectionPass> {
-  using pto::impl::FusionPlanVersionSelectionBase<FusionPlanVersionSelectionPass>::FusionPlanVersionSelectionBase;
+struct FusionPlanVersionSelectionPass
+    : public pto::impl::FusionPlanVersionSelectionBase<
+          FusionPlanVersionSelectionPass> {
+  using pto::impl::FusionPlanVersionSelectionBase<
+      FusionPlanVersionSelectionPass>::FusionPlanVersionSelectionBase;
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();

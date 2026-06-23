@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
 
@@ -98,12 +100,13 @@ getFusionTileOpVersions(Operation *op) {
     if (!version)
       return failure();
 
+    auto nameAttr = version.getAs<StringAttr>("name");
     auto idAttr = version.getAs<IntegerAttr>("id");
     auto depthAttr = version.getAs<IntegerAttr>("loop_depth");
     auto implKindAttr = version.getAs<StringAttr>("vf_impl_kind");
     auto tailAttr = version.getAs<StringAttr>("tail");
-    if (!idAttr || !depthAttr || !implKindAttr || !tailAttr ||
-        idAttr.getInt() <= 0 ||
+    if (!nameAttr || nameAttr.getValue().empty() || !idAttr || !depthAttr ||
+        !implKindAttr || !tailAttr || idAttr.getInt() <= 0 ||
         (depthAttr.getInt() != 1 && depthAttr.getInt() != 2))
       return failure();
 
@@ -119,6 +122,7 @@ getFusionTileOpVersions(Operation *op) {
 
     result.push_back({
         id,
+        nameAttr.getValue().str(),
         static_cast<unsigned>(depthAttr.getInt()),
         *implKind,
         *tailKind,

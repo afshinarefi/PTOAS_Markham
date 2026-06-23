@@ -17,6 +17,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
 
@@ -66,6 +67,13 @@ struct TileLibCandidateChoice {
   std::string name;
   int64_t priority = 0;
   int64_t loopDepth = -1;
+};
+
+struct TemplateAttribute {
+  int64_t id;
+  int64_t loop_depth;
+  std::string vf_impl_kind;
+  std::string tail;
 };
 
 struct OperandTypeInfo {
@@ -125,6 +133,8 @@ struct SpecKey {
 
 static constexpr llvm::StringLiteral kTileLibMetadataAttr =
     "pto.tilelib.metadata";
+static constexpr llvm::StringLiteral kTileLibSelectedTemplateAttr =
+    "pto.tilelib.selected_template";
 
 static std::string getDtypeString(Type elemTy) {
   if (elemTy.isIndex())
@@ -267,8 +277,9 @@ static void recordStaticSizes(ArrayRef<OpFoldResult> inputs,
     out.push_back(getStaticIntOrDynamic(ofr));
 }
 
-static SmallVector<int64_t> combineSubviewStrides(ArrayRef<int64_t> baseStrides,
-                                                  ArrayRef<OpFoldResult> steps) {
+static SmallVector<int64_t>
+combineSubviewStrides(ArrayRef<int64_t> baseStrides,
+                      ArrayRef<OpFoldResult> steps) {
   SmallVector<int64_t> result;
   result.reserve(baseStrides.size());
   for (auto [baseStride, step] : llvm::zip(baseStrides, steps)) {
@@ -338,16 +349,18 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     info.tileShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
     auto validShape = tbTy.getValidShape();
     if (validShape.empty())
-      info.tileValidShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
+      info.tileValidShape.assign(tbTy.getShape().begin(),
+                                 tbTy.getShape().end());
     else
       info.tileValidShape.assign(validShape.begin(), validShape.end());
     info.tileMemorySpace = getMemorySpaceString(tbTy);
     if (auto config = tbTy.getConfigAttr()) {
       info.blayout = static_cast<int32_t>(config.getBLayout().getValue());
       info.slayout = static_cast<int32_t>(config.getSLayout().getValue());
-      info.fractal = config.getSFractalSize()
-                         ? static_cast<int32_t>(config.getSFractalSize().getInt())
-                         : 0;
+      info.fractal =
+          config.getSFractalSize()
+              ? static_cast<int32_t>(config.getSFractalSize().getInt())
+              : 0;
       info.pad = static_cast<uint64_t>(config.getPad().getValue());
     }
     return info;
@@ -443,7 +456,7 @@ static void appendJsonDimArray(std::string &json, ArrayRef<int64_t> arr,
 }
 
 struct ExpandState {
-  std::vector<OwningOpRef<ModuleOp>> parsedModules;  // Keep parsed modules alive
+  std::vector<OwningOpRef<ModuleOp>> parsedModules; // Keep parsed modules alive
 
   std::string tilelangPath;
   std::string tilelangPkgPath;
@@ -453,11 +466,11 @@ struct ExpandState {
   bool enableTileLibMetadata = false;
 
   func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
-                                  ModuleOp mod, MLIRContext *ctx,
-                                  StringRef candidateId = {});
+                                 ModuleOp mod, MLIRContext *ctx,
+                                 StringRef candidateId = {});
   func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
-                                     ModuleOp mod, MLIRContext *ctx,
-                                     StringRef candidateId = {});
+                                    ModuleOp mod, MLIRContext *ctx,
+                                    StringRef candidateId = {});
   std::optional<TileLibMetadataResult> invokeTileLibMetadata(const SpecKey &key,
                                                              Operation *tileOp);
 
@@ -546,6 +559,98 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
   return json;
 }
 
+static LogicalResult addAttribute(StringRef metadataJson, Operation *op,
+                                  MLIRContext *ctx) {
+  auto parsed = llvm::json::parse(metadataJson);
+  if (!parsed) {
+    llvm::errs() << "ExpandTileOp: failed to parse TileLib metadata JSON\n";
+    llvm::consumeError(parsed.takeError());
+    return failure();
+  }
+
+  llvm::json::Object *root = parsed->getAsObject();
+  if (!root) {
+    llvm::errs()
+        << "ExpandTileOp: TileLib metadata response is not a JSON object\n";
+    return failure();
+  }
+
+  llvm::json::Object *candidates = root->getObject("candidates");
+  if (!candidates || candidates->empty()) {
+    llvm::errs()
+        << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
+    return failure();
+  }
+
+  // Generate attributes
+  int64_t id = 0;
+  SmallVector<Attribute> versions;
+  for (const auto &entry : *candidates) {
+    StringRef implKind;
+    StringRef tail;
+    StringRef candidateName = entry.getFirst();
+    if (candidateName.empty())
+      continue;
+
+    const llvm::json::Object *candidateMetadata =
+        entry.getSecond().getAsObject();
+    if (!candidateMetadata) {
+      llvm::errs() << "ExpandTileOp: TileLib candidate metadata for "
+                   << candidateName << " is not a JSON object\n";
+      return failure();
+    }
+    std::optional<int64_t> loopDepth =
+        candidateMetadata->getInteger("loop_depth");
+    if (!loopDepth) {
+      op->emitError("ExpandTileOp: TileLib candidate metadata for ")
+          << candidateName << " has no loop_depth integer";
+      return failure();
+    }
+
+    std::optional<bool> postUpdate =
+        candidateMetadata->getBoolean("is_post_update");
+    if (!postUpdate) {
+      op->emitError("ExpandTileOp: TileLib candidate metadata for ")
+          << candidateName << " has no is_post_update boolean";
+      return failure();
+    }
+
+    if (*postUpdate)
+      implKind = "PostUpdate";
+    else
+      implKind = "NoPostUpdate";
+    if (*loopDepth == 2 && *postUpdate)
+      tail = "has_tail";
+    else
+      tail = "no_tail";
+
+    // Function to make version
+    auto makeVersion = [&](StringRef candidateName, int64_t id,
+                           int64_t loopDepth, StringRef implKind,
+                           StringRef tail) {
+      return DictionaryAttr::get(
+          ctx,
+          {
+              NamedAttribute(StringAttr::get(ctx, "name"),
+                             StringAttr::get(ctx, candidateName)),
+              NamedAttribute(StringAttr::get(ctx, "id"),
+                             IntegerAttr::get(IntegerType::get(ctx, 64), id)),
+              NamedAttribute(
+                  StringAttr::get(ctx, "loop_depth"),
+                  IntegerAttr::get(IntegerType::get(ctx, 64), loopDepth)),
+              NamedAttribute(StringAttr::get(ctx, "vf_impl_kind"),
+                             StringAttr::get(ctx, implKind)),
+              NamedAttribute(StringAttr::get(ctx, "tail"),
+                             StringAttr::get(ctx, tail)),
+          });
+    };
+    id++;
+    versions.push_back(
+        makeVersion(candidateName, id, *loopDepth, implKind, tail));
+  }
+  op->setAttr("versions", ArrayAttr::get(ctx, versions));
+  return success();
+}
 // ============================================================================
 // Invoke PTODSL TileLib metadata RPC.
 // ============================================================================
@@ -574,20 +679,19 @@ ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
   int tmpFD;
   if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_metadata", "json",
                                                    tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: "
-                 << ec.message() << "\n";
+    llvm::errs() << "ExpandTileOp: cannot create temp file: " << ec.message()
+                 << "\n";
     return std::nullopt;
   }
   ::close(tmpFD);
 
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", daemonHelperModule,
-      "--method", "get_metadata",
-      "--socket", daemonSocketPath,
-      "--target", key.targetArch,
-      "--op", opName,
-      "--operand-specs", operandSpecsJson,
+      *pythonPath,      "-m",           daemonHelperModule,
+      "--method",       "get_metadata", "--socket",
+      daemonSocketPath, "--target",     key.targetArch,
+      "--op",           opName,         "--operand-specs",
+      operandSpecsJson,
   };
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
@@ -676,8 +780,8 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     for (auto *op : tileOps) {
       auto specKeyOpt = buildSpecKey(op);
       if (!specKeyOpt) {
-        op->emitError(
-            "ExpandTileOp: cannot build specialization key for this operand schema");
+        op->emitError("ExpandTileOp: cannot build specialization key for this "
+                      "operand schema");
         return failure();
       }
 
@@ -689,10 +793,31 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
                       opName);
         return failure();
       }
-
-      op->setAttr(kTileLibMetadataAttr,
-                  StringAttr::get(ctx, metadata->jsonText));
+      if (failed(addAttribute(metadata->jsonText, op, ctx)))
+        return failure();
     }
+
+    // for (auto *op : tileOps) {
+    //   auto metadataAttr =
+    //   op->getAttrOfType<StringAttr>(kTileLibMetadataAttr); if (!metadataAttr)
+    //   {
+    //     op->emitError("ExpandTileOp: missing TileLib metadata for version
+    //     selection"); return failure();
+    //   }
+
+    //   std::optional<std::string> selectedCandidate =
+    //       selectCandidateFromMetadata(metadataAttr.getValue());
+    //   if (!selectedCandidate) {
+    //     StringRef opName = getTileOpName(op);
+    //     op->emitError("ExpandTileOp: failed to select TileLib candidate for "
+    //     +
+    //                   opName);
+    //     return failure();
+    //   }
+
+    //   op->setAttr(kTileLibSelectedTemplateAttr,
+    //               StringAttr::get(ctx, *selectedCandidate));
+    // }
   }
 
   return success();
@@ -702,6 +827,8 @@ struct PTOAddTemplateAttributePass
     : public mlir::pto::impl::PTOAddTemplateAttributePassBase<
           PTOAddTemplateAttributePass> {
   using PTOAddTemplateAttributePassBase::PTOAddTemplateAttributePassBase;
+
+  unsigned templateID = 0;
 
   void runOnOperation() override;
 };
@@ -718,7 +845,7 @@ void PTOAddTemplateAttributePass::runOnOperation() {
   state.daemonSocketPath = daemonSocketPath;
   state.daemonHelperModule = daemonHelperModule;
   state.enableTileLibMetadata = enableTileLibMetadata;
-  
+
   MLIRContext *ctx = module.getContext();
   for (auto func : module.getOps<func::FuncOp>()) {
     if (failed(state.expandTileOpsInFunction(func, module, ctx))) {
