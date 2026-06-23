@@ -39,6 +39,7 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 static constexpr llvm::StringLiteral kVersionIdAttr = "version_id";
+static constexpr llvm::StringLiteral kVersionNameAttr = "version_name";
 static constexpr llvm::StringLiteral kVersionsAttr = "versions";
 
 struct FusionImplementationSignature {
@@ -245,8 +246,8 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
              "planned fusion member must support the selected implementation");
 
       node->op->setAttr(
-          kVersionIdAttr,
-          IntegerAttr::get(IntegerType::get(ctx, 64), selectedVersion->id));
+          kVersionNameAttr,
+          StringAttr::get(ctx, selectedVersion->name));
       node->op->removeAttr(kVersionsAttr);
     }
   }
@@ -655,7 +656,7 @@ static LogicalResult selectStandaloneVersions(func::FuncOp func,
     }
 
     op->setAttr("selected_version", ArrayAttr::get(ctx, selectedVersion));
-    op->removeAttr(kVersionsAttr);
+    // op->removeAttr(kVersionsAttr);
     return WalkResult::advance();
   });
   return success(!result.wasInterrupted());
