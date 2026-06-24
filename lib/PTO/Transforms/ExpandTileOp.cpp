@@ -209,7 +209,7 @@ struct TileLibCandidateChoice {
 static constexpr llvm::StringLiteral kTileLibMetadataAttr =
     "pto.tilelib.metadata";
 static constexpr llvm::StringLiteral kTileLibSelectedTemplateAttr =
-    "pto.tilelib.selected_template";
+    "version_name";
 
 // ============================================================================
 // Helpers
@@ -914,169 +914,6 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
   return json;
 }
 
-static std::optional<std::string>
-selectCandidateFromMetadata(StringRef metadataJson) {
-  auto parsed = llvm::json::parse(metadataJson);
-  if (!parsed) {
-    llvm::errs() << "ExpandTileOp: failed to parse TileLib metadata JSON\n";
-    llvm::consumeError(parsed.takeError());
-    return std::nullopt;
-  }
-
-  llvm::json::Object *root = parsed->getAsObject();
-  if (!root) {
-    llvm::errs()
-        << "ExpandTileOp: TileLib metadata response is not a JSON object\n";
-    return std::nullopt;
-  }
-
-  llvm::json::Object *candidates = root->getObject("candidates");
-  if (!candidates || candidates->empty()) {
-    llvm::errs()
-        << "ExpandTileOp: TileLib metadata response has no legal candidates\n";
-    return std::nullopt;
-  }
-
-  SmallVector<TileLibCandidateChoice, 4> choices;
-  for (const auto &entry : *candidates) {
-    StringRef candidateName = entry.getFirst();
-    if (candidateName.empty())
-      continue;
-
-    const llvm::json::Object *candidateMetadata =
-        entry.getSecond().getAsObject();
-    if (!candidateMetadata) {
-      llvm::errs() << "ExpandTileOp: TileLib candidate metadata for "
-                   << candidateName << " is not a JSON object\n";
-      return std::nullopt;
-    }
-
-    TileLibCandidateChoice choice;
-    choice.name = candidateName.str();
-    choice.priority = candidateMetadata->getInteger("priority").value_or(0);
-    choice.loopDepth = candidateMetadata->getInteger("loop_depth").value_or(-1);
-    choices.push_back(std::move(choice));
-  }
-
-  if (choices.empty()) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata response has no selectable "
-                    "candidates\n";
-    return std::nullopt;
-  }
-
-  llvm::sort(choices, [](const TileLibCandidateChoice &lhs,
-                         const TileLibCandidateChoice &rhs) {
-    if (lhs.priority != rhs.priority)
-      return lhs.priority > rhs.priority;
-    if (lhs.loopDepth != rhs.loopDepth)
-      return lhs.loopDepth > rhs.loopDepth;
-    return lhs.name < rhs.name;
-  });
-
-  return choices.front().name;
-}
-
-// ============================================================================
-// Invoke PTODSL TileLib metadata RPC.
-// ============================================================================
-std::optional<TileLibMetadataResult>
-ExpandState::invokeTileLibMetadata(const SpecKey &key, Operation *tileOp) {
-  (void)tileOp;
-  if (daemonSocketPath.empty()) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata requires daemon mode\n";
-    return std::nullopt;
-  }
-
-  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
-  if (!pythonPath) {
-    llvm::errs() << "ExpandTileOp: cannot find '" << pythonExe << "'\n";
-    return std::nullopt;
-  }
-
-  std::string operandSpecsJson = buildOperandSpecsJson(key);
-  std::string contextAttrsJson = buildContextAttrsJson(key);
-  if (key.targetArch.empty()) {
-    llvm::errs() << "ExpandTileOp: missing pto.target_arch module attribute\n";
-    return std::nullopt;
-  }
-
-  SmallString<128> tmpPath;
-  int tmpFD;
-  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_metadata", "json",
-                                                   tmpFD, tmpPath)) {
-    llvm::errs() << "ExpandTileOp: cannot create temp file: " << ec.message()
-                 << "\n";
-    return std::nullopt;
-  }
-  ::close(tmpFD);
-
-  std::string opName = "pto." + key.opName;
-  SmallVector<StringRef> args = {
-      *pythonPath,      "-m",           daemonHelperModule,
-      "--method",       "get_metadata", "--socket",
-      daemonSocketPath, "--target",     key.targetArch,
-      "--op",           opName,         "--operand-specs",
-      operandSpecsJson,
-  };
-  if (!key.contextAttrs.empty()) {
-    args.push_back("--context-attrs");
-    args.push_back(contextAttrsJson);
-  }
-
-  std::optional<StringRef> redirects[] = {std::nullopt, StringRef(tmpPath),
-                                          std::nullopt};
-
-  SmallVector<StringRef> envp;
-  std::string pythonPathEnv;
-  std::vector<std::string> envStorage;
-  bool hasPythonPath = !tilelangPkgPath.empty();
-  if (hasPythonPath) {
-    const char *existingPath = ::getenv("PYTHONPATH");
-    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
-    if (existingPath && existingPath[0] != '\0') {
-      pythonPathEnv += ":";
-      pythonPathEnv += existingPath;
-    }
-    for (char **e = environ; *e; ++e) {
-      StringRef entry(*e);
-      if (entry.starts_with("PYTHONPATH="))
-        continue;
-      envStorage.push_back(std::string(entry));
-    }
-    envStorage.push_back(pythonPathEnv);
-    for (auto &s : envStorage)
-      envp.push_back(s);
-  }
-
-  std::string errMsg;
-  int rc = llvm::sys::ExecuteAndWait(
-      *pythonPath, args,
-      hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
-      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
-
-  if (rc != 0) {
-    llvm::errs() << "ExpandTileOp: TileLib metadata helper failed (rc=" << rc
-                 << "): " << errMsg << "\n";
-    llvm::sys::fs::remove(tmpPath);
-    return std::nullopt;
-  }
-
-  auto bufOrErr = llvm::MemoryBuffer::getFile(tmpPath);
-  llvm::sys::fs::remove(tmpPath);
-  if (!bufOrErr) {
-    llvm::errs() << "ExpandTileOp: cannot read TileLib metadata output\n";
-    return std::nullopt;
-  }
-
-  std::string metadataJson = (*bufOrErr)->getBuffer().str();
-  if (metadataJson.empty()) {
-    llvm::errs() << "ExpandTileOp: empty TileLib metadata output\n";
-    return std::nullopt;
-  }
-
-  return TileLibMetadataResult{std::move(metadataJson)};
-}
-
 // ============================================================================
 // Invoke Python DSL daemon RPC to generate a specialized template function.
 // ============================================================================
@@ -1501,62 +1338,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       tileOps.push_back(op);
   });
 
-  if (enableTileLibMetadata) {
-    if (daemonSocketPath.empty()) {
-      func.emitError("ExpandTileOp: TileLib metadata is enabled, but daemon "
-                     "mode is unavailable");
-      return failure();
-    }
-
-    // Phase 1: ask PTODSL for legal candidate metadata for every TileOp.
-    for (auto *op : tileOps) {
-      auto specKeyOpt = buildSpecKey(op);
-      if (!specKeyOpt) {
-        op->emitError("ExpandTileOp: cannot build specialization key for this "
-                      "operand schema");
-        return failure();
-      }
-
-      std::optional<TileLibMetadataResult> metadata =
-          invokeTileLibMetadata(*specKeyOpt, op);
-      if (!metadata) {
-        StringRef opName = getTileOpName(op);
-        op->emitError("ExpandTileOp: failed to query TileLib metadata for " +
-                      opName);
-        return failure();
-      }
-
-      op->setAttr(kTileLibMetadataAttr,
-                  StringAttr::get(ctx, metadata->jsonText));
-    }
-
-    // Phase 2: select one version per TileOp. For now this is a minimal
-    // compiler-side selector: rank legal candidates by priority, then
-    // loop_depth, then name. Later this is where the global performance /
-    // fusion-aware selector should use the metadata collected above.
-    for (auto *op : tileOps) {
-      auto metadataAttr = op->getAttrOfType<StringAttr>(kTileLibMetadataAttr);
-      if (!metadataAttr) {
-        op->emitError(
-            "ExpandTileOp: missing TileLib metadata for version selection");
-        return failure();
-      }
-
-      std::optional<std::string> selectedCandidate =
-          selectCandidateFromMetadata(metadataAttr.getValue());
-      if (!selectedCandidate) {
-        StringRef opName = getTileOpName(op);
-        op->emitError("ExpandTileOp: failed to select TileLib candidate for " +
-                      opName);
-        return failure();
-      }
-
-      op->setAttr(kTileLibSelectedTemplateAttr,
-                  StringAttr::get(ctx, *selectedCandidate));
-    }
-  }
-
-  // Phase 3: render the selected template to MLIR and replace each TileOp.
+  // Render the selected template to MLIR and replace each TileOp.
   for (auto *op : tileOps) {
     auto specKeyOpt = buildSpecKey(op);
     if (!specKeyOpt) {
@@ -1569,9 +1351,10 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     if (auto selectedAttr =
             op->getAttrOfType<StringAttr>(kTileLibSelectedTemplateAttr))
       selectedTemplate = selectedAttr.getValue();
+    
+    auto selected = op->getAttrOfType<StringAttr>("version_name");
+    selectedTemplate = selected.getValue();
 
-    llvm::outs() << "Expand Tile Op Selected" << "\n";
-    llvm::outs() << selectedTemplate << "\n";
     // Invoke tilelang DSL (with caching).
     func::FuncOp dslFn =
         invokeTilelangDSL(*specKeyOpt, op, mod, ctx, selectedTemplate);
