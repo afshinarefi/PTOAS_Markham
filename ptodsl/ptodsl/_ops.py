@@ -2478,6 +2478,86 @@ def tmatmul_acc(acc_in, lhs, rhs, dst):
     )
 
 
+def tmatmul_mx(lhs, lhs_scale, rhs, rhs_scale, dst, *, acc_phase=None):
+    """``pto.tmatmul.mx ins(lhs, lhs_scale, rhs, rhs_scale) outs(dst)``."""
+    _pto.TMatmulMxOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tmatmul_mx_acc(acc_in, lhs, lhs_scale, rhs, rhs_scale, dst, *, acc_phase=None):
+    """``pto.tmatmul.mx.acc ins(acc_in, lhs, lhs_scale, rhs, rhs_scale) outs(dst)``."""
+    _pto.TMatmulMxAccOp(
+        None,
+        unwrap_surface_value(acc_in),
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tmatmul_mx_bias(lhs, lhs_scale, rhs, rhs_scale, bias, dst):
+    """``pto.tmatmul.mx.bias ins(lhs, lhs_scale, rhs, rhs_scale, bias) outs(dst)``."""
+    _pto.TMatmulMxBiasOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(bias),
+        unwrap_surface_value(dst),
+    )
+
+
+def tgemv_mx(lhs, lhs_scale, rhs, rhs_scale, dst, *, acc_phase=None):
+    """``pto.tgemv.mx ins(lhs, lhs_scale, rhs, rhs_scale) outs(dst)``."""
+    _pto.TGemvMxOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tgemv_mx_acc(acc_in, lhs, lhs_scale, rhs, rhs_scale, dst, *, acc_phase=None):
+    """``pto.tgemv.mx.acc ins(acc_in, lhs, lhs_scale, rhs, rhs_scale) outs(dst)``."""
+    _pto.TGemvMxAccOp(
+        None,
+        unwrap_surface_value(acc_in),
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(dst),
+        accPhase=acc_phase,
+    )
+
+
+def tgemv_mx_bias(lhs, lhs_scale, rhs, rhs_scale, bias, dst):
+    """``pto.tgemv.mx.bias ins(lhs, lhs_scale, rhs, rhs_scale, bias) outs(dst)``."""
+    _pto.TGemvMxBiasOp(
+        None,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(lhs_scale),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(rhs_scale),
+        unwrap_surface_value(bias),
+        unwrap_surface_value(dst),
+    )
+
+
 def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
     return _constant_like(scalar, infer_tile_element_type(wrap_surface_value(tile)))
 
@@ -5336,6 +5416,8 @@ __all__ = [
     "make_tensor_view", "partition_view",
     "alloc_tile",
     "tload", "tstore", "tmov", "tinsert",
+    "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
+    "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",

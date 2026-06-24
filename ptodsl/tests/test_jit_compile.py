@@ -1669,6 +1669,8 @@ def public_cube_surface_probe(
     rhs_l0b_f32: pto.Tile,
     lhs_l0a_mx: pto.Tile,
     rhs_l0b_mx: pto.Tile,
+    lhs_scale_mx: pto.Tile,
+    rhs_scale_mx: pto.Tile,
     acc_tile: pto.Tile,
     bias_tile: pto.Tile,
     l1_out_tile: pto.Tile,
@@ -1744,7 +1746,29 @@ def public_cube_surface_probe(
     )
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, 0)
     pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, split=pto.SplitMode.M, layout="nz2nd")
-    pto.mte_l0c_ub(acc_tile.as_ptr(), out_tile.as_ptr(), m, n, n, n, 1, layout=("nz2nz", 1), sat=pto.SatMode.PRESERVE_NAN)
+
+
+@pto.cube
+def public_cube_tile_mx_probe(
+    mat_lhs: pto.Tile,
+    mat_lhs_scale: pto.Tile,
+    mat_rhs: pto.Tile,
+    mat_rhs_scale: pto.Tile,
+    mat_acc: pto.Tile,
+    mat_bias: pto.Tile,
+    gemv_lhs: pto.Tile,
+    gemv_lhs_scale: pto.Tile,
+    gemv_rhs: pto.Tile,
+    gemv_rhs_scale: pto.Tile,
+    gemv_acc: pto.Tile,
+    gemv_bias: pto.Tile,
+):
+    pto.tile.matmul_mx(mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_acc)
+    pto.tile.matmul_mx_acc(mat_acc, mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_acc)
+    pto.tile.matmul_mx_bias(mat_lhs, mat_lhs_scale, mat_rhs, mat_rhs_scale, mat_bias, mat_acc)
+    pto.tile.gemv_mx(gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_acc)
+    pto.tile.gemv_mx_acc(gemv_acc, gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_acc)
+    pto.tile.gemv_mx_bias(gemv_lhs, gemv_lhs_scale, gemv_rhs, gemv_rhs_scale, gemv_bias, gemv_acc)
 
 
 @pto.jit(target="a5", mode="explicit")
@@ -1824,18 +1848,138 @@ def public_surface_exports_probe(
         dtype=pto.f8e4m3,
         memory_space=pto.MemorySpace.LEFT,
         valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
     )
     rhs_l0b_mx = pto.alloc_tile(
-        shape=[16, 32],
+        shape=[32, 16],
         dtype=pto.f8e4m3,
         memory_space=pto.MemorySpace.RIGHT,
         valid_shape=[16, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    lhs_scale_mx = pto.alloc_tile(
+        shape=[16, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    rhs_scale_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
     )
     acc_tile = pto.alloc_tile(
         shape=[16, 16],
         dtype=pto.f32,
         memory_space=pto.MemorySpace.ACC,
         valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_lhs_tile_mx = pto.alloc_tile(
+        shape=[16, 64],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.LEFT,
+        valid_shape=[16, 64],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_rhs_tile_mx = pto.alloc_tile(
+        shape=[64, 16],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.RIGHT,
+        valid_shape=[64, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    mat_lhs_scale_tile_mx = pto.alloc_tile(
+        shape=[16, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[16, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    mat_rhs_scale_tile_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
+    )
+    mat_acc_tile_mx = pto.alloc_tile(
+        shape=[16, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[16, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    mat_bias_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.BIAS,
+        valid_shape=[1, 16],
+    )
+    gemv_lhs_tile_mx = pto.alloc_tile(
+        shape=[1, 64],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.LEFT,
+        valid_shape=[1, 64],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    gemv_rhs_tile_mx = pto.alloc_tile(
+        shape=[64, 16],
+        dtype=pto.f8e4m3,
+        memory_space=pto.MemorySpace.RIGHT,
+        valid_shape=[64, 16],
+        blayout="RowMajor",
+        slayout="ColMajor",
+    )
+    gemv_lhs_scale_tile_mx = pto.alloc_tile(
+        shape=[1, 2],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[1, 2],
+        blayout="RowMajor",
+        slayout="RowMajor",
+        fractal_size=32,
+    )
+    gemv_rhs_scale_tile_mx = pto.alloc_tile(
+        shape=[2, 16],
+        dtype=pto.f16,
+        memory_space=pto.MemorySpace.SCALING,
+        valid_shape=[2, 16],
+        blayout="ColMajor",
+        slayout="ColMajor",
+        fractal_size=32,
+    )
+    gemv_acc_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.ACC,
+        valid_shape=[1, 16],
+        blayout="ColMajor",
+        slayout="RowMajor",
+    )
+    gemv_bias_tile_mx = pto.alloc_tile(
+        shape=[1, 16],
+        dtype=pto.f32,
+        memory_space=pto.MemorySpace.BIAS,
+        valid_shape=[1, 16],
     )
     bias_tile = pto.alloc_tile(
         shape=[16, 16],
@@ -1861,6 +2005,8 @@ def public_surface_exports_probe(
         rhs_l0b_f32,
         lhs_l0a_mx,
         rhs_l0b_mx,
+        lhs_scale_mx,
+        rhs_scale_mx,
         acc_tile,
         bias_tile,
         l1_out,
@@ -1879,6 +2025,20 @@ def public_surface_exports_probe(
         loop3=(1, pto.const(16), pto.const(16)),
         sat=pto.SatMode.OFF,
         atomic=("f32", "add"),
+    )
+    public_cube_tile_mx_probe(
+        mat_lhs_tile_mx,
+        mat_lhs_scale_tile_mx,
+        mat_rhs_tile_mx,
+        mat_rhs_scale_tile_mx,
+        mat_acc_tile_mx,
+        mat_bias_tile_mx,
+        gemv_lhs_tile_mx,
+        gemv_lhs_scale_tile_mx,
+        gemv_rhs_tile_mx,
+        gemv_rhs_scale_tile_mx,
+        gemv_acc_tile_mx,
+        gemv_bias_tile_mx,
     )
 
 
@@ -2612,6 +2772,12 @@ def main() -> None:
     expect(not hasattr(pto, "store_tile"), "pto.store_tile should not remain on the public pto namespace")
     expect(hasattr(pto.tile, "matmul"), "pto.tile.matmul should be exported from the public tile namespace")
     expect(hasattr(pto.tile, "matmul_acc"), "pto.tile.matmul_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx"), "pto.tile.matmul_mx should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx_acc"), "pto.tile.matmul_mx_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "matmul_mx_bias"), "pto.tile.matmul_mx_bias should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx"), "pto.tile.gemv_mx should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx_acc"), "pto.tile.gemv_mx_acc should be exported from the public tile namespace")
+    expect(hasattr(pto.tile, "gemv_mx_bias"), "pto.tile.gemv_mx_bias should be exported from the public tile namespace")
     expect(not hasattr(pto, "tload"), "legacy pto.tload should not remain on the public pto namespace")
     expect(not hasattr(pto, "tstore"), "legacy pto.tstore should not remain on the public pto namespace")
     expect(not hasattr(pto, "tadd"), "legacy pto.tadd should not remain on the public pto namespace")
@@ -4625,6 +4791,12 @@ def main() -> None:
     expect("pto.mte_l1_l0b" in public_surface_text, "mte_l1_l0b(...) should lower to pto.mte_l1_l0b")
     expect("pto.mte_l1_l0a_mx" in public_surface_text, "mte_l1_l0a_mx(...) should lower to pto.mte_l1_l0a_mx")
     expect("pto.mte_l1_l0b_mx" in public_surface_text, "mte_l1_l0b_mx(...) should lower to pto.mte_l1_l0b_mx")
+    expect("pto.tmatmul.mx" in public_surface_text, "pto.tile.matmul_mx should lower to pto.tmatmul.mx")
+    expect("pto.tmatmul.mx.acc" in public_surface_text, "pto.tile.matmul_mx_acc should lower to pto.tmatmul.mx.acc")
+    expect("pto.tmatmul.mx.bias" in public_surface_text, "pto.tile.matmul_mx_bias should lower to pto.tmatmul.mx.bias")
+    expect("pto.tgemv.mx" in public_surface_text, "pto.tile.gemv_mx should lower to pto.tgemv.mx")
+    expect("pto.tgemv.mx.acc" in public_surface_text, "pto.tile.gemv_mx_acc should lower to pto.tgemv.mx.acc")
+    expect("pto.tgemv.mx.bias" in public_surface_text, "pto.tile.gemv_mx_bias should lower to pto.tgemv.mx.bias")
     expect("pto.mte_l0c_l1" in public_surface_text, "mte_l0c_l1(...) should lower to pto.mte_l0c_l1")
     expect("pto.mte_l0c_gm" in public_surface_text, "mte_l0c_gm(...) should lower to pto.mte_l0c_gm")
     expect(public_surface_text.count("pto.mte_l0c_ub") >= 2, "mte_l0c_ub(...) should lower sub-block and split modes")

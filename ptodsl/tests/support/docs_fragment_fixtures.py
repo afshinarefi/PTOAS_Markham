@@ -1224,6 +1224,13 @@ FRAGMENT_FIXTURES = {
             {SNIPPET_PLACEHOLDER}
         """
     ),
+    "compute_ops.tile_mx_compute": _fixture(
+        f"""
+        @pto.jit(target="a5")
+        def compute_ops_tile_mx_compute_probe():
+            {SNIPPET_PLACEHOLDER}
+        """
+    ),
     "mask_ops.creation": _fixture(
         f"""
         @pto.jit(target="a5")
