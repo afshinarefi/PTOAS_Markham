@@ -52,7 +52,7 @@ def template_tadd_2d_no_post_update(src0: pto.Tile, src1: pto.Tile, dst: pto.Til
         pto.check_type(("f32", "f32", "f32")),
         pto.check_memory_space("ub"),
         pto.check_layout("row_major"),
-        pto.require_contiguous(False),
+        pto.require_contiguous(True),
     ],
     priority=0,
     loop_depth=1,
