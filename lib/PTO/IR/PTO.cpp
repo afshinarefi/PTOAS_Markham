@@ -6615,7 +6615,11 @@ static bool isA5Fp8LikeType(Type ty) {
 }
 
 static bool isA5MxFp8InputType(Type ty) {
-  return isa<Float8E4M3FNType, Float8E5M2Type>(ty);
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  ty.print(os);
+  os.flush();
+  return text == "f8E4M3FN" || text == "f8E5M2";
 }
 
 static bool isA5MxInputTypePair(Type lhsTy, Type rhsTy) {
@@ -14025,8 +14029,7 @@ static void printFrontendInitializePipeOp(InitOpT op, OpAsmPrinter &p) {
     needsComma = true;
   };
 
-  if (op.getId() != 0)
-    printClause("id", op.getId());
+  printClause("id", op.getId());
   printClause("dir_mask", static_cast<int32_t>(op.getDirMask()));
   printClause("slot_size", op.getSlotSize());
   if (auto slotNumAttr = op.getSlotNumAttr())

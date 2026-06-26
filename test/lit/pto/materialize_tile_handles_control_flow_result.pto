@@ -51,12 +51,12 @@ module {
   }
 }
 
-// IR: %[[SEL:.*]] = scf.if {{.*}} -> (!pto.tile_buf<vec, 16x16xf16>) {
+// IR-LABEL: func.func @control_flow_result_tile_materialization
+// IR: %[[SEL:.*]] = arith.select %{{.*}}, %{{.*}}, %{{.*}} : !pto.tile_buf<vec, 16x16xf16>
+// IR: scf.if {{.*}} {
 // IR:   pto.tadd
-// IR:   scf.yield %{{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // IR: } else {
 // IR:   pto.tmul
-// IR:   scf.yield %{{.*}} : !pto.tile_buf<vec, 16x16xf16>
 // IR: }
 // IR: pto.tadd ins(%[[SEL]], %[[SEL]]
 // IR-LABEL: func.func @loop_carried_tile_materialization

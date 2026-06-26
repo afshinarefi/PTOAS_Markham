@@ -121,6 +121,36 @@ static mlir::DictionaryAttr stripKnownImmediateAttrs(
   }
 }
 
+static bool isFrontendPipeOpWithDefaultId(mlir::Operation &op) {
+  llvm::StringRef name = op.getName().getStringRef();
+  return name == "pto.aic_initialize_pipe" ||
+         name == "pto.aiv_initialize_pipe" ||
+         name == "pto.talloc_to_aiv" || name == "pto.talloc_to_aic" ||
+         name == "pto.tpush_to_aiv" || name == "pto.tpush_to_aic" ||
+         name == "pto.tpop_from_aic" || name == "pto.tpop_from_aiv" ||
+         name == "pto.tfree_from_aic" || name == "pto.tfree_from_aiv";
+}
+
+static mlir::DictionaryAttr
+dropDefaultZeroPipeIdForV0Encoding(mlir::Operation &op,
+                                   mlir::DictionaryAttr dict) {
+  if (!dict || dict.empty() || !isFrontendPipeOpWithDefaultId(op))
+    return dict;
+
+  auto idAttr = dict.getAs<mlir::IntegerAttr>("id");
+  if (!idAttr || idAttr.getInt() != 0)
+    return dict;
+
+  llvm::SmallVector<mlir::NamedAttribute, kNamedAttributeInlineCapacity> keep;
+  keep.reserve(dict.size());
+  for (auto attr : dict) {
+    if (attr.getName() == "id")
+      continue;
+    keep.push_back(attr);
+  }
+  return mlir::DictionaryAttr::get(op.getContext(), keep);
+}
+
 static uint64_t internAttr(PTOBCFile& f, mlir::DictionaryAttr dict) {
   if (!dict || dict.empty()) return 0;
   std::string s = printAttrDict(dict);
@@ -560,6 +590,9 @@ void Encoder::encodeKnownOp(mlir::Operation &op, Buffer &out,
   out.appendU16LE(variantInfo.opcode);
   mlir::DictionaryAttr dict = op.getAttrDictionary();
   dict = stripKnownImmediateAttrs(op.getContext(), dict, info);
+  // The assembly printer omits default pipe ids on transfer/free ops. Keep v0
+  // byte roundtrips stable by using the same representation while encoding.
+  dict = dropDefaultZeroPipeIdForV0Encoding(op, dict);
   writeULEB128(internAttr(file, dict), out.bytes);
 
   if (info.has_variant_u8)
