@@ -10,7 +10,7 @@
 # case: micro-op/gather-scatter/vgather2
 # family: gather-scatter
 # target_ops: pto.vgather2
-# scenarios: core-f32, full-mask, non-contiguous, explicit-index-pattern, load-effect-validation, no-alias
+# scenarios: core-f32, core-f16-u16-offsets, full-mask, non-contiguous, explicit-index-pattern, load-effect-validation, no-alias
 # NOTE: bulk-generated coverage skeleton.
 # coding=utf-8
 
@@ -34,11 +34,23 @@ def generate(output_dir: Path, seed: int) -> None:
     v2 = offsets.reshape(ROWS, COLS)
     v3 = np.zeros((ROWS, COLS), dtype=np.float32)
 
+    flat_f16 = rng.uniform(-4.0, 4.0, size=(ROWS * COLS,)).astype(np.float16)
+    offsets_u16 = (((np.arange(ROWS * COLS, dtype=np.uint32) * 11) + 5) %
+                   (ROWS * COLS)).astype(np.uint16)
+    gathered_f16 = flat_f16[offsets_u16.astype(np.int32)].reshape(ROWS, COLS)
+    v4 = flat_f16.reshape(ROWS, COLS)
+    v5 = offsets_u16.reshape(ROWS, COLS)
+    v6 = np.zeros((ROWS, COLS), dtype=np.float16)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     v1.reshape(-1).tofile(output_dir / "v1.bin")
     v2.reshape(-1).tofile(output_dir / "v2.bin")
     v3.reshape(-1).tofile(output_dir / "v3.bin")
+    v4.reshape(-1).tofile(output_dir / "v4.bin")
+    v5.reshape(-1).tofile(output_dir / "v5.bin")
+    v6.reshape(-1).tofile(output_dir / "v6.bin")
     gathered.reshape(-1).tofile(output_dir / "golden_v3.bin")
+    gathered_f16.reshape(-1).tofile(output_dir / "golden_v6.bin")
 
 
 def main() -> None:

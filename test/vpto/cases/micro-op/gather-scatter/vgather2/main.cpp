@@ -10,7 +10,7 @@
 // case: micro-op/gather-scatter/vgather2
 // family: gather-scatter
 // target_ops: pto.vgather2
-// scenarios: core-f32, full-mask, non-contiguous, explicit-index-pattern, load-effect-validation, no-alias
+// scenarios: core-f32, core-f16-u16-offsets, full-mask, non-contiguous, explicit-index-pattern, load-effect-validation, no-alias
 // NOTE: bulk-generated coverage skeleton. Parser/verifier/lowering failure is
 // still a valid test conclusion in the current coverage-first phase.
 // -----------------------------------------------------------------------------
@@ -56,7 +56,9 @@ struct MrgSortExecutedNumList {
     } while (0)
 
 
-void LaunchVgather2DeepMerged(float * p0, int * p1, float * p2, void *stream);
+void LaunchVgather2DeepMerged(float * p0, int * p1, float * p2,
+                              uint16_t * p3, uint16_t * p4, uint16_t * p5,
+                              void *stream);
 int main() {
     size_t elemCount_v1 = 1024;
     size_t fileSize_v1 = elemCount_v1 * sizeof(float);
@@ -64,12 +66,24 @@ int main() {
     size_t fileSize_v2 = elemCount_v2 * sizeof(int);
     size_t elemCount_v3 = 1024;
     size_t fileSize_v3 = elemCount_v3 * sizeof(float);
+    size_t elemCount_v4 = 1024;
+    size_t fileSize_v4 = elemCount_v4 * sizeof(uint16_t);
+    size_t elemCount_v5 = 1024;
+    size_t fileSize_v5 = elemCount_v5 * sizeof(uint16_t);
+    size_t elemCount_v6 = 1024;
+    size_t fileSize_v6 = elemCount_v6 * sizeof(uint16_t);
     float *v1Host = nullptr;
     float *v1Device = nullptr;
     int *v2Host = nullptr;
     int *v2Device = nullptr;
     float *v3Host = nullptr;
     float *v3Device = nullptr;
+    uint16_t *v4Host = nullptr;
+    uint16_t *v4Device = nullptr;
+    uint16_t *v5Host = nullptr;
+    uint16_t *v5Device = nullptr;
+    uint16_t *v6Host = nullptr;
+    uint16_t *v6Device = nullptr;
 
     int rc = 0;
     bool aclInited = false;
@@ -89,30 +103,51 @@ int main() {
     ACL_CHECK(aclrtMallocHost((void **)(&v1Host), fileSize_v1));
     ACL_CHECK(aclrtMallocHost((void **)(&v2Host), fileSize_v2));
     ACL_CHECK(aclrtMallocHost((void **)(&v3Host), fileSize_v3));
+    ACL_CHECK(aclrtMallocHost((void **)(&v4Host), fileSize_v4));
+    ACL_CHECK(aclrtMallocHost((void **)(&v5Host), fileSize_v5));
+    ACL_CHECK(aclrtMallocHost((void **)(&v6Host), fileSize_v6));
     ACL_CHECK(aclrtMalloc((void **)&v1Device, fileSize_v1, ACL_MEM_MALLOC_HUGE_FIRST));
     ACL_CHECK(aclrtMalloc((void **)&v2Device, fileSize_v2, ACL_MEM_MALLOC_HUGE_FIRST));
     ACL_CHECK(aclrtMalloc((void **)&v3Device, fileSize_v3, ACL_MEM_MALLOC_HUGE_FIRST));
+    ACL_CHECK(aclrtMalloc((void **)&v4Device, fileSize_v4, ACL_MEM_MALLOC_HUGE_FIRST));
+    ACL_CHECK(aclrtMalloc((void **)&v5Device, fileSize_v5, ACL_MEM_MALLOC_HUGE_FIRST));
+    ACL_CHECK(aclrtMalloc((void **)&v6Device, fileSize_v6, ACL_MEM_MALLOC_HUGE_FIRST));
 
     ReadFile("./v1.bin", fileSize_v1, v1Host, fileSize_v1);
     ReadFile("./v2.bin", fileSize_v2, v2Host, fileSize_v2);
     ReadFile("./v3.bin", fileSize_v3, v3Host, fileSize_v3);
+    ReadFile("./v4.bin", fileSize_v4, v4Host, fileSize_v4);
+    ReadFile("./v5.bin", fileSize_v5, v5Host, fileSize_v5);
+    ReadFile("./v6.bin", fileSize_v6, v6Host, fileSize_v6);
     ACL_CHECK(aclrtMemcpy(v1Device, fileSize_v1, v1Host, fileSize_v1, ACL_MEMCPY_HOST_TO_DEVICE));
     ACL_CHECK(aclrtMemcpy(v2Device, fileSize_v2, v2Host, fileSize_v2, ACL_MEMCPY_HOST_TO_DEVICE));
     ACL_CHECK(aclrtMemcpy(v3Device, fileSize_v3, v3Host, fileSize_v3, ACL_MEMCPY_HOST_TO_DEVICE));
-        LaunchVgather2DeepMerged(v1Device, v2Device, v3Device, stream);
+    ACL_CHECK(aclrtMemcpy(v4Device, fileSize_v4, v4Host, fileSize_v4, ACL_MEMCPY_HOST_TO_DEVICE));
+    ACL_CHECK(aclrtMemcpy(v5Device, fileSize_v5, v5Host, fileSize_v5, ACL_MEMCPY_HOST_TO_DEVICE));
+    ACL_CHECK(aclrtMemcpy(v6Device, fileSize_v6, v6Host, fileSize_v6, ACL_MEMCPY_HOST_TO_DEVICE));
+    LaunchVgather2DeepMerged(v1Device, v2Device, v3Device,
+                              v4Device, v5Device, v6Device, stream);
 
     ACL_CHECK(aclrtSynchronizeStream(stream));
     ACL_CHECK(aclrtMemcpy(v3Host, fileSize_v3, v3Device, fileSize_v3, ACL_MEMCPY_DEVICE_TO_HOST));
+    ACL_CHECK(aclrtMemcpy(v6Host, fileSize_v6, v6Device, fileSize_v6, ACL_MEMCPY_DEVICE_TO_HOST));
 
     WriteFile("./v3.bin", v3Host, fileSize_v3);
+    WriteFile("./v6.bin", v6Host, fileSize_v6);
 
 cleanup:
     aclrtFree(v1Device);
     aclrtFree(v2Device);
     aclrtFree(v3Device);
+    aclrtFree(v4Device);
+    aclrtFree(v5Device);
+    aclrtFree(v6Device);
     aclrtFreeHost(v1Host);
     aclrtFreeHost(v2Host);
     aclrtFreeHost(v3Host);
+    aclrtFreeHost(v4Host);
+    aclrtFreeHost(v5Host);
+    aclrtFreeHost(v6Host);
     if (stream != nullptr) {
         const aclError _ret = aclrtDestroyStream(stream);
         if (_ret != ACL_SUCCESS) {

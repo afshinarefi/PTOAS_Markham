@@ -3685,6 +3685,41 @@ static FailureOr<StringRef> buildVgather2Callee(MLIRContext *context,
       .getValue();
 }
 
+static std::optional<uint64_t> getFixedVectorBitWidth(Type type) {
+  auto vectorType = dyn_cast<VectorType>(type);
+  if (!vectorType || vectorType.getRank() != 1 || vectorType.isScalable())
+    return std::nullopt;
+  int64_t lanes = vectorType.getDimSize(0);
+  if (lanes <= 0)
+    return std::nullopt;
+  auto elementType = dyn_cast<IntegerType>(vectorType.getElementType());
+  if (!elementType)
+    return std::nullopt;
+  return static_cast<uint64_t>(lanes) * elementType.getWidth();
+}
+
+static FailureOr<Type> getVgather2OffsetsCarrierType(PatternRewriter &rewriter,
+                                                     Type resultType,
+                                                     Type offsetsType) {
+  Type elementType = getElementTypeFromVectorLike(resultType);
+  auto lanes = getElementCountFromVectorLike(resultType);
+  if (!elementType || !lanes || *lanes <= 0)
+    return failure();
+
+  Type carrierType = offsetsType;
+  if (pto::getPTOStorageElemBitWidth(elementType) == 16) {
+    if (*lanes % 2 != 0)
+      return failure();
+    carrierType = VectorType::get({*lanes / 2}, rewriter.getI32Type());
+  }
+
+  std::optional<uint64_t> offsetsBits = getFixedVectorBitWidth(offsetsType);
+  std::optional<uint64_t> carrierBits = getFixedVectorBitWidth(carrierType);
+  if (!offsetsBits || !carrierBits || *offsetsBits != *carrierBits)
+    return failure();
+  return carrierType;
+}
+
 static FailureOr<StringRef> buildVgather2BcCallee(MLIRContext *context,
                                                   Type resultType) {
   return buildLaneTypedCallee(context, resultType, "vgather2.bc", "");
@@ -7265,13 +7300,22 @@ public:
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vgather2 signature");
 
+    Value offsets = adaptor.getOffsets();
+    FailureOr<Type> offsetsCarrierType = getVgather2OffsetsCarrierType(
+        rewriter, op.getResult().getType(), offsets.getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vgather2 offsets carrier");
+    if (offsets.getType() != *offsetsCarrierType)
+      offsets = rewriter.create<LLVM::BitcastOp>(op.getLoc(), *offsetsCarrierType,
+                                                 offsets);
+
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(),
+        TypeRange{adaptor.getSource().getType(), *offsetsCarrierType,
                   adaptor.getMask().getType()},
         TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{resultType},
-        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()});
+        ValueRange{adaptor.getSource(), offsets, adaptor.getMask()});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.replaceOp(op, call.getResults());
     return success();
