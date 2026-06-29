@@ -10,7 +10,8 @@
 
 ## 1. Current Baseline
 
-Fifteen families now have PTODSL TileLib templates for their current TileLang bodies:
+Thirty-nine families now have PTODSL TileLib templates for their current TileLang bodies. The
+initial baseline and Group 1 families are:
 
 - `tadd`
 - `tsub`
@@ -31,8 +32,9 @@ Fifteen families now have PTODSL TileLib templates for their current TileLang bo
 `tdiv` default precision is also available, but that port is intentionally partial. Full parity
 with TileLang includes the high-precision branch and is counted in Group 4.
 
-The current PTODSL registrations cover the established `f32` baseline. Broader dtype coverage
-should be added deliberately with matching render and end-to-end tests.
+The initial elementwise and Group 1 registrations cover the established `f32` baseline. Group 2
+ports preserve their explicit TileLang dtype sets where present and use the A5 verifier-supported
+sets for generic templates.
 
 The working baseline proves these features:
 
@@ -62,9 +64,9 @@ complexity. Each port still needs an MLIR comparison against the TileLang result
 
 | Classification | Family count | Notes |
 |---|---:|---|
-| Migrated family bodies | 15 | Group 1 is complete; `tdiv` default precision is additional partial coverage |
+| Migrated family bodies | 39 | Groups 1 and 2 are complete; `tdiv` default precision is additional partial coverage |
 | Group 1 remaining | 0 | All 9 per-template migrations are implemented |
-| Group 2: author-surface extensions | 24 | Required operations already exist in PTODSL core |
+| Group 2 remaining | 0 | All 24 author-surface migrations are implemented |
 | Group 3: missing shared capability | 31 | Reusable PTODSL/TileLib feature required |
 | Group 4: separate milestones | 30 | Includes full `tdiv` parity |
 | **Total current TileLang families** | **100** | Every `lib/TileOps/*_template.py` family appears once in the full-parity classification |
@@ -132,7 +134,7 @@ Where TileLang supplies dtype signatures or legality predicates in a template de
 should translate those declarations into TileLib metadata; it should not rediscover the rules from
 generated MLIR.
 
-## 4. Group 2: TileLib Author-Surface Extensions (24 families)
+## 4. Group 2: TileLib Author-Surface Extensions (24 families, complete)
 
 PTODSL core already has the required raw operations. The main shared work is exposing compatible
 wrappers, enums, dtype constructors, and constraint inputs through `tilelib/author.py` and
@@ -150,8 +152,8 @@ wrappers, enums, dtype constructors, and constraint inputs through `tilelib/auth
 | `trowexpand`, `trowexpandadd`, `trowexpandmax`, `trowexpandmin`, `trowexpandmul`, `trowexpandsub`, `trowexpandexpdif` | `vdup`, existing vector operations, and richer constraint operand views |
 | `trowmax`, `trowmin`, `trowsum` | `bytewidth`, `vbr`, `vcmax`/`vcmin`/`vcadd`, `vsel`, and `vcvt` |
 
-This group should be handled in small shared batches. For example, add and test the unary vector
-exports once, then port `tabs`, `tneg`, `tnot`, and `trelu`.
+This group was handled in small shared batches: shared author exports first, followed by related
+template families and focused render tests.
 
 For every exported operation, use TileLang's public signature plus its semantic validation as the
 compatibility reference. The implementation should normally be a thin call into the already
@@ -159,8 +161,16 @@ existing PTODSL `_ops.py` function, not a port of TileLang's lowering machinery.
 
 The legacy constraints for some row-expansion templates accept Tile-like objects and inspect
 `.config`. The current TileLib constraint evaluator exposes flattened `{operand}_config` values.
-Either adapt those predicates during the port or add one reusable read-only operand-spec view.
-This is constraint plumbing, not a new MLIR lowering feature.
+The ports adapt those predicates to the flattened context without adding a second operand view.
+
+The ports are registered from `templates/a5/__init__.py` and covered by
+`ptodsl/tests/test_tilelib_group2.py`. The implementation:
+
+- adds thin TileLib author wrappers over existing PTODSL operations and enums;
+- adapts TileLang mask `.astype(...)` calls in `tsel` to PTODSL `pbitcast`;
+- translates row-expansion layout predicates to the flattened TileLib constraint context;
+- fixes PTODSL `vcadd` result inference so `i16` row sums widen to `i32` before conversion back;
+- verifies all 24 existing VPTO inputs through `--tile-lib-backend=ptodsl`.
 
 ## 5. Group 3: Missing Shared PTODSL Capability (31 families)
 

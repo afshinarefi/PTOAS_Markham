@@ -141,6 +141,9 @@ class VStoreDist:
 setattr(VStoreDist, "1PT_B8", VStoreDist._1PT_B8)
 setattr(VStoreDist, "1PT_B16", VStoreDist._1PT_B16)
 setattr(VStoreDist, "1PT_B32", VStoreDist._1PT_B32)
+VStoreDist.ONE_POINT_B8 = VStoreDist._1PT_B8
+VStoreDist.ONE_POINT_B16 = VStoreDist._1PT_B16
+VStoreDist.ONE_POINT_B32 = VStoreDist._1PT_B32
 
 
 class DeinterleaveDist:
