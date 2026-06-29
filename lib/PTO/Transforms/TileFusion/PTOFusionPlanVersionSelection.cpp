@@ -38,7 +38,6 @@ namespace {
 
 static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
-static constexpr llvm::StringLiteral kVersionIdAttr = "version_id";
 static constexpr llvm::StringLiteral kVersionNameAttr = "version_name";
 static constexpr llvm::StringLiteral kVersionsAttr = "versions";
 
@@ -634,29 +633,14 @@ static LogicalResult selectStandaloneVersions(func::FuncOp func,
       op->emitError("invalid TileOp implementation metadata");
       return WalkResult::interrupt();
     }
-    SmallVector<Attribute> selectedVersion;
-    auto makeVersion = [&](int64_t id, StringRef name) {
-      return DictionaryAttr::get(
-          ctx,
-          {
-              NamedAttribute(StringAttr::get(ctx, "id"),
-                             IntegerAttr::get(IntegerType::get(ctx, 64), id)),
-              NamedAttribute(StringAttr::get(ctx, "name"),
-                             StringAttr::get(ctx, name)),
-          });
-    };
 
     // Hard code version selection based on performance
-    if (op->getName().getStringRef() == "pto.tmul") {
-      selectedVersion.push_back(
-          makeVersion(versions->back().id, versions->back().name));
-    } else {
-      selectedVersion.push_back(
-          makeVersion(versions->front().id, versions->front().name));
-    }
-
-    op->setAttr("selected_version", ArrayAttr::get(ctx, selectedVersion));
-    // op->removeAttr(kVersionsAttr);
+    const pto::FusionTileOpVersions &selectedVersion =
+        op->getName().getStringRef() == "pto.tmul" ? versions->back()
+                                                   : versions->front();
+    op->setAttr(kVersionNameAttr,
+                StringAttr::get(ctx, selectedVersion.name));
+    op->removeAttr(kVersionsAttr);
     return WalkResult::advance();
   });
   return success(!result.wasInterrupted());
@@ -668,6 +652,10 @@ struct FusionPlanVersionSelectionPass
   using pto::impl::FusionPlanVersionSelectionBase<
       FusionPlanVersionSelectionPass>::FusionPlanVersionSelectionBase;
 
+  FusionPlanVersionSelectionPass() = default;
+  FusionPlanVersionSelectionPass(const pto::FusionPlanOptions &options)
+      : enableShapeInference(options.enableShapeInference) {}
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (func.isExternal())
@@ -675,8 +663,15 @@ struct FusionPlanVersionSelectionPass
 
     clearPlanningAttrs(func);
 
-    const auto &analysis = getAnalysis<pto::PreFusionAnalysis>();
-    if (!analysis.isValid()) {
+    const pto::PreFusionAnalysis &sharedAnalysis =
+        getAnalysis<pto::PreFusionAnalysis>();
+    if (!sharedAnalysis.isValid()) {
+      signalPassFailure();
+      return;
+    }
+    pto::PreFusionAnalysisResult analysis = sharedAnalysis.getResult();
+    if (failed(pto::inferIterationDomainClasses(analysis,
+                                                enableShapeInference))) {
       signalPassFailure();
       return;
     }
@@ -687,7 +682,7 @@ struct FusionPlanVersionSelectionPass
     ConservativeDAGGreedyStrategyEngine strategyEngine;
 
     for (const pto::FusionBlockAnalysis &blockAnalysis :
-         analysis.getResult().blocks) {
+         analysis.blocks) {
       PlanningContext planningCtx{blockAnalysis};
       SmallVector<PlannedFusionGroup, 8> groups =
           strategyEngine.planBlock(planningCtx, costModel);
@@ -697,10 +692,18 @@ struct FusionPlanVersionSelectionPass
     if (failed(selectStandaloneVersions(func, ctx)))
       signalPassFailure();
   }
+
+private:
+  bool enableShapeInference = false;
 };
 
 } // namespace
 
 std::unique_ptr<Pass> mlir::pto::createFusionPlanVersionSelectionPass() {
   return std::make_unique<FusionPlanVersionSelectionPass>();
+}
+
+std::unique_ptr<Pass> mlir::pto::createFusionPlanVersionSelectionPass(
+    const FusionPlanOptions &options) {
+  return std::make_unique<FusionPlanVersionSelectionPass>(options);
 }

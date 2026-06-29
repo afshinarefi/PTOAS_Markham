@@ -10,7 +10,7 @@
 // loop signature that uses NoPostUpdate. PostUpdate-only operations and
 // operations with no common no-post-update signature split.
 //
-// RUN: ptoas --pto-arch=a5 --pto-level=level2 --enable-op-fusion --enable-fusion-version-selection --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-plan-version-selection -o /dev/null 2>&1 | FileCheck %s
+// RUN: ptoas --pto-arch=a5 --pto-level=level2 --enable-op-fusion --enable-fusion-version-selection --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-plan-version-selection -o /dev/null 2>&1 | FileCheck --implicit-check-not="versions =" %s
 
 module {
   func.func @select_common_implementation(
@@ -18,8 +18,8 @@ module {
     %tmp0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
     %tmp1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
 
-    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, loop_depth = 1 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}, {id = 2 : i64, loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "has_tail"}, {id = 3 : i64, loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
-    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 7 : i64, loop_depth = 1 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}, {id = 8 : i64, loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "has_tail"}]}
+    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, name = "tadd_1d", loop_depth = 1 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}, {id = 2 : i64, name = "tadd_2d", loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "has_tail"}, {id = 3 : i64, name = "tadd_2d_post_update", loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
+    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 7 : i64, name = "tmul_1d", loop_depth = 1 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}, {id = 8 : i64, name = "tmul_2d", loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "has_tail"}]}
     return
   }
 
@@ -28,8 +28,8 @@ module {
     %tmp0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
     %tmp1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
 
-    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, loop_depth = 1 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
-    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 2 : i64, loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}]}
+    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, name = "tadd_post_update", loop_depth = 1 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
+    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 2 : i64, name = "tmul_2d", loop_depth = 2 : i64, vf_impl_kind = "NoPostUpdate", tail = "no_tail"}]}
     return
   }
 
@@ -38,31 +38,16 @@ module {
     %tmp0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
     %tmp1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
 
-    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
-    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 2 : i64, loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "no_tail"}]}
+    pto.tadd ins(%arg0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 1 : i64, name = "tadd_2d_post_update", loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "has_tail"}]}
+    pto.tmul ins(%tmp0, %arg0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {versions = [{id = 2 : i64, name = "tmul_2d_post_update", loop_depth = 2 : i64, vf_impl_kind = "PostUpdate", tail = "no_tail"}]}
     return
   }
 }
 
 // CHECK: // -----// IR Dump After FusionPlanVersionSelection (pto-fusion-plan-version-selection) //----- //
-// CHECK-LABEL: func.func @select_common_implementation(
-// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}version_id = 1 : i64
-// CHECK-NOT: versions
-// CHECK: pto.tmul{{.*}}pto.fusion.group_id = 0 : i64{{.*}}version_id = 7 : i64
-// CHECK-NOT: versions
-// CHECK-LABEL: func.func @reject_incompatible_implementations(
-// CHECK: pto.tadd{{.*}}version_id = 1 : i64
-// CHECK-NOT: pto.fusion.group_id
-// CHECK-NOT: versions
-// CHECK: pto.tmul{{.*}}version_id = 2 : i64
-// CHECK-NOT: pto.fusion.group_id
-// CHECK-NOT: versions
-// CHECK: return
-// CHECK-LABEL: func.func @reject_post_update_only(
-// CHECK: pto.tadd{{.*}}version_id = 1 : i64
-// CHECK-NOT: pto.fusion.group_id
-// CHECK-NOT: versions
-// CHECK: pto.tmul{{.*}}version_id = 2 : i64
-// CHECK-NOT: pto.fusion.group_id
-// CHECK-NOT: versions
-// CHECK: return
+// CHECK-DAG: pto.tadd{{.*}}{pto.fusion.group_id = 0 : i64{{.*}}version_name = "tadd_1d"
+// CHECK-DAG: pto.tmul{{.*}}{pto.fusion.group_id = 0 : i64{{.*}}version_name = "tmul_1d"
+// CHECK-DAG: pto.tadd{{.*}}{version_name = "tadd_post_update"}
+// CHECK-DAG: pto.tmul{{.*}}{version_name = "tmul_2d"}
+// CHECK-DAG: pto.tadd{{.*}}{version_name = "tadd_2d_post_update"}
+// CHECK-DAG: pto.tmul{{.*}}{version_name = "tmul_2d_post_update"}

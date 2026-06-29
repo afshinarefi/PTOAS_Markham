@@ -1351,9 +1351,6 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     if (auto selectedAttr =
             op->getAttrOfType<StringAttr>(kTileLibSelectedTemplateAttr))
       selectedTemplate = selectedAttr.getValue();
-    
-    auto selected = op->getAttrOfType<StringAttr>("version_name");
-    selectedTemplate = selected.getValue();
 
     // Invoke tilelang DSL (with caching).
     func::FuncOp dslFn =

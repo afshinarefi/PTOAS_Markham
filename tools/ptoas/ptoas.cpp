@@ -1947,7 +1947,7 @@ int mlir::pto::compilePTOASModule(OwningOpRef<ModuleOp> &module,
   auto addFusionPlan = [&]() {
     if (enableFusionVersionSelection) {
       pm.addNestedPass<mlir::func::FuncOp>(
-          pto::createFusionPlanVersionSelectionPass());
+          pto::createFusionPlanVersionSelectionPass(fusionPlanOpts));
     } else {
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createFusionPlanPass(fusionPlanOpts));
