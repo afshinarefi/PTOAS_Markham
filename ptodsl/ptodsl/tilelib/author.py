@@ -18,7 +18,7 @@ from __future__ import annotations
 
 # Engine control-flow surface (target of the AST rewrite).
 from .._control_flow import const_expr, for_, if_, static_range, vecscope, yield_
-from .._surface_types import PostUpdate, Tile
+from .._surface_types import PostUpdate, Tile, VStoreDist, VcvtPartMode, VcvtRoundMode, VcvtSatMode
 from .. import _ops
 from .._types import _resolve
 
@@ -79,6 +79,11 @@ def vdiv(lhs, rhs, mask):
     return _ops.vdiv(lhs, rhs, mask)
 
 
+def vcvt(src, to_dtype, mask, *, rnd=None, sat=None, part=None):
+    """``pto.vcvt`` vector type conversion."""
+    return _ops.vcvt(src, to_dtype, mask, rnd=rnd, sat=sat, part=part)
+
+
 def vsts(vec, dst_ptr, offset, mask=None, *, dist=None, post_update=PostUpdate.OFF):
     """``pto.vsts`` to a tile slice or pointer."""
     return _ops.vsts(vec, dst_ptr, offset, mask, dist=dist, post_update=post_update)
@@ -96,6 +101,10 @@ __all__ = [
     "make_mask",
     "addptr",
     "PostUpdate",
+    "VStoreDist",
+    "VcvtRoundMode",
+    "VcvtSatMode",
+    "VcvtPartMode",
     "vlds",
     "vadd",
     "vsub",
@@ -103,5 +112,6 @@ __all__ = [
     "vmax",
     "vmin",
     "vdiv",
+    "vcvt",
     "vsts",
 ]
