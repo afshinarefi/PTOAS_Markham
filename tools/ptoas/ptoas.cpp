@@ -524,6 +524,7 @@ static llvm::cl::opt<bool> enableShapeInference(
     llvm::cl::desc("Enable shape inference (ShapeConstraintSolver) for A5 tile "
                   "fusion. Off by default: falls back to static/direct-bound "
                   "iteration-domain inference."),
+    llvm::cl::init(false));
 
 static llvm::cl::opt<bool> enableFusionVersionSelection(
     "enable-fusion-version-selection",
