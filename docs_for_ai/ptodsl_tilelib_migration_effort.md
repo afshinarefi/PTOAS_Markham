@@ -10,7 +10,7 @@
 
 ## 1. Current Baseline
 
-The following families already have PTODSL TileLib templates:
+Fifteen families now have PTODSL TileLib templates for their current TileLang bodies:
 
 - `tadd`
 - `tsub`
@@ -18,10 +18,21 @@ The following families already have PTODSL TileLib templates:
 - `tmax`
 - `tmin`
 - `tcolmax`
-- `tdiv` default precision only
+- `tcolexpand`
+- `tcolexpandadd`
+- `tcolexpandmax`
+- `tcolexpandmin`
+- `tcolexpandmul`
+- `tcolexpandsub`
+- `tcolmin`
+- `tcolprod`
+- `tcolsum`
 
-The current `tdiv` port is intentionally partial. Full parity with TileLang includes the
-high-precision branch and therefore appears again in Group 4.
+`tdiv` default precision is also available, but that port is intentionally partial. Full parity
+with TileLang includes the high-precision branch and is counted in Group 4.
+
+The current PTODSL registrations cover the established `f32` baseline. Broader dtype coverage
+should be added deliberately with matching render and end-to-end tests.
 
 The working baseline proves these features:
 
@@ -47,7 +58,54 @@ The groups describe the first shared capability that blocks a faithful port.
 This is an effort classification, not a statement that every template in one group has identical
 complexity. Each port still needs an MLIR comparison against the TileLang result.
 
-## 3. Group 1: Per-Template Changes Only
+### 2.1 Counts
+
+| Classification | Family count | Notes |
+|---|---:|---|
+| Migrated family bodies | 15 | Group 1 is complete; `tdiv` default precision is additional partial coverage |
+| Group 1 remaining | 0 | All 9 per-template migrations are implemented |
+| Group 2: author-surface extensions | 24 | Required operations already exist in PTODSL core |
+| Group 3: missing shared capability | 31 | Reusable PTODSL/TileLib feature required |
+| Group 4: separate milestones | 30 | Includes full `tdiv` parity |
+| **Total current TileLang families** | **100** | Every `lib/TileOps/*_template.py` family appears once in the full-parity classification |
+
+### 2.2 TileLang is the reference, not a blank page
+
+Most migration work should not be designed from scratch. TileLang already defines:
+
+- the accepted Python authoring API and operation signatures;
+- legal dtype, layout, memory-space, mode, and attribute combinations;
+- descriptor registration, specialization, constraints, and selection;
+- scalar, Tile, TensorView, and PartitionTensorView parameter behavior;
+- vector/cube kernel classification;
+- semantic validation and the expected MLIR operations;
+- the current high-precision, conversion, random, sorting, DMA, and cube algorithms.
+
+The main references are:
+
+| TileLang source | What to reuse as the behavioral contract |
+|---|---|
+| `tilelang-dsl/python/tilelang_dsl/kernel.py` | `@vkernel`, `@ckernel`, `@inline_proc`, descriptors, specialization, constraints, and candidate selection |
+| `tilelang-dsl/python/tilelang_dsl/types.py` | Scalar/dtype vocabulary, pointer and vector types, `TileConfig`, `TileSpecialization`, enums, `constexpr`, and `get_op_attr` surface |
+| `tilelang-dsl/python/tilelang_dsl/frontend_ast.py` | Supported source syntax and compile-time-control-flow rules |
+| `tilelang-dsl/python/tilelang_dsl/semantic.py` | Parameter binding, context-attribute resolution, operation validation, Tile/view metadata access, and inline-procedure semantics |
+| `tilelang-dsl/python/tilelang_dsl/lowering.py` | Expected MLIR operation forms, scalar/view argument types, and vector-versus-cube function attributes |
+| `tilelang-dsl/python/tilelang_dsl/support_matrix.py` | Existing TileLang API coverage |
+| `lib/TileOps/` and helper files such as `div_hp.py` | The algorithms and current template bodies being migrated |
+
+Use these files to preserve behavior, but do not copy TileLang's complete AST/semantic/lowering
+engine into PTODSL. PTODSL already has its own tracing, surface values, control flow, and `_ops.py`
+lowering. The migration should port the missing contract or adapter and route emission through the
+PTODSL engine.
+
+| Group | What TileLang already does | What PTODSL should add |
+|---|---|---|
+| 1 | Registers the descriptor, evaluates existing constraints, and lowers an otherwise compatible body | TileLib metadata/decorator entry plus parity tests |
+| 2 | Exposes public operation names/enums and validates their signatures before lowering | Thin `author.py` exports/adapters over existing PTODSL `_ops.py`; reuse TileLang signatures as tests |
+| 3 | Binds mixed operands, resolves context attributes, exposes Tile configuration, implements inline helpers, and lowers the missing raw operations | Port each missing shared contract into PTODSL once, then reuse it across the affected families |
+| 4 | Defines cube/view/DMA ABIs and contains the complete complex algorithms | Add the necessary PTODSL architecture in a focused milestone, then adapt the existing TileLang bodies rather than rewriting the algorithms |
+
+## 3. Group 1: Per-Template Changes Only (9 families, complete)
 
 These bodies use the same Tile-only vector surface that already works. They should not require a
 new PTODSL lowering feature.
@@ -65,7 +123,16 @@ Typical work:
 4. Preserve the current body.
 5. Add selection and rendered-MLIR tests.
 
-## 4. Group 2: TileLib Author-Surface Extensions
+The ports are registered from `templates/a5/__init__.py` and covered by
+`ptodsl/tests/test_tilelib_group1.py`. The tests check selection, structured rendered MLIR, each
+family's vector operation, and the one-row output constraint for column reductions. The existing
+VPTO inputs for all nine families also compile through `--tile-lib-backend=ptodsl`.
+
+Where TileLang supplies dtype signatures or legality predicates in a template decorator, the port
+should translate those declarations into TileLib metadata; it should not rediscover the rules from
+generated MLIR.
+
+## 4. Group 2: TileLib Author-Surface Extensions (24 families)
 
 PTODSL core already has the required raw operations. The main shared work is exposing compatible
 wrappers, enums, dtype constructors, and constraint inputs through `tilelib/author.py` and
@@ -86,12 +153,16 @@ wrappers, enums, dtype constructors, and constraint inputs through `tilelib/auth
 This group should be handled in small shared batches. For example, add and test the unary vector
 exports once, then port `tabs`, `tneg`, `tnot`, and `trelu`.
 
+For every exported operation, use TileLang's public signature plus its semantic validation as the
+compatibility reference. The implementation should normally be a thin call into the already
+existing PTODSL `_ops.py` function, not a port of TileLang's lowering machinery.
+
 The legacy constraints for some row-expansion templates accept Tile-like objects and inspect
 `.config`. The current TileLib constraint evaluator exposes flattened `{operand}_config` values.
 Either adapt those predicates during the port or add one reusable read-only operand-spec view.
 This is constraint plumbing, not a new MLIR lowering feature.
 
-## 5. Group 3: Missing Shared PTODSL Capability
+## 5. Group 3: Missing Shared PTODSL Capability (31 families)
 
 These families remain vector-oriented, but a faithful port needs functionality that is not
 currently available in the PTODSL TileLib path.
@@ -111,6 +182,15 @@ constraint context before porting:
 - `tshls`, `tshrs`
 - `tsubs`, `txors`
 
+TileLang's existing path is the model:
+
+- `VKernelDescriptor` records the parameter specifications in `kernel.py`;
+- `SemanticKernel` binds scalar parameters in `semantic.py`;
+- `lowering.py` renders scalar function arguments and scalar expressions.
+
+PTODSL already has runtime scalar values and arithmetic. The missing piece is carrying scalar
+operand specs through the TileLib daemon and `_TemplateTrace`, not inventing scalar semantics.
+
 ### 5.2 Context attributes
 
 `ExpandTileOp` already sends `context_attrs`, but the TileLib body has no `get_op_attr` equivalent
@@ -121,6 +201,10 @@ and the registry does not add those attributes to the constraint context.
 
 The first implementation should provide one specialization context API used by both constraints
 and template bodies. Do not add per-op global variables.
+
+TileLang stores context attributes on the specialized descriptor/kernel and resolves
+`pto.get_op_attr(name, default)` in `SemanticKernel._analyze_get_op_attr`. Port that ownership
+model: specialization context enters once and is read during tracing.
 
 ### 5.3 Tile configuration and padding metadata
 
@@ -134,6 +218,10 @@ The render-time Tile object currently lacks the TileLang `.config` and `.pad_val
 
 This requires preserving concrete tile configuration through daemon decoding, specialization, and
 the render-time Tile wrapper.
+
+TileLang's `TileConfig`, `TileSpecialization`, and semantic Tile attribute handling define the
+required fields and their meaning. PTODSL should map the existing operand-spec JSON into an
+equivalent read-only authoring view instead of creating a second configuration vocabulary.
 
 ### 5.4 Missing raw operations
 
@@ -149,6 +237,10 @@ PTODSL wrapper yet:
 | `trem` | `vmod`, `vtrc` |
 | `tprelu` | `vprelu` |
 
+For these operations, TileLang's semantic checks and lowering cases provide the accepted operand
+types, modes, result types, and emitted PTO op. The PTODSL work is a corresponding `_ops.py`
+wrapper plus binding coverage; the operation semantics are already specified.
+
 ### 5.5 Small inline helper procedures
 
 - `tpartadd`
@@ -158,7 +250,12 @@ TileLang uses `@pto.inline_proc` helpers for these implementations. PTODSL curre
 the selected entry template. A small reusable helper-tracing mechanism, or a deliberate rewrite to
 explicit PTODSL control flow, is needed before calling these near-verbatim ports.
 
-## 6. Group 4: Separate Migration Milestones
+`kernel.py:inline_proc` and TileLang's semantic handling show how helper parameters, return values,
+and nested control flow behave. A PTODSL implementation can be smaller because PTODSL executes
+Python helpers while tracing, but each helper that contains runtime control flow must pass through
+the same AST rewrite as the entry template.
+
+## 6. Group 4: Separate Migration Milestones (30 families)
 
 These families should not be mixed into routine elementwise migration work.
 
@@ -181,6 +278,17 @@ PTODSL core already contains several `mad`, `mte_*`, and pointer operations, but
 these import-only ports. The TileLib function ABI and specialization model must represent their
 operands first.
 
+TileLang already provides the blueprint:
+
+- `@ckernel` marks the cube kernel family in `kernel.py`;
+- `lowering.py` emits `pto.kernel_kind<cube>`;
+- `semantic.py` models TensorView/PartitionTensorView shape, stride, memory-space, and pointer
+  behavior;
+- the existing templates state the required layout and DMA/cube operation sequence.
+
+The PTODSL milestone is therefore ABI/specialization integration and operation parity, not a new
+matmul or DMA design.
+
 ### 6.2 Full high-precision math implementations
 
 These implementations combine context attributes with helper libraries such as `div_hp.py`,
@@ -199,6 +307,11 @@ and additional vector operations.
 Default-precision subsets may be useful temporary ports, but they do not count as migration of the
 current TileLang implementation.
 
+The algorithms already exist in `div_hp.py`, `exp_hp.py`, `sqrt_hp.py`, `math.py`, and the
+templates themselves. TileLang's `@inline_proc`, `constexpr`, context-attribute, and raw-op support
+show what those algorithms require. Port the support they consume; do not rederive the numerical
+algorithms.
+
 ### 6.3 Large conversion, random, and sorting implementations
 
 - `tcvt`
@@ -213,6 +326,10 @@ raw operations such as `vci`, `vintlv`, `vbitsort`, `vmrgsort4`, `vaddc`, and `v
 Port the shared capabilities against smaller Group 3 templates first. Otherwise these files make
 it difficult to tell whether a failure comes from the frontend, an operation wrapper, or the
 algorithm itself.
+
+Again, the current TileLang files are the executable specification. They identify every dtype
+path, predicate transform, loop structure, mode, and helper call. The work is to make those paths
+expressible through PTODSL and compare the rendered MLIR, not to design replacement algorithms.
 
 ## 7. Cross-Cutting Syntax and API Gaps
 

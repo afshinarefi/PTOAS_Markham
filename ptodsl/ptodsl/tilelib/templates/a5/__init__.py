@@ -9,7 +9,16 @@
 
 from . import (  # noqa: F401  (import side effect: @tile_template registration)
     tadd,
+    tcolexpand,
+    tcolexpandadd,
+    tcolexpandmax,
+    tcolexpandmin,
+    tcolexpandmul,
+    tcolexpandsub,
     tcolmax,
+    tcolmin,
+    tcolprod,
+    tcolsum,
     tdiv,
     tmax,
     tmin,
