@@ -62,6 +62,7 @@ from ._types import (
     _materialize_integer_literal,
     _normalize_address_space,
     _resolve,
+    _strip_integer_signedness,
     mask_type,
     part_tensor_view_type,
     part_tensor_view_type_from_dims,
@@ -186,6 +187,17 @@ def const(value: int, *, dtype=None):
     if IntegerType.isinstance(mlir_type):
         return wrap_surface_value(_materialize_integer_literal(mlir_type, value))
     return wrap_surface_value(arith.ConstantOp(mlir_type, value).result)
+
+
+def cast_scalar(value, dtype):
+    """Coerce a traced scalar value or literal to *dtype*."""
+    return wrap_surface_value(
+        coerce_scalar_to_type(
+            value,
+            _resolve(dtype),
+            context="cast_scalar(value, dtype)",
+        )
+    )
 
 
 # ── Pointer ops ───────────────────────────────────────────────────────────────
@@ -387,6 +399,30 @@ def vbitcast(vector_value, to_dtype):
             unwrap_surface_value(vector_value),
         ).result
     )
+
+
+def vintlv(lhs, rhs):
+    """``pto.vintlv`` – interleave two vector registers."""
+    result_type = unwrap_surface_value(lhs).type
+    op = _pto.VintlvOp(
+        result_type,
+        result_type,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+    )
+    return wrap_surface_value(op.low), wrap_surface_value(op.high)
+
+
+def vdintlv(lhs, rhs):
+    """``pto.vdintlv`` – deinterleave two vector registers."""
+    result_type = unwrap_surface_value(lhs).type
+    op = _pto.VdintlvOp(
+        result_type,
+        result_type,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+    )
+    return wrap_surface_value(op.low), wrap_surface_value(op.high)
 
 
 def pbitcast(mask_value, to_type):
@@ -1686,6 +1722,19 @@ def vmul(lhs, rhs, mask):
     return _emit_binary_vec_op(_pto.VmulOp, lhs, rhs, mask)
 
 
+def vmull(lhs, rhs, mask):
+    """``pto.vmull`` – widened multiply returning low and high halves."""
+    result_type = unwrap_surface_value(lhs).type
+    op = _pto.VmullOp(
+        result_type,
+        result_type,
+        unwrap_surface_value(lhs),
+        unwrap_surface_value(rhs),
+        unwrap_surface_value(mask),
+    )
+    return wrap_surface_value(op.low), wrap_surface_value(op.high)
+
+
 def vmax(lhs, rhs, mask):
     """``pto.vmax`` – element-wise maximum."""
     return _emit_binary_vec_op(_pto.VmaxOp, lhs, rhs, mask)
@@ -2016,6 +2065,57 @@ def vmins(inp, scalar, mask):
 def vlrelu(inp, alpha, mask):
     """``pto.vlrelu`` – vector leaky ReLU under mask."""
     return _emit_vec_scalar_masked_op(_pto.VlreluOp, inp, alpha, mask, context="vlrelu")
+
+
+def vshls(inp, scalar, mask):
+    """``pto.vshls`` – vector left shift by a scalar."""
+    scalar_value = coerce_scalar_to_type(
+        scalar,
+        IntegerType.get_signless(16),
+        context="vshls(...)",
+    )
+    return wrap_surface_value(
+        _pto.VshlsOp(
+            unwrap_surface_value(inp).type,
+            unwrap_surface_value(inp),
+            scalar_value,
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vshrs(inp, scalar, mask):
+    """``pto.vshrs`` – vector right shift by a scalar."""
+    scalar_value = coerce_scalar_to_type(
+        scalar,
+        IntegerType.get_signless(16),
+        context="vshrs(...)",
+    )
+    return wrap_surface_value(
+        _pto.VshrsOp(
+            unwrap_surface_value(inp).type,
+            unwrap_surface_value(inp),
+            scalar_value,
+            unwrap_surface_value(mask),
+        ).result
+    )
+
+
+def vtrc(inp, mask, round_mode="Z"):
+    """``pto.vtrc`` – truncate vector values with the requested rounding mode."""
+    return wrap_surface_value(
+        _pto.VtrcOp(
+            unwrap_surface_value(inp).type,
+            unwrap_surface_value(inp),
+            unwrap_surface_value(mask),
+            _normalize_vcvt_round_mode(round_mode, context="vtrc"),
+        ).result
+    )
+
+
+def vprelu(lhs, rhs, mask):
+    """``pto.vprelu`` – element-wise PReLU."""
+    return _emit_binary_vec_op(_pto.VpreluOp, lhs, rhs, mask)
 
 
 def vaddrelu(lhs, rhs, mask):

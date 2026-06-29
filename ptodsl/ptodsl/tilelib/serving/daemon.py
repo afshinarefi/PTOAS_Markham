@@ -27,7 +27,7 @@ import socketserver
 import threading
 
 from .wire import recv_message, send_message
-from ..metadata import ScalarType, TileSpec
+from ..metadata import ScalarSpec, ScalarType, TileSpec
 from .. import registry as _registry
 
 
@@ -35,9 +35,13 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
     """Zip the positional ExpandTileOp operand_specs onto the template's parameter names."""
     tile_specs = {}
     for name, spec in zip(descriptor.param_names, operand_specs):
+        if spec.get("kind") == "scalar":
+            tile_specs[name] = ScalarSpec(
+                dtype=ScalarType(spec["dtype"]),
+                value=spec.get("value"),
+            )
+            continue
         if spec.get("kind") != "tile":
-            # MVP: tadd-family is all-tile. Non-tile operands (view/scalar) arrive once
-            # those ops are ported; they don't contribute a TileSpec here.
             continue
         config = spec.get("config") or {}
         valid_shape = spec.get("valid_shape")
@@ -48,6 +52,8 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             valid_shape=tuple(valid_shape) if valid_shape else None,
             b_layout=config.get("b_layout", "row_major"),
             s_layout=config.get("s_layout", "none_box"),
+            s_fractal_size=config.get("s_fractal_size", 512),
+            pad_value=config.get("pad_value", "0x0"),
         )
     return tile_specs
 
@@ -118,7 +124,7 @@ def render_request(target: str, op: str, operand_specs: list,
 
     tile_specs = _tile_specs_for_request(target, op, operand_specs)
     descriptor = _registry.select(op, target, tile_specs, context_attrs, candidate_id)
-    return descriptor.specialize(**tile_specs).mlir_text()
+    return descriptor.specialize(context_attrs=context_attrs, **tile_specs).mlir_text()
 
 
 class TileLibDaemonServer(socketserver.ThreadingUnixStreamServer):

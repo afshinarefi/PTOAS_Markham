@@ -35,7 +35,7 @@ def select_and_specialize(op: str, target: str, tile_specs: dict,
                           candidate_id: str | None = None):
     _ensure_templates_loaded()
     descriptor = _registry.select(op, target, tile_specs, context_attrs, candidate_id)
-    return descriptor.specialize(**tile_specs)
+    return descriptor.specialize(context_attrs=context_attrs, **tile_specs)
 
 
 def render_best(op: str, target: str, tile_specs: dict,

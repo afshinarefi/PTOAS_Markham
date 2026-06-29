@@ -41,6 +41,7 @@ def _tile_spec(dtype="f32"):
 # operand order matches `pto.tadd ins(src0, src1) outs(dst)` == template params (src0, src1, dst).
 TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
 TADD_2D_NO_POST_UPDATE = "template_tadd_2d_no_post_update"
+TADDS_OPERANDS = [_tile_spec(), {"kind": "scalar", "dtype": "f32"}, _tile_spec()]
 
 
 class TileLibDaemonTest(unittest.TestCase):
@@ -105,6 +106,21 @@ class TileLibDaemonTest(unittest.TestCase):
             "a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE
         )
         self.assertIn(f"func.func @{TADD_2D_NO_POST_UPDATE}", mlir)
+
+    def test_instantiate_preserves_scalar_operands(self):
+        mlir = self.client.instantiate("a5", "pto.tadds", TADDS_OPERANDS)
+        self.assertIn("%arg1: f32", mlir)
+        self.assertIn("pto.vadds", mlir)
+
+    def test_instantiate_passes_context_attributes(self):
+        operands = [_tile_spec(), _tile_spec(), _tile_spec("i8")]
+        mlir = self.client.instantiate(
+            "a5",
+            "pto.tcmp",
+            operands,
+            context_attrs={"cmp_mode": "lt"},
+        )
+        self.assertIn('"lt"', mlir)
 
     def test_cache_hit_on_repeat(self):
         self.client.instantiate("a5", "pto.tadd", TADD_OPERANDS, candidate_id=TADD_2D_NO_POST_UPDATE)

@@ -23,12 +23,14 @@ valid-shape, mask and vector ops all come from the existing ptodsl engine.
 from __future__ import annotations
 
 import inspect
+from dataclasses import dataclass
 
-from .metadata import TileSpec, scalar_descriptor
+from .author import PadValue, _activate_context_attrs
+from .metadata import ScalarSpec, TileSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
 from .._bootstrap import make_context
 from .._surface_types import Tile
-from .._surface_values import TileValue
+from .._surface_values import TileValue, wrap_surface_value
 from .._tracing import KernelModuleSpec, ModuleStyle, TracingRuntime
 from .._tracing.active import activate_runtime, activate_session
 from .._types import _resolve
@@ -62,16 +64,38 @@ class _TemplateTile(TileValue):
         # Force the dynamic valid-shape ops to match the tilelang render.
         self.static_valid_shape = None
         self._valid_shape._cache.clear()
+        self.config = _TemplateConfig(
+            b_layout=spec.b_layout,
+            s_layout=spec.s_layout,
+            s_fractal_size=spec.s_fractal_size,
+        )
+        pad_kind = {
+            "0x0": PadValue.NULL,
+            "0x1": PadValue.ZERO,
+            "0x2": PadValue.MAX,
+            "0x3": PadValue.MIN,
+        }.get(str(spec.pad_value).lower())
+        if pad_kind is None:
+            raise ValueError(f"unsupported tile pad value {spec.pad_value!r}")
+        self.pad_value = pad_kind.bind(elem)
 
     @property
     def element_type(self):
         return self.dtype
 
 
+@dataclass(frozen=True)
+class _TemplateConfig:
+    b_layout: str
+    s_layout: str
+    s_fractal_size: int
+
+
 # ── tracing runtime ────────────────────────────────────────────────────────────────
 
 class _TemplateTrace(TracingRuntime):
-    def __init__(self, descriptor, tile_specs: dict):
+    def __init__(self, descriptor, tile_specs: dict,
+                 context_attrs: dict | None = None):
         super().__init__(
             KernelModuleSpec(
                 function_name=descriptor.name,
@@ -85,6 +109,7 @@ class _TemplateTrace(TracingRuntime):
         )
         self.descriptor = descriptor
         self.tile_specs = tile_specs
+        self.context_attrs = dict(context_attrs or {})
         self._ordered_specs: list = []
         self._signature_parameters = tuple(inspect.signature(descriptor.py_fn).parameters.items())
 
@@ -92,13 +117,17 @@ class _TemplateTrace(TracingRuntime):
         arg_types = []
         ordered = []
         for param_name, param in self._signature_parameters:
-            if not _is_tile_annotation(param.annotation):
-                raise TypeError(
-                    f"tile-template parameters must be annotated Tile; {param_name!r} is {param.annotation!r}"
-                )
             spec = self.tile_specs.get(param_name)
             if spec is None:
-                raise ValueError(f"missing TileSpec for parameter {param_name!r}")
+                raise ValueError(f"missing operand spec for parameter {param_name!r}")
+            if isinstance(spec, TileSpec) and not _is_tile_annotation(param.annotation):
+                raise TypeError(
+                    f"tile operand {param_name!r} must be annotated Tile; got {param.annotation!r}"
+                )
+            if isinstance(spec, ScalarSpec) and not _is_scalar_annotation(param.annotation):
+                raise TypeError(
+                    f"scalar operand {param_name!r} must be annotated Scalar; got {param.annotation!r}"
+                )
             ordered.append((param_name, spec))
             arg_types.append(spec.mlir_type())
         self._ordered_specs = ordered
@@ -106,7 +135,8 @@ class _TemplateTrace(TracingRuntime):
 
     def bind_entry_arguments(self, entry_arguments):
         return tuple(
-            _TemplateTile(arg, spec) for arg, (_, spec) in zip(entry_arguments, self._ordered_specs)
+            _TemplateTile(arg, spec) if isinstance(spec, TileSpec) else wrap_surface_value(arg)
+            for arg, (_, spec) in zip(entry_arguments, self._ordered_specs)
         )
 
     def trace_entry(self, *args):
@@ -123,7 +153,8 @@ class _TemplateTrace(TracingRuntime):
             module, ir_fn = self._create_instance_module(arg_types)
             session = self.create_session(module, ir_fn)
             entry = ir_fn.add_entry_block()
-            with InsertionPoint(entry), activate_runtime(self), activate_session(session):
+            with (InsertionPoint(entry), activate_runtime(self), activate_session(session),
+                  _activate_context_attrs(self.context_attrs)):
                 self.initialize_session(session, entry)
                 args = self.bind_entry_arguments(entry.arguments)
                 self.trace_entry(*args)
@@ -151,6 +182,12 @@ def _is_tile_annotation(annotation) -> bool:
     if isinstance(annotation, str):
         return annotation == "Tile" or annotation.endswith(".Tile")
     return getattr(annotation, "__name__", None) == "Tile"
+
+
+def _is_scalar_annotation(annotation) -> bool:
+    if isinstance(annotation, str):
+        return annotation == "Scalar" or annotation.endswith(".Scalar")
+    return getattr(annotation, "__name__", None) == "Scalar"
 
 
 __all__ = ["_TemplateTrace", "_TemplateTile"]

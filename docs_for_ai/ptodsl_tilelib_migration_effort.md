@@ -10,7 +10,7 @@
 
 ## 1. Current Baseline
 
-Thirty-nine families now have PTODSL TileLib templates for their current TileLang bodies. The
+Seventy families now have PTODSL TileLib templates. Groups 1, 2, and 3 are complete; the
 initial baseline and Group 1 families are:
 
 - `tadd`
@@ -64,10 +64,10 @@ complexity. Each port still needs an MLIR comparison against the TileLang result
 
 | Classification | Family count | Notes |
 |---|---:|---|
-| Migrated family bodies | 39 | Groups 1 and 2 are complete; `tdiv` default precision is additional partial coverage |
+| Migrated family bodies | 70 | Groups 1, 2, and 3 are complete; `tdiv` default precision remains partial coverage |
 | Group 1 remaining | 0 | All 9 per-template migrations are implemented |
 | Group 2 remaining | 0 | All 24 author-surface migrations are implemented |
-| Group 3: missing shared capability | 31 | Reusable PTODSL/TileLib feature required |
+| Group 3 remaining | 0 | All 31 shared-capability migrations are implemented |
 | Group 4: separate milestones | 30 | Includes full `tdiv` parity |
 | **Total current TileLang families** | **100** | Every `lib/TileOps/*_template.py` family appears once in the full-parity classification |
 
@@ -172,16 +172,15 @@ The ports are registered from `templates/a5/__init__.py` and covered by
 - fixes PTODSL `vcadd` result inference so `i16` row sums widen to `i32` before conversion back;
 - verifies all 24 existing VPTO inputs through `--tile-lib-backend=ptodsl`.
 
-## 5. Group 3: Missing Shared PTODSL Capability (31 families)
+## 5. Group 3: Shared PTODSL Capabilities (31 families, complete)
 
-These families remain vector-oriented, but a faithful port needs functionality that is not
-currently available in the PTODSL TileLib path.
+These vector-oriented families required reusable TileLib capabilities before their bodies could
+be ported. The capabilities and all 31 templates are now implemented.
 
 ### 5.1 Mixed Tile and scalar parameters
 
-Current TileLib rendering requires every template parameter to be `Tile`, and the daemon drops
-non-tile operand specs. Add scalar specialization, argument typing, binding, dtype matching, and
-constraint context before porting:
+TileLib now preserves scalar operand specs through daemon decoding, specialization, function
+argument typing, tracing, dtype matching, and constraint contexts:
 
 - `tadds`, `tands`, `tcmps`
 - `texpand`, `tfmods`
@@ -209,8 +208,8 @@ and the registry does not add those attributes to the constraint context.
 - `tcmp`
 - `tcmps` also needs mixed-scalar support above
 
-The first implementation should provide one specialization context API used by both constraints
-and template bodies. Do not add per-op global variables.
+The specialization context is shared by constraints and template bodies through
+`pto.get_op_attr`; it does not use per-op global state.
 
 TileLang stores context attributes on the specialized descriptor/kernel and resolves
 `pto.get_op_attr(name, default)` in `SemanticKernel._analyze_get_op_attr`. Port that ownership
@@ -218,16 +217,16 @@ model: specialization context enters once and is read during tracing.
 
 ### 5.3 Tile configuration and padding metadata
 
-The render-time Tile object currently lacks the TileLang `.config` and `.pad_value` contract, while
-`TileSpec.mlir_type()` hardcodes row-major/none-box/Null padding.
+The render-time Tile object now exposes the TileLang `.config` and `.pad_value` contract, and
+`TileSpec.mlir_type()` preserves layout, fractal size, valid shape, and standard padding values.
 
 - `tfillpad`
 - `tfillpad_expand`
 - `tfillpad_inplace`
 - `tmov`
 
-This requires preserving concrete tile configuration through daemon decoding, specialization, and
-the render-time Tile wrapper.
+Concrete tile configuration is preserved through daemon decoding, specialization, and the
+render-time Tile wrapper.
 
 TileLang's `TileConfig`, `TileSpecialization`, and semantic Tile attribute handling define the
 required fields and their meaning. PTODSL should map the existing operand-spec JSON into an
@@ -235,8 +234,7 @@ equivalent read-only authoring view instead of creating a second configuration v
 
 ### 5.4 Missing raw operations
 
-These are not solved by an `author.py` re-export because at least one required operation has no
-PTODSL wrapper yet:
+These families added the required PTODSL wrappers and the signed-i32 software remainder helper:
 
 | Families | Missing examples |
 |---|---|
@@ -244,7 +242,7 @@ PTODSL wrapper yet:
 | `trowargmax`, `trowargmin` | `vdintlv` |
 | `trowprod` | `vintlv` |
 | `tfmod` | `vtrc` |
-| `trem` | `vmod`, `vtrc` |
+| `trem` | TileLang-compatible software `vmod`, `vtrc` |
 | `tprelu` | `vprelu` |
 
 For these operations, TileLang's semantic checks and lowering cases provide the accepted operand
@@ -256,14 +254,15 @@ wrapper plus binding coverage; the operation semantics are already specified.
 - `tpartadd`
 - `tpartmul`
 
-TileLang uses `@pto.inline_proc` helpers for these implementations. PTODSL currently rewrites only
-the selected entry template. A small reusable helper-tracing mechanism, or a deliberate rewrite to
-explicit PTODSL control flow, is needed before calling these near-verbatim ports.
+TileLang uses `@pto.inline_proc` helpers for these implementations. PTODSL now applies the same AST
+rewrite used by an entry template to an inline helper before tracing it.
 
-`kernel.py:inline_proc` and TileLang's semantic handling show how helper parameters, return values,
-and nested control flow behave. A PTODSL implementation can be smaller because PTODSL executes
-Python helpers while tracing, but each helper that contains runtime control flow must pass through
-the same AST rewrite as the entry template.
+The ports are registered from `templates/a5/__init__.py` and covered by
+`ptodsl/tests/test_tilelib_group3.py`. The tests render all 31 families and separately cover scalar
+ABI preservation, context attributes, tile configuration/padding, and the i32 software remainder
+sequence. Daemon tests cover the serialized scalar and context-attribute request paths. In
+addition, all 26 existing Group 3 VPTO inputs currently available under `test/lit/vpto/` compile
+through `--tile-lib-backend=ptodsl`.
 
 ## 6. Group 4: Separate Migration Milestones (30 families)
 
@@ -387,25 +386,21 @@ conversion, random, and sorting templates are more likely to expose carry and ex
 
 ### Raw operation coverage
 
-The current TileLang templates call 115 distinct `pto.*` callables:
-
-- 12 are directly exposed by the current TileLib author surface;
-- 58 have PTODSL core implementations but are not exposed through TileLib;
-- the remainder includes decorators/types plus genuinely missing operations.
+The TileLang template corpus still uses a broader `pto.*` surface than PTODSL TileLib exposes.
+Group 3 added the wrappers required by its current bodies, but Group 4 must be audited against its
+own conversion, sort, random, DMA, cube, and high-precision helper requirements.
 
 Therefore, do not add duplicate lowering code to `author.py`. Re-export or thinly adapt existing
 `_ops.py` functions where they already exist, and add new core wrappers only for verified gaps.
 
 ## 8. Recommended Order
 
-1. Finish Group 1 and establish one rendered-MLIR parity test per family shape.
-2. Expand `author.py` in coherent operation batches and migrate Group 2.
-3. Add mixed scalar operands, then migrate the scalar variants in Group 3.
-4. Add the specialization-context API and migrate `tcmp` before attempting `tcvt` or
-   high-precision math.
-5. Preserve Tile configuration/padding and migrate the fill/move families.
-6. Add missing vector wrappers using small Group 3 templates as focused tests.
-7. Treat cube/DMA, full high-precision math, and conversion/sort/random as separate milestones.
+Groups 1 through 3 are complete. The next work should keep the remaining architectural boundaries
+separate:
+
+1. Treat cube/DMA and mixed view ABIs as one focused milestone.
+2. Port full high-precision math together with the helper operations it consumes.
+3. Handle conversion, sort, and random families as separate algorithm-heavy milestones.
 
 This order grows shared capability only when a current TileLang implementation requires it. It
 avoids inventing future versions or generality that no existing template consumes.

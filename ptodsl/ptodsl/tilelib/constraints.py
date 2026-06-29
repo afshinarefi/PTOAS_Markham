@@ -44,11 +44,15 @@ class _ConfigView:
 
     b_layout: str
     s_layout: str
+    s_fractal_size: int = 512
 
 
-def build_context(tile_specs: dict, target: str, op: str) -> dict:
+def build_context(operand_specs: dict, target: str, op: str,
+                  context_attrs: dict | None = None) -> dict:
     """Build the flat name-keyed context predicates are matched against."""
     context: dict = {"target": target, "op": op}
+    context.update(context_attrs or {})
+    context["context_attrs"] = dict(context_attrs or {})
     operand_dtypes = []
     operand_memory_spaces = []
     operand_rows = []
@@ -56,14 +60,18 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
     operand_sizes = []
     operand_valid_cols = []
     operand_b_layouts = []
-    for name, spec in tile_specs.items():
+    for name, spec in operand_specs.items():
+        dtype = spec.dtype.name
+        operand_dtypes.append(dtype)
+        context[f"{name}_dtype"] = dtype
+        if not hasattr(spec, "shape"):
+            context[f"{name}_value"] = getattr(spec, "value", None)
+            continue
         shape = tuple(spec.shape)
         valid = tuple(spec.valid_shape) if getattr(spec, "valid_shape", None) else shape
-        dtype = spec.dtype.name
         memory_space = getattr(spec, "memory_space", "ub")
         b_layout = getattr(spec, "b_layout", "row_major")
         s_layout = getattr(spec, "s_layout", "none_box")
-        operand_dtypes.append(dtype)
         operand_memory_spaces.append(memory_space)
         operand_sizes.append(_shape_size(shape))
         operand_b_layouts.append(b_layout)
@@ -74,6 +82,7 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
         context[f"{name}_config"] = _ConfigView(
             b_layout=b_layout,
             s_layout=s_layout,
+            s_fractal_size=getattr(spec, "s_fractal_size", 512),
         )
         if len(shape) == 2:
             context[f"{name}_rows"], context[f"{name}_cols"] = shape

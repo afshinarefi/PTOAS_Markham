@@ -23,7 +23,14 @@ from .._types import (
     int16 as _int16,
     int32 as _int32,
     int64 as _int64,
+    si8 as _si8,
+    si16 as _si16,
+    si32 as _si32,
     tile_buf_type as _tile_buf_type,
+    ui8 as _ui8,
+    ui16 as _ui16,
+    ui32 as _ui32,
+    _resolve,
 )
 
 from mlir.ir import Type
@@ -43,8 +50,15 @@ f32 = ScalarType("f32")
 f16 = ScalarType("f16")
 bf16 = ScalarType("bf16")
 i32 = ScalarType("i32")
+i64 = ScalarType("i64")
 i16 = ScalarType("i16")
 i8 = ScalarType("i8")
+si32 = ScalarType("si32")
+si16 = ScalarType("si16")
+si8 = ScalarType("si8")
+ui32 = ScalarType("ui32")
+ui16 = ScalarType("ui16")
+ui8 = ScalarType("ui8")
 
 
 def scalar_descriptor(dtype: ScalarType):
@@ -57,6 +71,12 @@ def scalar_descriptor(dtype: ScalarType):
         "i16": _int16,
         "i32": _int32,
         "i64": _int64,
+        "si8": _si8,
+        "si16": _si16,
+        "si32": _si32,
+        "ui8": _ui8,
+        "ui16": _ui16,
+        "ui32": _ui32,
     }
     descriptor = descriptors.get(dtype.name)
     if descriptor is None:
@@ -65,12 +85,22 @@ def scalar_descriptor(dtype: ScalarType):
 
 
 @dataclass(frozen=True)
+class ScalarSpec:
+    """Concrete specialization of one scalar operand."""
+
+    dtype: ScalarType
+    value: int | float | None = None
+
+    def mlir_type(self):
+        return _resolve(scalar_descriptor(self.dtype))
+
+
+@dataclass(frozen=True)
 class TileSpec:
     """Concrete specialization of one tile operand.
 
-    ``valid_shape``/``b_layout``/``s_layout`` are carried for constraint evaluation
-    (selection). Rendering currently always emits row-major/none-box tile_buf types; a
-    non-row-major operand is rejected by the relevant template's constraints before render.
+    Shape, layout, fractal size, and standard padding are preserved in the rendered
+    ``tile_buf`` type as well as exposed to legality constraints.
     """
 
     shape: tuple
@@ -79,6 +109,8 @@ class TileSpec:
     valid_shape: tuple | None = None
     b_layout: str = "row_major"
     s_layout: str = "none_box"
+    s_fractal_size: int = 512
+    pad_value: str = "0x0"
 
     def __post_init__(self):
         if len(self.shape) != 2:
@@ -90,15 +122,36 @@ class TileSpec:
 
     def mlir_type(self):
         rows, cols = self.shape
+        blayout = {
+            "row_major": "RowMajor",
+            "col_major": "ColMajor",
+        }.get(self.b_layout)
+        slayout = {
+            "none_box": "NoneBox",
+            "row_major": "RowMajor",
+            "col_major": "ColMajor",
+        }.get(self.s_layout)
+        pad = {
+            "0x0": "Null",
+            "0x1": "Zero",
+            "0x2": "Max",
+            "0x3": "Min",
+        }.get(str(self.pad_value).lower())
+        if blayout is None or slayout is None:
+            raise ValueError(
+                f"unsupported tile layout b_layout={self.b_layout!r}, s_layout={self.s_layout!r}"
+            )
+        if pad is None:
+            raise ValueError(f"unsupported tile pad value {self.pad_value!r}")
         return _tile_buf_type(
             [rows, cols],
             scalar_descriptor(self.dtype),
-            [rows, cols],
-            blayout="RowMajor",
+            list(self.valid_shape) if self.valid_shape else [rows, cols],
+            blayout=blayout,
             address_space=self.memory_space,
-            slayout="NoneBox",
-            fractal_size=512,
-            pad="Null",
+            slayout=slayout,
+            fractal_size=self.s_fractal_size,
+            pad=pad,
         )
 
 
@@ -148,6 +201,7 @@ class TemplateMetadata:
 
 __all__ = [
     "ScalarType",
+    "ScalarSpec",
     "TileSpec",
     "TemplateMetadata",
     "scalar_descriptor",
@@ -155,6 +209,13 @@ __all__ = [
     "f16",
     "bf16",
     "i32",
+    "i64",
     "i16",
     "i8",
+    "si32",
+    "si16",
+    "si8",
+    "ui32",
+    "ui16",
+    "ui8",
 ]
