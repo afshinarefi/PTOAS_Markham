@@ -287,13 +287,17 @@ def metadata_request(
     constraint_context = _constraints.build_context(tile_specs, target, op)
     if context_attrs:
         constraint_context.update(context_attrs)
+<<<<<<< HEAD
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
     return {
         "target": target,
         "op": op,
         "candidates": {
             descriptor.name: _metadata_for_descriptor(
                 descriptor,
+<<<<<<< HEAD
 <<<<<<< HEAD
                 {
                     **_constraints.build_context(specs, target, op),
@@ -302,6 +306,8 @@ def metadata_request(
             )
             for descriptor, specs in legal
 =======
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
                 constraint_context,
             )
             for descriptor in legal

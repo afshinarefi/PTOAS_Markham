@@ -8,6 +8,7 @@
 
 #include "PTO/IR/PTO.h"
 <<<<<<< HEAD
+<<<<<<< HEAD
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -18,12 +19,17 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 =======
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+<<<<<<< HEAD
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -71,18 +77,22 @@ struct CandidateMetadata {
 
 static std::string getDtypeString(Type elementType) {
 <<<<<<< HEAD
+<<<<<<< HEAD
   if (elementType.isIndex())
     return "i32";
   if (elementType.isInteger(1))
     return "i1";
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   if (elementType.isF32())
     return "f32";
   if (elementType.isF16())
     return "f16";
   if (elementType.isBF16())
     return "bf16";
+<<<<<<< HEAD
 <<<<<<< HEAD
   if (isa<Float8E4M3FNType>(elementType))
     return "f8e4m3";
@@ -114,6 +124,8 @@ static std::string getDtypeString(Type elementType) {
     return "i64";
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   if (elementType.isSignlessInteger(32))
     return "i32";
   if (elementType.isSignlessInteger(16))
@@ -154,6 +166,7 @@ static std::string getMemorySpaceString(pto::TileBufType tileType) {
 }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 static std::string getMemorySpaceString(MemRefType memrefType) {
   auto memorySpace =
       dyn_cast_or_null<pto::AddressSpaceAttr>(memrefType.getMemorySpace());
@@ -167,6 +180,8 @@ static std::string getMemorySpaceString(pto::PartitionTensorViewType) {
 
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 static StringRef getBLayoutString(pto::BLayout layout) {
   return layout == pto::BLayout::ColMajor ? "col_major" : "row_major";
 }
@@ -189,6 +204,7 @@ static void appendJsonIntArray(std::string &json, ArrayRef<int64_t> values) {
   json += "]";
 }
 
+<<<<<<< HEAD
 <<<<<<< HEAD
 static void appendJsonDimArray(std::string &json, ArrayRef<int64_t> values) {
   json += "[";
@@ -659,10 +675,13 @@ static void appendScalarOperandSpecJson(std::string &json, Value operand) {
 
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 static std::optional<std::string>
 buildOperandSpecsJson(Operation *operation) {
   std::string json = "[";
   for (auto [index, operand] : llvm::enumerate(operation->getOperands())) {
+<<<<<<< HEAD
 <<<<<<< HEAD
     if (index != 0)
       json += ",";
@@ -718,6 +737,8 @@ buildOperandSpecsJson(Operation *operation) {
         << type;
     return std::nullopt;
 =======
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
     auto tileType = dyn_cast<pto::TileBufType>(operand.getType());
     if (!tileType) {
       operation->emitError(
@@ -765,7 +786,10 @@ buildOperandSpecsJson(Operation *operation) {
     json += ",\"pad_value\":\"0x";
     json += llvm::utohexstr(padValue, /*LowerCase=*/false);
     json += "\"}}";
+<<<<<<< HEAD
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   }
   json += "]";
   return json;
@@ -780,6 +804,7 @@ getTargetArch(Operation *operation) {
     return std::nullopt;
   }
 <<<<<<< HEAD
+<<<<<<< HEAD
 
   for (ModuleOp current = module; current;
        current = current->getParentOfType<ModuleOp>()) {
@@ -791,6 +816,8 @@ getTargetArch(Operation *operation) {
       "InsertTemplateAttributes requires pto.target_arch");
   return std::nullopt;
 =======
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   auto target = module->getAttrOfType<StringAttr>("pto.target_arch");
   if (!target) {
     operation->emitError(
@@ -798,7 +825,10 @@ getTargetArch(Operation *operation) {
     return std::nullopt;
   }
   return target.getValue().str();
+<<<<<<< HEAD
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 }
 
 static std::optional<std::string>
@@ -817,9 +847,12 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
   if (!target || !operandSpecs)
     return std::nullopt;
 <<<<<<< HEAD
+<<<<<<< HEAD
   std::string contextAttrs = buildContextAttrsJson(operation);
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 
   llvm::SmallString<128> outputPath;
   int outputFd;
@@ -832,6 +865,7 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
   }
   ::close(outputFd);
 
+<<<<<<< HEAD
 <<<<<<< HEAD
   llvm::SmallString<128> errorPath;
   int errorFd;
@@ -847,6 +881,8 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
 
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   std::string opName = operation->getName().getStringRef().str();
   SmallVector<StringRef> args = {
       *pythonPath,       "-m",            daemonHelperModule,
@@ -856,21 +892,28 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
       *operandSpecs,
   };
 <<<<<<< HEAD
+<<<<<<< HEAD
   if (contextAttrs != "{}") {
     args.push_back("--context-attrs");
     args.push_back(contextAttrs);
   }
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 
   std::optional<StringRef> redirects[] = {
       std::nullopt,
       StringRef(outputPath),
 <<<<<<< HEAD
+<<<<<<< HEAD
       StringRef(errorPath),
 =======
       std::nullopt,
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+      std::nullopt,
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   };
 
   SmallVector<StringRef> environment;
@@ -902,6 +945,7 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
       redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errorMessage);
   if (result != 0) {
 <<<<<<< HEAD
+<<<<<<< HEAD
     auto errorOutput = llvm::MemoryBuffer::getFile(errorPath);
     llvm::sys::fs::remove(outputPath);
     llvm::sys::fs::remove(errorPath);
@@ -921,15 +965,23 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
     operation->emitError("InsertTemplateAttributes metadata RPC failed: ")
         << errorMessage;
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+    llvm::sys::fs::remove(outputPath);
+    operation->emitError("InsertTemplateAttributes metadata RPC failed: ")
+        << errorMessage;
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
     return std::nullopt;
   }
 
   auto output = llvm::MemoryBuffer::getFile(outputPath);
   llvm::sys::fs::remove(outputPath);
 <<<<<<< HEAD
+<<<<<<< HEAD
   llvm::sys::fs::remove(errorPath);
 =======
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
   if (!output) {
     operation->emitError(
         "InsertTemplateAttributes cannot read metadata output");
@@ -952,6 +1004,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   auto *candidates = root ? root->getObject("candidates") : nullptr;
   if (!candidates || candidates->empty()) {
 <<<<<<< HEAD
+<<<<<<< HEAD
     operation->emitError("InsertTemplateAttributes found no legal template "
                          "candidates for ")
         << operation->getName();
@@ -959,6 +1012,10 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     operation->emitError(
         "InsertTemplateAttributes found no legal template candidates");
 >>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
+=======
+    operation->emitError(
+        "InsertTemplateAttributes found no legal template candidates");
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
     return failure();
   }
 

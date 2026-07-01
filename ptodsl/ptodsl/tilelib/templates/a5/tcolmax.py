@@ -15,6 +15,7 @@ from ._reductions import register_column_reduction
 template_tcolmax = register_column_reduction(
     op="pto.tcolmax",
     name="template_tcolmax",
+<<<<<<< HEAD
     vector_op=pto.vmax,
     dtypes=[
         ("i8", "i8"),
@@ -27,4 +28,14 @@ template_tcolmax = register_column_reduction(
         ("bf16", "bf16"),
         ("f32", "f32"),
     ],
+=======
+    dtypes=[("f32", "f32")],
+    layouts=["row_major"],
+    memory_spaces=["ub"],
+    constraints=[_validate_tcolmax],
+    priority=0,
+    id=0,
+    loop_depth=2,
+    is_post_update=False,
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 )

@@ -498,7 +498,10 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
   return expandOpts;
 }
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
 static pto::InsertTemplateAttributesOptions
 buildInsertTemplateAttributesOptions(
     const pto::ExpandTileOpOptions &expandOptions) {
@@ -510,7 +513,11 @@ buildInsertTemplateAttributesOptions(
   return options;
 }
 
+<<<<<<< HEAD
 static llvm::cl::opt<llvm::cl::boolOrDefault> enableOpFusion(
+=======
+static llvm::cl::opt<bool> enableOpFusion(
+>>>>>>> 1358a9b5 (feat(ptodsl): add a pass to insert template candidates)
     "enable-op-fusion",
     llvm::cl::desc("Control A5 tile fusion on level2/level3. Defaults to "
                    "enabled on A5, disabled on A3. EmitC uses last-use "
