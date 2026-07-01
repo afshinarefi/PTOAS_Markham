@@ -7,6 +7,17 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 cmake_minimum_required(VERSION 3.20.0)
+
+# CANN/Ascend CMake packages used by downstream PTOAS builds may still use the
+# pre-CMake-3.30 FetchContent_Populate(<declared-name>) pattern. Keep that
+# compatibility path enabled so CMake 4.x developer warnings do not become
+# configure errors when users build with strict warning settings. The default
+# covers nested third-party directories that set their own cmake_minimum_required().
+if(POLICY CMP0169)
+  cmake_policy(SET CMP0169 OLD)
+  set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
+endif()
+
 project(ptoas VERSION 0.49)
 
 set(PTOAS_RELEASE_VERSION_OVERRIDE ""
