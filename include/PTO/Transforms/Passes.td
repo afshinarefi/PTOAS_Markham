@@ -451,6 +451,36 @@ def PTOResolveReservedBuffers : Pass<"pto-resolve-reserved-buffers", "ModuleOp">
   ];
 }
 
+def InsertTemplateAttributes
+    : Pass<"pto-insert-template-attributes", "ModuleOp"> {
+  let summary = "Attach legal PTODSL template candidates to tile operations";
+  let description = [{
+    Queries the PTODSL TileLib daemon for legal template candidates and stores
+    the compact candidate list on each tile operation as the `candidates`
+    attribute. Each candidate contains only id, name, loop_depth, postupdate,
+    and tail metadata.
+  }];
+  let constructor = "mlir::pto::createInsertTemplateAttributesPass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+  let options = [
+    Option<"pythonExe", "python-exe", "std::string",
+           /*default=*/"\"python3\"",
+           "Python executable for TileLib metadata invocation">,
+    Option<"daemonSocketPath", "daemon-socket-path", "std::string",
+           /*default=*/"\"\"",
+           "Path to the PTODSL TileLib daemon Unix socket">,
+    Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
+           /*default=*/"\"\"",
+           "PYTHONPATH root for PTODSL">,
+    Option<"daemonHelperModule", "daemon-helper-module", "std::string",
+           /*default=*/"\"ptodsl.tilelib.serving.helper\"",
+           "Python module used for daemon metadata RPC calls">
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops into calls to TileLib template functions";
   let description = [{

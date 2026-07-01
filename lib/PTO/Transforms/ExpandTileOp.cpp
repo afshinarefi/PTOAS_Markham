@@ -18,7 +18,8 @@
 //
 // Workflow per tile op:
 //   1. Extract SpecKey from ALL operands' tile_buf types.
-//   2. For PTODSL, query legal-candidate metadata and require one candidate.
+//   2. For PTODSL, read candidates attached by InsertTemplateAttributes and
+//      select the first candidate still present.
 //   3. Invoke the selected TileLib helper to generate a specialized MLIR
 //      function (with tile_buf parameters).
 //   4. Parse the generated MLIR and clone the function into the module.
@@ -49,9 +50,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
@@ -78,6 +77,8 @@ namespace pto {
 } // namespace mlir
 
 namespace {
+
+constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
 
 // ============================================================================
 // OperandTypeInfo: describes one operand for template specialization.
@@ -711,12 +712,9 @@ struct ExpandState {
   std::string daemonSocketPath;
 
   std::optional<std::string>
-  invokeTileLibHelper(const SpecKey &key, StringRef method = {},
-                      StringRef candidateId = {});
-  std::optional<std::string>
-  discoverSingleTileLibCandidate(const SpecKey &key);
-  func::FuncOp invokeTileLib(const SpecKey &key, ModuleOp mod,
-                             MLIRContext *ctx);
+  invokeTileLibHelper(const SpecKey &key, StringRef candidateId = {});
+  func::FuncOp invokeTileLib(const SpecKey &key, Operation *tileOp,
+                             ModuleOp mod, MLIRContext *ctx);
   func::FuncOp invokeTileLibDaemon(const SpecKey &key, StringRef candidateId,
                                    ModuleOp mod, MLIRContext *ctx);
 
@@ -885,7 +883,7 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
 // Invoke the configured one-shot helper and return its stdout.
 // ============================================================================
 std::optional<std::string>
-ExpandState::invokeTileLibHelper(const SpecKey &key, StringRef method,
+ExpandState::invokeTileLibHelper(const SpecKey &key,
                                 StringRef candidateId) {
   auto pythonPath = llvm::sys::findProgramByName(pythonExe);
   if (!pythonPath) {
@@ -918,10 +916,6 @@ ExpandState::invokeTileLibHelper(const SpecKey &key, StringRef method,
       "--op",          opName,
       "--operand-specs", operandSpecsJson,
   };
-  if (!method.empty()) {
-    args.push_back("--method");
-    args.push_back(method);
-  }
   if (!key.contextAttrs.empty()) {
     args.push_back("--context-attrs");
     args.push_back(contextAttrsJson);
@@ -963,10 +957,8 @@ ExpandState::invokeTileLibHelper(const SpecKey &key, StringRef method,
       redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
 
   if (rc != 0) {
-    StringRef operation =
-        method.empty() ? StringRef("instantiate") : method;
-    llvm::errs() << "ExpandTileOp: daemon helper " << operation
-                 << " failed (rc=" << rc
+    llvm::errs() << "ExpandTileOp: daemon helper instantiate failed (rc="
+                 << rc
                  << "): " << errMsg << "\n";
     llvm::sys::fs::remove(tmpPath);
     return std::nullopt;
@@ -987,54 +979,13 @@ ExpandState::invokeTileLibHelper(const SpecKey &key, StringRef method,
 }
 
 // ============================================================================
-// Discover the only legal candidate supported by this migration milestone.
-// ============================================================================
-std::optional<std::string>
-ExpandState::discoverSingleTileLibCandidate(const SpecKey &key) {
-  auto metadataText = invokeTileLibHelper(key, "get_metadata");
-  if (!metadataText)
-    return std::nullopt;
-
-  auto parsed = llvm::json::parse(*metadataText);
-  if (!parsed) {
-    llvm::errs() << "ExpandTileOp: failed to parse PTODSL metadata: "
-                 << llvm::toString(parsed.takeError()) << "\n";
-    return std::nullopt;
-  }
-
-  auto *root = parsed->getAsObject();
-  auto *candidates = root ? root->getObject("candidates") : nullptr;
-  if (!candidates) {
-    llvm::errs() << "ExpandTileOp: PTODSL metadata is missing the "
-                    "'candidates' object\n";
-    return std::nullopt;
-  }
-
-  std::string opName = "pto." + key.opName;
-  if (candidates->size() != 1) {
-    llvm::errs() << "ExpandTileOp: PTODSL metadata returned "
-                 << candidates->size() << " legal candidates for " << opName
-                 << "; version selection is required before rendering\n";
-    return std::nullopt;
-  }
-
-  const auto &candidate = *candidates->begin();
-  if (!candidate.second.getAsObject()) {
-    llvm::errs() << "ExpandTileOp: malformed metadata for candidate '"
-                 << candidate.first.str() << "'\n";
-    return std::nullopt;
-  }
-  return candidate.first.str();
-}
-
-// ============================================================================
 // Invoke the daemon RPC to generate a specialized template function.
 // ============================================================================
 func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
                                               StringRef candidateId,
                                               ModuleOp mod,
                                               MLIRContext *ctx) {
-  auto mlirText = invokeTileLibHelper(key, /*method=*/{}, candidateId);
+  auto mlirText = invokeTileLibHelper(key, candidateId);
   if (!mlirText)
     return nullptr;
 
@@ -1060,6 +1011,8 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
   SmallVector<func::FuncOp, 4> clonedFuncs;
 
   std::string uniqueName = buildUniqueFunctionBaseName(key);
+  if (!candidateId.empty())
+    uniqueName += "__" + candidateId.str();
   SymbolTable targetSymTable(mod);
   if (auto existingFunc = targetSymTable.lookup(uniqueName))
     return cast<func::FuncOp>(existingFunc);
@@ -1111,16 +1064,34 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
 // ============================================================================
 // Invoke the selected TileLib backend to generate a specialized template.
 // ============================================================================
-func::FuncOp ExpandState::invokeTileLib(const SpecKey &key, ModuleOp mod,
+func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
+                                        Operation *tileOp, ModuleOp mod,
                                         MLIRContext *ctx) {
   // Try daemon first if daemon socket path is provided.
   if (!daemonSocketPath.empty()) {
     std::string candidateId;
     if (tileLibBackend == "ptodsl") {
-      auto discoveredCandidate = discoverSingleTileLibCandidate(key);
-      if (!discoveredCandidate)
+      auto candidates =
+          tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
+      if (!candidates || candidates.empty()) {
+        tileOp->emitError(
+            "ExpandTileOp requires at least one template candidate");
         return nullptr;
-      candidateId = std::move(*discoveredCandidate);
+      }
+
+      auto selected = dyn_cast<DictionaryAttr>(candidates[0]);
+      if (!selected) {
+        tileOp->emitError(
+            "ExpandTileOp candidate 0 must be a dictionary");
+        return nullptr;
+      }
+      auto selectedName = selected.getAs<StringAttr>("name");
+      if (!selectedName) {
+        tileOp->emitError(
+            "ExpandTileOp candidate 0 requires a string name");
+        return nullptr;
+      }
+      candidateId = selectedName.getValue().str();
     }
 
     func::FuncOp daemonResult =
@@ -1354,7 +1325,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
     }
 
     // Invoke the selected TileLib backend (with daemon-side caching).
-    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, mod, ctx);
+    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, op, mod, ctx);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
       op->emitError("ExpandTileOp: failed to instantiate TileLib template for " +

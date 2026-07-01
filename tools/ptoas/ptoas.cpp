@@ -486,6 +486,17 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
   return expandOpts;
 }
 
+static pto::InsertTemplateAttributesOptions
+buildInsertTemplateAttributesOptions(
+    const pto::ExpandTileOpOptions &expandOptions) {
+  pto::InsertTemplateAttributesOptions options;
+  options.pythonExe = expandOptions.pythonExe;
+  options.daemonSocketPath = expandOptions.daemonSocketPath;
+  options.tileLibPkgPath = expandOptions.tileLibPkgPath;
+  options.daemonHelperModule = expandOptions.daemonHelperModule;
+  return options;
+}
+
 static llvm::cl::opt<bool> enableOpFusion(
     "enable-op-fusion",
     llvm::cl::desc("Enable A5 tile fusion on level2/level3. EmitC uses "
@@ -1610,15 +1621,15 @@ static void prepareVPTOForEmission(PassManager &pm) {
   kernelModulePM.addPass(pto::createPTOValidateVPTOEmissionIRPass());
 }
 
-static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module, int argc,
-                                  char **argv) {
+static void
+lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
+                      const pto::ExpandTileOpOptions &expandOpts) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
   auto moduleArchAttr =
       module->getAttrOfType<mlir::StringAttr>("pto.target_arch");
   const bool enableA5VPTOPostLoweringFusionLifecycle =
       enableOpFusion && moduleArchAttr && moduleArchAttr.getValue() == "a5";
 
-  pto::ExpandTileOpOptions expandOpts = resolveExpandTileOpOptions(argc, argv);
   kernelModulePM.addPass(pto::createExpandTileOpPass(expandOpts));
 
   kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
@@ -1698,14 +1709,21 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
 }
 
 static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
-                                            int argc, char **argv,
-                                            bool hasTileOpsToExpand) {
+                                            bool hasTileOpsToExpand,
+                                            const pto::ExpandTileOpOptions
+                                                *expandOptions) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
-  if (hasTileOpsToExpand)
-    lowerPTOToVPTOBackend(pm, module.get(), argc, argv);
+  if (hasTileOpsToExpand) {
+    if (!expandOptions) {
+      llvm::errs() << "Error: tile expansion requires resolved TileLib "
+                      "options.\n";
+      return failure();
+    }
+    lowerPTOToVPTOBackend(pm, module.get(), *expandOptions);
+  }
   prepareVPTOForEmission(pm);
   if (failed(applyConfiguredPassManagerCLOptions(
           pm, "VPTO unified emission pipeline")))
@@ -1886,6 +1904,10 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool hasTileOpsToExpand = hasUnexpandedTileOps(*module);
+  std::optional<pto::ExpandTileOpOptions> expandOptions;
+  if (effectiveBackend == PTOBackend::VPTO && hasTileOpsToExpand &&
+      tileLibBackend == TileLibBackend::PTODSL)
+    expandOptions = resolveExpandTileOpOptions(argc, argv);
 
   if (effectiveBackend == PTOBackend::VPTO && !hasTileOpsToExpand) {
     if (ptoPrintSeamIR || !ptoSeamIRFile.empty()) {
@@ -1893,7 +1915,8 @@ int mlir::pto::compilePTOASModule(
                       "skipping the shared PTO-to-VPTO lowering pipeline.\n";
       return 1;
     }
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
+    if (failed(runVPTOBackendPipeline(module, hasTileOpsToExpand,
+                                      /*expandOptions=*/nullptr)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());
@@ -1925,6 +1948,16 @@ int mlir::pto::compilePTOASModule(
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOValidateIntToPtrUsesPass());
+
+  // PTODSL legality discovery happens on tile-native PTO IR before fusion.
+  // Fusion may later filter the ordered `candidates` array; ExpandTileOp
+  // consumes the first candidate that remains.
+  if (expandOptions && expandOptions->tileLibBackend == "ptodsl") {
+    auto insertOptions =
+        buildInsertTemplateAttributesOptions(*expandOptions);
+    pm.addPass(
+        pto::createInsertTemplateAttributesPass(insertOptions));
+  }
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
@@ -1989,6 +2022,9 @@ int mlir::pto::compilePTOASModule(
   // or an `arith.select` chain (dynamic slot). The multi-address cast
   // produced by PlanMemory survives as the alloc anchor.
   pm.addPass(pto::createPTOResolveBufferSelectPass());
+  module->getOperation()->setAttr(
+      "pto.target_arch",
+      mlir::StringAttr::get(module->getContext(), arch));
 
   if (emitMlirIR) {
     if (failed(pm.run(*module))) {
@@ -2021,6 +2057,12 @@ int mlir::pto::compilePTOASModule(
       return 1;
     }
 
+    // The PTODSL daemon is needed before the main pipeline for metadata.
+    // Legacy TileLang can still be resolved lazily immediately before
+    // ExpandTileOp, preserving the prior --emit-pto-ir behavior.
+    if (hasTileOpsToExpand && !expandOptions)
+      expandOptions = resolveExpandTileOpOptions(argc, argv);
+
     if (ptoPrintSeamIR) {
       module->print(llvm::errs());
       llvm::errs() << "\n";
@@ -2028,7 +2070,9 @@ int mlir::pto::compilePTOASModule(
     if (failed(emitSharedPreBackendSeamIR(*module, ptoSeamIRFile)))
       return 1;
 
-    if (failed(runVPTOBackendPipeline(module, argc, argv, hasTileOpsToExpand)))
+    if (failed(runVPTOBackendPipeline(
+            module, hasTileOpsToExpand,
+            expandOptions ? &*expandOptions : nullptr)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
                                  context.getCANNVersionOrDefault());

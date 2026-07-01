@@ -25,6 +25,7 @@ import signal
 import socketserver
 import threading
 
+from .. import constraints as _constraints
 from .. import registry as _registry
 from ..metadata import ScalarType, TileSpec
 from ..templates import load_template
@@ -87,8 +88,12 @@ def _metadata_value(value):
     return value
 
 
-def _metadata_for_descriptor(descriptor) -> dict:
+def _metadata_for_descriptor(descriptor, constraint_context: dict) -> dict:
     metadata = descriptor.metadata
+    if callable(metadata.Tail):
+        has_tail = _constraints.passes((metadata.Tail,), constraint_context)
+    else:
+        has_tail = bool(metadata.Tail)
     return {
         "op": metadata.op,
         "target": metadata.target,
@@ -104,6 +109,7 @@ def _metadata_for_descriptor(descriptor) -> dict:
         "loop_depth": metadata.loop_depth,
         "id": metadata.id,
         "Tail": _metadata_value(metadata.Tail),
+        "has_tail": has_tail,
         "is_post_update": metadata.is_post_update,
         "tags": list(metadata.tags),
     }
@@ -133,11 +139,17 @@ def metadata_request(
     """Return every legal candidate and its selection metadata."""
     tile_specs = _tile_specs_for_request(target, op, operand_specs)
     legal = _registry.legal_candidates(op, target, tile_specs, context_attrs)
+    constraint_context = _constraints.build_context(tile_specs, target, op)
+    if context_attrs:
+        constraint_context.update(context_attrs)
     return {
         "target": target,
         "op": op,
         "candidates": {
-            descriptor.name: _metadata_for_descriptor(descriptor)
+            descriptor.name: _metadata_for_descriptor(
+                descriptor,
+                constraint_context,
+            )
             for descriptor in legal
         },
     }

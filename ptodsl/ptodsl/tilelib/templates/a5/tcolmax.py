@@ -48,6 +48,9 @@ def _validate_tcolmax(
     memory_spaces=["ub"],
     constraints=[_validate_tcolmax],
     priority=0,
+    id=0,
+    loop_depth=2,
+    is_post_update=False,
 )
 def template_tcolmax(src: pto.Tile, dst: pto.Tile):
     dtype = dst.element_type
