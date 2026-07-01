@@ -16,12 +16,12 @@ from ptodsl.tilelib.serving.client import DaemonClient, DaemonError
 from ptodsl.tilelib.serving.daemon import TileLibDaemonServer
 
 
-def _tile_spec(dtype="f32"):
+def _tile_spec(dtype="f32", shape=(8, 64)):
     return {
         "kind": "tile",
         "dtype": dtype,
-        "shape": [8, 64],
-        "valid_shape": [8, 64],
+        "shape": list(shape),
+        "valid_shape": list(shape),
         "memory_space": "ub",
         "config": {
             "b_layout": "row_major",
@@ -102,8 +102,22 @@ class TileLibDaemonTest(unittest.TestCase):
         selected = candidates[TADD_2D_NO_POST_UPDATE]
         self.assertEqual(selected["loop_depth"], 2)
         self.assertEqual(selected["Tail"], {"callable": "has_tail"})
+        self.assertFalse(selected["has_tail"])
         self.assertFalse(selected["is_post_update"])
         self.assertEqual(selected["tags"], ["binop", "2d", "no_post_update"])
+
+    def test_get_metadata_evaluates_tail_for_each_request(self):
+        tail_operands = [
+            _tile_spec(shape=(7, 65)),
+            _tile_spec(shape=(7, 65)),
+            _tile_spec(shape=(7, 65)),
+        ]
+
+        metadata = self.client.get_metadata("a5", "pto.tadd", tail_operands)
+
+        self.assertTrue(
+            metadata["candidates"][TADD_2D_NO_POST_UPDATE]["has_tail"]
+        )
 
     def test_cache_stats_and_clear_are_available_over_rpc(self):
         arguments = (

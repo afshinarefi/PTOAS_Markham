@@ -96,12 +96,12 @@ overrides that default. Use `--ptodsl-pkg-path=/path/to/package/root` for an
 explicit command-line override. PTODSL daemon failures are reported as errors
 and never fall back to the TileLang implementation.
 
-At this migration stage, end-to-end expansion is intended for operations with
-one legal PTODSL candidate, such as `pto.tsub`. `ExpandTileOp` first requests
-legal-candidate metadata and then renders with the sole candidate's ID.
-Operations with tied template candidates will be enabled when candidate
-discovery moves into the planned `DiscoverTileLibCandidates` pass and version
-selection becomes a separate stage.
+`InsertTemplateAttributes` queries legal-candidate metadata before fusion and
+stores an ordered `candidates` array containing only `id`, `name`,
+`loop_depth`, `postupdate`, and `tail`. Fusion may filter this array.
+Candidates are ordered by unique `id`. `ExpandTileOp` renders the first
+candidate that remains, providing a deterministic fallback when several
+candidates reach expansion.
 
 See the
 [PTODSL TileLib migration test checklist](docs/tilelib-migration-testing.md)

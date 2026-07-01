@@ -26,8 +26,8 @@ changes.
 | PTODSL TileLib package | `test_tilelib_constraints.py`, `test_tilelib_elementwise.py`, `test_tilelib_render.py`, `test_tilelib_select.py` | Covers legality constraints, template registration and selection, and rendering |
 | PTODSL daemon | `test_tilelib_daemon.py` | Covers the Unix-socket protocol, metadata, rendering, candidate IDs, and caching |
 | PTOAS daemon selection | `expand_tile_op_ptodsl_tsub.pto` | Confirms `--tile-lib-backend=ptodsl` starts and uses the PTODSL daemon |
-| Two-call expansion | `expand_tile_op_ptodsl_tsub.pto` | Confirms metadata discovery followed by rendering with the sole candidate ID |
-| Multi-candidate boundary | `expand_tile_op_ptodsl_tadd_requires_selection.pto` | Confirms four legal `tadd` candidates require a separate selection stage |
+| Separate metadata/render passes | `expand_tile_op_ptodsl_tadd.pto` | Confirms `InsertTemplateAttributes` records compact metadata before `ExpandTileOp` renders |
+| Multi-candidate fallback | `expand_tile_op_ptodsl_tadd.pto` | Confirms `ExpandTileOp` renders candidate index zero when several candidates remain |
 
 ## Python TileLib tests
 
@@ -51,6 +51,15 @@ Each command prints `OK` when successful.
 
 ## PTOAS integration tests
 
+Run the focused lit tests through the generated site configuration. Start lit
+from `build/test/lit`; passing source files under `test/lit` directly bypasses
+the generated LLVM configuration:
+
+```bash
+"$LLVM_BUILD_DIR/bin/llvm-lit" -sv build/test/lit \
+  --filter='expand_tile_op_(ptodsl_tsub|ptodsl_tadd|tilelang_tsub)'
+```
+
 ### PTODSL positive path: one legal candidate
 
 `pto.tsub` has one legal PTODSL candidate. The test checks that PTOAS expands
@@ -63,22 +72,54 @@ ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
 "$FILECHECK" test/lit/vpto/expand_tile_op_ptodsl_tsub.pto
 ```
 
-### PTODSL negative path: selection is still required
+### PTODSL candidate attributes and multi-candidate fallback
 
-`pto.tadd` currently has four legal candidates. PTOAS is expected to reject it
-after metadata discovery because version selection is not a separate stage yet:
+Inspect the compact candidate list inserted before fusion:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --emit-pto-ir \
+  --tile-lib-backend=ptodsl \
+  --mlir-print-ir-after=pto-insert-template-attributes \
+  test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  -o /dev/null 2>&1 |
+"$FILECHECK" test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  --check-prefix=META
+```
+
+Confirm that insertion also runs before `FusionPlan` when fusion is enabled:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level2 \
+  --enable-op-fusion --emit-pto-ir --tile-lib-backend=ptodsl \
+  --mlir-print-ir-before=pto-fusion-plan \
+  test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  -o /dev/null 2>&1 |
+"$FILECHECK" test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  --check-prefix=PREFUSION
+```
+
+Inspect `ExpandTileOp` immediately after selection and confirm candidate zero
+was used:
 
 ```bash
 ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
   --tile-lib-backend=ptodsl \
-  test/lit/vpto/expand_tile_op_ptodsl_tadd_requires_selection.pto \
+  --mlir-print-ir-after=pto-expand-tile-op \
+  test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
   -o /dev/null 2>&1 |
-"$FILECHECK" \
-  test/lit/vpto/expand_tile_op_ptodsl_tadd_requires_selection.pto
+"$FILECHECK" test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  --check-prefix=SELECT
 ```
 
-The `ptoas` process fails intentionally in this test. `FileCheck` succeeds
-only when it sees the expected four-candidate diagnostic.
+Confirm the selected template expands through the full VPTO pipeline:
+
+```bash
+ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
+  --tile-lib-backend=ptodsl \
+  test/lit/vpto/expand_tile_op_ptodsl_tadd.pto -o - 2>/dev/null |
+"$FILECHECK" test/lit/vpto/expand_tile_op_ptodsl_tadd.pto \
+  --check-prefix=EXPAND
+```
 
 ### Legacy backend regression
 
@@ -98,6 +139,5 @@ ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
 echo $?
 ```
 
-`0` means the check passed. When candidate selection is implemented, replace
-the expected-failure `tadd` coverage with a positive selected-version test and
-update the milestone table above.
+`0` means the check passed. When fusion begins filtering candidates, add
+coverage for the filtered array while retaining the index-zero fallback test.
