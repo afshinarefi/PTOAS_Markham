@@ -279,19 +279,33 @@ def metadata_request(
     context_attrs: dict | None = None,
 ) -> dict:
     """Return every legal candidate and its selection metadata."""
+<<<<<<< HEAD
     legal = _legal_candidate_specs(target, op, operand_specs, context_attrs)
+=======
+    tile_specs = _tile_specs_for_request(target, op, operand_specs)
+    legal = _registry.legal_candidates(op, target, tile_specs, context_attrs)
+    constraint_context = _constraints.build_context(tile_specs, target, op)
+    if context_attrs:
+        constraint_context.update(context_attrs)
+>>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
     return {
         "target": target,
         "op": op,
         "candidates": {
             descriptor.name: _metadata_for_descriptor(
                 descriptor,
+<<<<<<< HEAD
                 {
                     **_constraints.build_context(specs, target, op),
                     **(context_attrs or {}),
                 },
             )
             for descriptor, specs in legal
+=======
+                constraint_context,
+            )
+            for descriptor in legal
+>>>>>>> 3b9fcabf (feat(ptodsl): add a pass to insert template candidates)
         },
     }
 

@@ -124,6 +124,19 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertEqual(selected["op_class"], "elementwise")
         self.assertEqual(selected["tags"], ["elementwise", "binary"])
 
+    def test_get_metadata_evaluates_tail_for_each_request(self):
+        tail_operands = [
+            _tile_spec(shape=(7, 65)),
+            _tile_spec(shape=(7, 65)),
+            _tile_spec(shape=(7, 65)),
+        ]
+
+        metadata = self.client.get_metadata("a5", "pto.tadd", tail_operands)
+
+        self.assertTrue(
+            metadata["candidates"][TADD_2D_NO_POST_UPDATE]["has_tail"]
+        )
+
     def test_cache_stats_and_clear_are_available_over_rpc(self):
         arguments = (
             "a5",
