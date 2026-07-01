@@ -9,8 +9,8 @@
 //===- ExpandTileOp.cpp ---------------------------------------------------===//
 //===----------------------------------------------------------------------===//
 //
-// Expand tile-level ops (pto.tadd, pto.tsub, ...) by invoking the TileLang
-// Python DSL to instantiate template libraries.
+// Expand tile-level ops (pto.tadd, pto.tsub, ...) by invoking the selected
+// Python TileLib backend to instantiate template libraries.
 //
 // The generated template functions use tile_buf parameters. After this pass,
 // the Inline pass inlines the template body, and FoldTileBufIntrinsics
@@ -700,13 +700,16 @@ struct ExpandState {
 
   std::string tilelangPath;
   std::string tilelangPkgPath;
+  std::string tileLibBackend;
+  std::string tileLibPkgPath;
+  std::string daemonHelperModule;
   std::string pythonExe;
   std::string daemonSocketPath;
 
-  func::FuncOp invokeTilelangDSL(const SpecKey &key, Operation *tileOp,
-                                  ModuleOp mod, MLIRContext *ctx);
-  func::FuncOp invokeTilelangDaemon(const SpecKey &key, Operation *tileOp,
-                                     ModuleOp mod, MLIRContext *ctx);
+  func::FuncOp invokeTileLib(const SpecKey &key, Operation *tileOp,
+                             ModuleOp mod, MLIRContext *ctx);
+  func::FuncOp invokeTileLibDaemon(const SpecKey &key, Operation *tileOp,
+                                   ModuleOp mod, MLIRContext *ctx);
 
   LogicalResult expandTileOpsInFunction(func::FuncOp func, ModuleOp mod,
                                         MLIRContext *ctx);
@@ -872,9 +875,9 @@ static std::string buildContextAttrsJson(const SpecKey &key) {
 // ============================================================================
 // Invoke Python DSL daemon RPC to generate a specialized template function.
 // ============================================================================
-func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
-                                               Operation *tileOp,
-                                               ModuleOp mod, MLIRContext *ctx) {
+func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
+                                              Operation *tileOp, ModuleOp mod,
+                                              MLIRContext *ctx) {
   // 1. Locate the Python executable.
   auto pythonPath = llvm::sys::findProgramByName(pythonExe);
   if (!pythonPath) {
@@ -893,7 +896,7 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   // 3. Create temp file for stdout redirect.
   SmallString<128> tmpPath;
   int tmpFD;
-  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelang_daemon", "mlir",
+  if (auto ec = llvm::sys::fs::createTemporaryFile("tilelib_daemon", "mlir",
                                                      tmpFD, tmpPath)) {
     llvm::errs() << "ExpandTileOp: cannot create temp file: "
                  << ec.message() << "\n";
@@ -904,7 +907,7 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   // 4. Build command args for daemon helper.
   std::string opName = "pto." + key.opName;
   SmallVector<StringRef> args = {
-      *pythonPath, "-m", "tilelang_dsl.daemon_helper",
+      *pythonPath, "-m", daemonHelperModule,
       "--socket",      daemonSocketPath,
       "--target",      key.targetArch,
       "--op",          opName,
@@ -922,10 +925,10 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
   SmallVector<StringRef> envp;
   std::string pythonPathEnv;
   std::vector<std::string> envStorage;
-  bool hasPythonPath = !tilelangPkgPath.empty();
+  bool hasPythonPath = !tileLibPkgPath.empty();
   if (hasPythonPath) {
     const char *existingPath = ::getenv("PYTHONPATH");
-    pythonPathEnv = "PYTHONPATH=" + tilelangPkgPath;
+    pythonPathEnv = "PYTHONPATH=" + tileLibPkgPath;
     if (existingPath && existingPath[0] != '\0') {
       pythonPathEnv += ":";
       pythonPathEnv += existingPath;
@@ -1039,18 +1042,29 @@ func::FuncOp ExpandState::invokeTilelangDaemon(const SpecKey &key,
 }
 
 // ============================================================================
-// Invoke Python DSL helper to generate a specialized template function.
+// Invoke the selected TileLib backend to generate a specialized template.
 // ============================================================================
-func::FuncOp ExpandState::invokeTilelangDSL(const SpecKey &key,
-                                              Operation *tileOp,
-                                              ModuleOp mod, MLIRContext *ctx) {
+func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
+                                        Operation *tileOp, ModuleOp mod,
+                                        MLIRContext *ctx) {
   // Try daemon first if daemon socket path is provided.
   if (!daemonSocketPath.empty()) {
-    func::FuncOp daemonResult = invokeTilelangDaemon(key, tileOp, mod, ctx);
+    func::FuncOp daemonResult = invokeTileLibDaemon(key, tileOp, mod, ctx);
     if (daemonResult)
       return daemonResult;
-    // Daemon failed, fall back to subprocess mode.
-    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to subprocess mode\n";
+    if (tileLibBackend == "ptodsl") {
+      llvm::errs()
+          << "ExpandTileOp: PTODSL daemon RPC failed; refusing to fall back "
+             "to TileLang\n";
+      return nullptr;
+    }
+    llvm::errs() << "ExpandTileOp: daemon RPC failed, falling back to legacy "
+                    "TileLang subprocess mode\n";
+  }
+
+  if (tileLibBackend == "ptodsl") {
+    llvm::errs() << "ExpandTileOp: PTODSL backend requires its daemon\n";
+    return nullptr;
   }
 
   // 1. Locate the Python executable.
@@ -1264,11 +1278,11 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       return failure();
     }
 
-    // Invoke tilelang DSL (with caching).
-    func::FuncOp dslFn = invokeTilelangDSL(*specKeyOpt, op, mod, ctx);
+    // Invoke the selected TileLib backend (with daemon-side caching).
+    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, op, mod, ctx);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
-      op->emitError("ExpandTileOp: failed to instantiate tilelang template for " +
+      op->emitError("ExpandTileOp: failed to instantiate TileLib template for " +
                     opName);
       return failure();
     }
@@ -1302,9 +1316,22 @@ void ExpandTileOpPass::runOnOperation() {
   ModuleOp mod = getOperation();
   MLIRContext *ctx = &getContext();
 
-  if (tilelangPath.empty()) {
+  if (tileLibBackend != "tilelang" && tileLibBackend != "ptodsl") {
+    mod.emitError("ExpandTileOp received unsupported tile-lib-backend '" +
+                  std::string(tileLibBackend) + "'");
+    signalPassFailure();
+    return;
+  }
+
+  if (tileLibBackend == "tilelang" && tilelangPath.empty()) {
     mod.emitError(
         "ExpandTileOp requires a non-empty tilelang-path on the VPTO backend");
+    signalPassFailure();
+    return;
+  }
+
+  if (tileLibBackend == "ptodsl" && daemonSocketPath.empty()) {
+    mod.emitError("ExpandTileOp requires a running PTODSL TileLib daemon");
     signalPassFailure();
     return;
   }
@@ -1312,6 +1339,9 @@ void ExpandTileOpPass::runOnOperation() {
   ExpandState state;
   state.tilelangPath = std::string(tilelangPath);
   state.tilelangPkgPath = std::string(tilelangPkgPath);
+  state.tileLibBackend = std::string(tileLibBackend);
+  state.tileLibPkgPath = std::string(tileLibPkgPath);
+  state.daemonHelperModule = std::string(daemonHelperModule);
   state.pythonExe = std::string(pythonExe);
   state.daemonSocketPath = std::string(daemonSocketPath);
 
