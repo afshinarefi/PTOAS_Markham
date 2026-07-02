@@ -12,8 +12,11 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 #include "VPTOHostStubEmission.h"
+#include "mlir/AsmParser/AsmParser.h"
+#include "mlir/AsmParser/AsmParserState.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/AsmState.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/SymbolTable.h"
@@ -170,21 +173,32 @@ static OwningOpRef<ModuleOp> decodePTOBCModule(llvm::StringRef buffer,
 static OwningOpRef<ModuleOp>
 parseTextualModule(std::unique_ptr<llvm::MemoryBuffer> inputBuffer,
                    MLIRContext &context, llvm::StringRef arch) {
-  // Capture the raw source text before the buffer is moved into the source
-  // manager. It is reused to recover SSA / arg / block-arg names as debug
-  // name hints (issue #337) attached to op Locations.
-  llvm::StringRef sourceText = inputBuffer->getBuffer();
   llvm::SourceMgr sourceMgr;
   sourceMgr.AddNewSourceBuffer(std::move(inputBuffer), llvm::SMLoc());
   mlir::pto::ScopedPTOParserTargetArch scopedParserArch(
       &context, arch == "a5" ? mlir::pto::PTOParserTargetArch::A5
                              : mlir::pto::PTOParserTargetArch::A3);
-  OwningOpRef<ModuleOp> module = parseSourceFile<ModuleOp>(sourceMgr, &context);
-  if (!module) {
+  ParserConfig parserConfig(&context);
+  Block parsedBlock;
+  LocationAttr sourceFileLoc = UnknownLoc::get(&context);
+  if (const auto *sourceBuf = sourceMgr.getMemoryBuffer(sourceMgr.getMainFileID())) {
+    sourceFileLoc = FileLineColLoc::get(&context, sourceBuf->getBufferIdentifier(),
+                                        /*line=*/0, /*column=*/0);
+  }
+  AsmParserState parserState;
+  if (failed(parseAsmSourceFile(sourceMgr, &parsedBlock, parserConfig,
+                                &parserState))) {
     llvm::errs() << "Error: Failed to parse MLIR.\n";
+    return OwningOpRef<ModuleOp>();
+  }
+  OwningOpRef<ModuleOp> module =
+      mlir::detail::constructContainerOpForParserIfNecessary<ModuleOp>(
+          &parsedBlock, &context, sourceFileLoc);
+  if (!module) {
+    llvm::errs() << "Error: Failed to build parsed module.\n";
     return module;
   }
-  mlir::pto::applyTextualNameHintsToModule(*module, sourceText);
+  mlir::pto::applyTextualNameHintsToModule(*module, parserState);
   return module;
 }
 

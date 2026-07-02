@@ -24,7 +24,7 @@ module {
     cf.br ^bb3(%scaled : i32)
 
   ^bb2:
-    %scaled_else = func.call @mul_helper(%sum, %pair#1) : (i32, i32) -> i32
+    %scaled_else = func.call @mul_helper(%sum, %pair#0) : (i32, i32) -> i32
     cf.br ^bb3(%scaled_else : i32)
 
   ^bb3(%merged: i32):
@@ -46,4 +46,9 @@ module {
 // CHECK-LABEL: AICORE int32_t multi_result_hint_alignment(
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PROVENANCE
+// CHECK: // pto: %pair#0
+// CHECK-NEXT: int32_t [[PAIR:[_A-Za-z][_A-Za-z0-9]*]] = v1 ? v2 : v3;
 // CHECK: // pto: %sum
+// CHECK-NEXT: int32_t [[SUM:[_A-Za-z][_A-Za-z0-9]*]] = add_helper([[PAIR]], v1 ? v3 : v2);
+// CHECK: // pto: %ret
+// CHECK-NEXT: return (int32_t) ((uint32_t) mul_helper([[SUM]], [[PAIR]]) + (uint32_t) [[SUM]]);

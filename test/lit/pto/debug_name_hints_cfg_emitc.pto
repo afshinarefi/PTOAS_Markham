@@ -27,6 +27,9 @@ module {
 // CHECK-LABEL: AICORE int32_t name_hints_cfg_helper(
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PROVENANCE
-// CHECK: // pto: %branch.sum
-// CHECK: // pto: %branch-sum
-// CHECK: // pto: %result
+// CHECK: label2:
+// CHECK-NEXT: // pto: %branch.sum
+// CHECK: label3:
+// CHECK-NEXT: // pto: %branch-sum
+// CHECK: label4:
+// CHECK-NEXT: // pto: %result

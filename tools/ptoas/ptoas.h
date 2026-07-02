@@ -21,6 +21,7 @@
 #include <string>
 
 namespace mlir {
+class AsmParserState;
 class DialectRegistry;
 class MLIRContext;
 } // namespace mlir
@@ -128,7 +129,8 @@ void loadPTOASDialects(MLIRContext &context);
 // to the parsed module's Locations as debug metadata. Called by the driver
 // right after parsing a textual .pto input so the names survive lowering.
 // No-op for non-textual (PTOBC) inputs or modules without recoverable names.
-void applyTextualNameHintsToModule(ModuleOp module, llvm::StringRef sourceText);
+void applyTextualNameHintsToModule(ModuleOp module,
+                                   const AsmParserState &parserState);
 
 } // namespace mlir::pto
 
