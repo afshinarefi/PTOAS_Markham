@@ -25,12 +25,7 @@ module {
 
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PARAM_HINTS
-// CHECK-LABEL: AICORE int32_t textual_name_hints_cfg_helper(bool cond, int32_t lhs, int32_t rhs) {
-// CHECK: int32_t then_value;
-// CHECK: int32_t else_value;
-// CHECK: int32_t merged_value;
-// CHECK: then_value = (
-// CHECK: merged_value = then_value;
-// CHECK: else_value = (
-// CHECK: merged_value = else_value;
-// CHECK: return (int32_t) ((uint32_t) merged_value + (uint32_t) rhs);
+// CHECK-LABEL: AICORE int32_t textual_name_hints_cfg_helper(
+// CHECK: // pto: %then_value
+// CHECK: // pto: %else_value
+// CHECK: // pto: %0

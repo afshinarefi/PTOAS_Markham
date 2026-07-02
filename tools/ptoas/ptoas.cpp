@@ -1215,7 +1215,7 @@ static void applyFunctionBlockArgNameHintsToEmitC(
   }
 }
 
-static SmallVector<std::string, 4>
+[[maybe_unused]] static SmallVector<std::string, 4>
 getResultNameHints(Operation *op) {
   SmallVector<std::string, 4> hints;
   if (!op || op->getNumResults() == 0)
@@ -1291,17 +1291,17 @@ static std::string buildHintMarker(llvm::StringRef prefix,
   return marker;
 }
 
-static void annotateEmitCNameHints(ModuleOp module) {
+static void annotateEmitCProvenanceHints(ModuleOp module) {
   llvm::SmallVector<Operation *, 32> opsToAnnotate;
   module.walk<WalkOrder::PreOrder>([&](Operation *op) {
     if (op->getNumResults() == 0 || isa<emitc::VerbatimOp>(op))
       return WalkResult::advance();
     if (op->getParentOfType<emitc::ExpressionOp>())
       return WalkResult::advance();
-    // Annotate any op that has either a semantic name hint (for renaming) or a
-    // raw provenance (for the `// pto: %N` comment, which applies even to
-    // pure-digit SSA names like %0 that have no usable semantic name).
-    if (getResultNameHints(op).empty() && getRawResultProvenance(op).empty())
+    // Only carry raw provenance into the C++ post-pass. Semantic renaming is
+    // intentionally deferred until naming can happen inside the emitter's own
+    // symbol table instead of via post-hoc C++ text rewriting.
+    if (getRawResultProvenance(op).empty())
       return WalkResult::advance();
     opsToAnnotate.push_back(op);
     return WalkResult::advance();
@@ -1309,13 +1309,6 @@ static void annotateEmitCNameHints(ModuleOp module) {
 
   OpBuilder builder(module.getContext());
   for (Operation *op : opsToAnnotate) {
-    SmallVector<std::string, 4> hints = getResultNameHints(op);
-    if (!hints.empty()) {
-      builder.setInsertionPoint(op);
-      builder.create<emitc::VerbatimOp>(
-          op->getLoc(),
-          builder.getStringAttr(buildHintMarker("PTOAS_NAME_HINTS", hints)));
-    }
     // Emit a provenance marker carrying the raw input SSA name. This is
     // consumed by the C++ post-processor to emit `// pto: %N` comments so a
     // reader can map a generated variable back to its .pto source (issue #337
@@ -2291,7 +2284,7 @@ parseNameHintMarker(llvm::StringRef markerBody) {
   return hints;
 }
 
-static std::optional<llvm::SmallVector<std::string, 4>>
+[[maybe_unused]] static std::optional<llvm::SmallVector<std::string, 4>>
 findNextHintedGeneratedParams(llvm::StringRef snippet) {
   size_t lParenPos = snippet.find('(');
   if (lParenPos == llvm::StringRef::npos)
@@ -2728,70 +2721,10 @@ static llvm::SmallVector<PendingIdentifierRename, 8>
 collectPendingIdentifierRenames(
     llvm::StringRef segment, llvm::ArrayRef<std::string> functionParamHints,
     llvm::ArrayRef<llvm::SmallVector<std::string, 4>> blockArgHints) {
-  static constexpr llvm::StringLiteral kResultMarkerPrefix =
-      "/* PTOAS_NAME_HINTS:";
-  llvm::SmallVector<PendingIdentifierRename, 8> pendingRenames;
-
-  if (!functionParamHints.empty()) {
-    if (auto generatedParams = findNextHintedGeneratedParams(segment)) {
-      size_t pairCount =
-          std::min(functionParamHints.size(), generatedParams->size());
-      for (size_t i = 0; i < pairCount; ++i) {
-        pendingRenames.push_back(
-            PendingIdentifierRename{(*generatedParams)[i], functionParamHints[i]});
-      }
-    }
-  }
-
-  size_t searchPos = 0;
-  while (true) {
-    size_t markerPos = segment.find(kResultMarkerPrefix.str(), searchPos);
-    if (markerPos == std::string::npos)
-      break;
-
-    size_t bodyBegin = markerPos + kResultMarkerPrefix.size();
-    size_t markerEnd = segment.find("*/", bodyBegin);
-    if (markerEnd == std::string::npos)
-      break;
-
-    auto hints = parseNameHintMarker(
-        llvm::StringRef(segment).slice(bodyBegin, markerEnd));
-    searchPos = markerEnd + 2;
-    if (!hints)
-      continue;
-
-    size_t windowEnd =
-        std::min(searchPos + static_cast<size_t>(2048), segment.size());
-    llvm::StringRef searchWindow =
-        llvm::StringRef(segment).slice(searchPos, windowEnd);
-    auto generatedNames = findNextHintedGeneratedNames(searchWindow);
-    if (!generatedNames)
-      continue;
-
-    size_t pairCount = std::min(hints->size(), generatedNames->size());
-    for (size_t i = 0; i < pairCount; ++i) {
-      pendingRenames.push_back(
-          PendingIdentifierRename{(*generatedNames)[i], (*hints)[i]});
-    }
-  }
-
-  if (!blockArgHints.empty()) {
-    llvm::SmallVector<std::string, 4> generatedDecls =
-        findTopLevelGeneratedDeclarations(segment);
-    llvm::SmallVector<std::string, 4> flattenedBlockHints;
-    for (auto blockHints : blockArgHints)
-      flattenedBlockHints.append(blockHints.begin(), blockHints.end());
-    if (!flattenedBlockHints.empty() &&
-        generatedDecls.size() >= flattenedBlockHints.size()) {
-      size_t startIndex = generatedDecls.size() - flattenedBlockHints.size();
-      for (size_t i = 0; i < flattenedBlockHints.size(); ++i) {
-        pendingRenames.push_back(PendingIdentifierRename{
-            generatedDecls[startIndex + i], flattenedBlockHints[i]});
-      }
-    }
-  }
-
-  return pendingRenames;
+  (void)segment;
+  (void)functionParamHints;
+  (void)blockArgHints;
+  return {};
 }
 
 static std::optional<std::string>
@@ -2828,7 +2761,7 @@ parseAnyDeclaredIdentifierName(llvm::StringRef line) {
   return name.str();
 }
 
-static llvm::SmallVector<std::string, 4>
+[[maybe_unused]] static llvm::SmallVector<std::string, 4>
 findTopLevelGeneratedDeclarations(llvm::StringRef segment) {
   llvm::SmallVector<std::string, 4> names;
   size_t lBracePos = segment.find('{');
@@ -3852,7 +3785,7 @@ int mlir::pto::compilePTOASModule(
     llvm::errs() << "Error: Failed to order emitted functions for C++ emission.\n";
     return 1;
   }
-  annotateEmitCNameHints(*module);
+  annotateEmitCProvenanceHints(*module);
 
   // Emit C++ to string, then post-process, then write to output file.
   std::string cppOutput;

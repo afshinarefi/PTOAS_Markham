@@ -38,13 +38,13 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE int32_t provenance_helper(int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t provenance_helper(
 // CHECK-NOT: PTOAS_PROVENANCE
-// CHECK-LABEL: AICORE void provenance_caller(int32_t arg0, int32_t arg1) {
+// CHECK-LABEL: AICORE void provenance_caller(
 // CHECK-NOT: PTOAS_PROVENANCE
-// CHECK: int32_t [[R:[_A-Za-z][_A-Za-z0-9]*]] = provenance_helper(arg0, arg1);
+// CHECK: int32_t [[R:[_A-Za-z][_A-Za-z0-9]*]] = provenance_helper(
 // CHECK-SAME: // pto: %0
-// CHECK-LABEL: AICORE void provenance_escape(int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE void provenance_escape(
 // CHECK-NOT: PTOAS_PROVENANCE
 // CHECK: int32_t [[ESCAPED:[_A-Za-z][_A-Za-z0-9]*]] = (
 // CHECK-SAME: // pto: %a*/b

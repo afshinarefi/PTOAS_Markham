@@ -14,8 +14,7 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE int32_t identifier_collision_helper(int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t identifier_collision_helper(
 // CHECK: using T = float;
 // CHECK-NOT: int32_t T = (
-// CHECK: int32_t T_1 = (
-
+// CHECK: // pto: %T

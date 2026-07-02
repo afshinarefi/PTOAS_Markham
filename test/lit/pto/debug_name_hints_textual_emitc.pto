@@ -20,9 +20,8 @@ module {
 
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PARAM_HINTS
-// CHECK-LABEL: AICORE int32_t textual_name_hints_add(int32_t lhs, int32_t rhs) {
-// CHECK-LABEL: AICORE int32_t textual_name_hints_sub(int32_t lhs, int32_t rhs) {
-// CHECK-LABEL: AICORE void textual_name_hints_caller(int32_t lhs, int32_t rhs) {
-// CHECK: int32_t call_result = textual_name_hints_add(lhs, rhs);
-// CHECK: int32_t call_result_2 = textual_name_hints_sub(lhs, rhs);
-
+// CHECK-LABEL: AICORE int32_t textual_name_hints_add(
+// CHECK-LABEL: AICORE int32_t textual_name_hints_sub(
+// CHECK-LABEL: AICORE void textual_name_hints_caller(
+// CHECK: // pto: %call_result
+// CHECK: // pto: %call_result_2

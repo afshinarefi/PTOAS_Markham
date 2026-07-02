@@ -14,6 +14,7 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE int32_t http_loc_hint(int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t http_loc_hint(
 // CHECK-NOT: PTOAS_NAME_HINTS
-// CHECK: int32_t http_sum = (
+// CHECK-NOT: PTOAS_PROVENANCE
+// CHECK: // pto: %http://sum

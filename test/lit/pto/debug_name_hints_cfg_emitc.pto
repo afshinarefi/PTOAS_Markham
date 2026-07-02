@@ -24,13 +24,9 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE int32_t name_hints_cfg_helper(bool cond, int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t name_hints_cfg_helper(
 // CHECK-NOT: PTOAS_NAME_HINTS
-// CHECK: int32_t branch_sum;
-// CHECK: int32_t branch_sum_1;
-// CHECK: int32_t merged;
-// CHECK: branch_sum = (int32_t)
-// CHECK: merged = branch_sum;
-// CHECK: branch_sum_1 = (int32_t)
-// CHECK: merged = branch_sum_1;
-// CHECK: result = (int32_t)
+// CHECK-NOT: PTOAS_PROVENANCE
+// CHECK: // pto: %branch.sum
+// CHECK: // pto: %branch-sum
+// CHECK: // pto: %result

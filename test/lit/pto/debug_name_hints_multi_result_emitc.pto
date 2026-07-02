@@ -43,7 +43,7 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE int32_t multi_result_hint_alignment(bool pred, int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t multi_result_hint_alignment(
 // CHECK-NOT: PTOAS_NAME_HINTS
 // CHECK-NOT: PTOAS_PROVENANCE
-// CHECK: int32_t sum = add_helper(pred ? lhs : rhs, pred ? rhs : lhs); // pto: %sum
+// CHECK: // pto: %sum

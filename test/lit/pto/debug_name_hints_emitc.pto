@@ -26,13 +26,13 @@ module {
 
 }
 
-// CHECK-LABEL: AICORE int32_t name_hints_basic_helper(int32_t lhs, int32_t rhs) {
+// CHECK-LABEL: AICORE int32_t name_hints_basic_helper(
 // CHECK-NOT: PTOAS_NAME_HINTS
-// CHECK: int32_t sum_value = (
-// CHECK: int32_t sum_value_1 = (
-// CHECK: int32_t class_v = (
-// CHECK: int32_t and_v = (
-// CHECK: int32_t module_v = (
-// CHECK: int32_t int32_t_v = (
-// CHECK: int32_t size_t_v = (
-// CHECK: int32_t AICORE_v = (
+// CHECK-NOT: PTOAS_PROVENANCE
+// CHECK: // pto: %sum.value
+// CHECK: // pto: %sum value
+// CHECK: // pto: %class
+// CHECK: // pto: %and
+// CHECK: // pto: %module
+// CHECK: // pto: %int32_t
+// CHECK: // pto: %AICORE
