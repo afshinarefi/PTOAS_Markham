@@ -19,10 +19,22 @@ module {
     return
   }
 
+  func.func @provenance_escape(%lhs: i32, %rhs: i32) {
+    %sum = arith.addi %lhs, %rhs : i32 loc("a*/b")
+    %next = arith.addi %sum, %rhs : i32
+    %last = arith.addi %next, %sum : i32
+    func.call @sink_i32(%last) : (i32) -> ()
+    return
+  }
+
   func.func private @provenance_helper(%lhs: i32, %rhs: i32) -> i32 {
     %sum = arith.addi %lhs, %rhs : i32 loc("scaled_sum")
     %scaled = arith.muli %sum, %lhs : i32 loc("scaled_out")
     return %scaled : i32
+  }
+
+  func.func private @sink_i32(%v: i32) {
+    return
   }
 }
 
@@ -32,3 +44,7 @@ module {
 // CHECK-NOT: PTOAS_PROVENANCE
 // CHECK: int32_t [[R:[_A-Za-z][_A-Za-z0-9]*]] = provenance_helper(arg0, arg1);
 // CHECK-SAME: // pto: %0
+// CHECK-LABEL: AICORE void provenance_escape(int32_t lhs, int32_t rhs) {
+// CHECK-NOT: PTOAS_PROVENANCE
+// CHECK: int32_t [[ESCAPED:[_A-Za-z][_A-Za-z0-9]*]] = (
+// CHECK-SAME: // pto: %a*/b

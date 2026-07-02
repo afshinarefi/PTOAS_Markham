@@ -591,6 +591,11 @@ static LogicalResult emitSharedPreBackendSeamIR(ModuleOp module,
   return success();
 }
 
+static void printSharedPreBackendSeamIR(ModuleOp module) {
+  module->print(llvm::errs());
+  llvm::errs() << "\n";
+}
+
 static bool hasUnexpandedTileOps(ModuleOp module) {
   bool found = false;
   module.walk([&](Operation *op) {
@@ -1234,11 +1239,36 @@ static SmallVector<std::string, 4> getValueNameHints(Value value) {
 
 static std::string buildHintMarker(llvm::StringRef prefix,
                                    llvm::ArrayRef<std::string> hints) {
+  auto encodeHintMarkerToken = [](llvm::StringRef token) {
+    auto hexDigit = [](unsigned value) -> char {
+      return value < 10 ? static_cast<char>('0' + value)
+                        : static_cast<char>('A' + (value - 10));
+    };
+
+    auto isSafeMarkerChar = [](unsigned char c) {
+      return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+             (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
+    };
+
+    std::string encoded;
+    encoded.reserve(token.size());
+    for (unsigned char c : token.bytes()) {
+      if (isSafeMarkerChar(c)) {
+        encoded.push_back(static_cast<char>(c));
+        continue;
+      }
+      encoded.push_back('%');
+      encoded.push_back(hexDigit((c >> 4) & 0xF));
+      encoded.push_back(hexDigit(c & 0xF));
+    }
+    return encoded;
+  };
+
   std::string marker = ("/* " + prefix + ":").str();
   for (size_t i = 0; i < hints.size(); ++i) {
     if (i != 0)
       marker.push_back(',');
-    marker.append(hints[i]);
+    marker.append(encodeHintMarkerToken(hints[i]));
   }
   marker.append(" */\n");
   return marker;
@@ -1515,9 +1545,199 @@ static void dropEmptyEmitCExpressions(Operation *rootOp) {
     expr.erase();
 }
 
+static void appendEmitCIntegerAttrLiteral(std::string &storage,
+                                          const APInt &value, bool isUnsigned) {
+  if (value.getBitWidth() == 0) {
+    storage.append("0");
+    return;
+  }
+  if (value.getBitWidth() == 1) {
+    storage.append(value.getBoolValue() ? "true" : "false");
+    return;
+  }
+
+  SmallString<128> strValue;
+  value.toString(strValue, 10, !isUnsigned, false);
+  storage.append(strValue.data(), strValue.size());
+}
+
+static bool shouldPrintEmitCIntegerAttrAsUnsigned(IntegerAttr attr) {
+  auto intTy = dyn_cast<IntegerType>(attr.getType());
+  return intTy && intTy.getSignedness() == IntegerType::Unsigned;
+}
+
+static std::string getEmitCIntegerAttrLiteral(IntegerAttr attr) {
+  std::string literal;
+  appendEmitCIntegerAttrLiteral(literal, attr.getValue(),
+                                shouldPrintEmitCIntegerAttrAsUnsigned(attr));
+  return literal;
+}
+
+static std::optional<std::string>
+getEmitCDenseIntElementsAttrLiteral(DenseIntElementsAttr attr) {
+  auto tensorTy = dyn_cast<TensorType>(attr.getType());
+  if (!tensorTy)
+    return std::nullopt;
+
+  Type elementType = tensorTy.getElementType();
+  bool isUnsigned = false;
+  if (auto intTy = dyn_cast<IntegerType>(elementType)) {
+    isUnsigned = intTy.getSignedness() == IntegerType::Unsigned;
+  } else if (!isa<IndexType>(elementType)) {
+    return std::nullopt;
+  }
+
+  std::string literal;
+  literal.push_back('{');
+  bool first = true;
+  for (const APInt &value : attr) {
+    if (!first)
+      literal.append(", ");
+    first = false;
+    appendEmitCIntegerAttrLiteral(literal, value, isUnsigned);
+  }
+  literal.push_back('}');
+  return literal;
+}
+
+static Attribute normalizeEmitCPrintedAttrForCppEmission(MLIRContext *ctx,
+                                                         Attribute attr) {
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+    return emitc::OpaqueAttr::get(ctx, getEmitCIntegerAttrLiteral(intAttr));
+
+  if (auto denseAttr = dyn_cast<DenseIntElementsAttr>(attr)) {
+    if (std::optional<std::string> literal =
+            getEmitCDenseIntElementsAttrLiteral(denseAttr))
+      return emitc::OpaqueAttr::get(ctx, *literal);
+  }
+
+  if (auto arrayAttr = dyn_cast<ArrayAttr>(attr)) {
+    SmallVector<Attribute> normalized;
+    normalized.reserve(arrayAttr.size());
+    bool changed = false;
+    for (Attribute element : arrayAttr) {
+      Attribute normalizedElement =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, element);
+      changed |= normalizedElement != element;
+      normalized.push_back(normalizedElement);
+    }
+    if (changed)
+      return ArrayAttr::get(ctx, normalized);
+  }
+
+  return attr;
+}
+
+static IntegerAttr normalizeEmitCIndexPlaceholderAttr(MLIRContext *ctx,
+                                                      IntegerAttr attr) {
+  const APInt &value = attr.getValue();
+  int64_t index = value.getBitWidth() == 0 ? 0 : value.getSExtValue();
+  return IntegerAttr::get(IndexType::get(ctx), APInt(64, index));
+}
+
+static ArrayAttr normalizeEmitCCallArgsForCppEmission(MLIRContext *ctx,
+                                                      ArrayAttr args) {
+  SmallVector<Attribute> normalized;
+  normalized.reserve(args.size());
+  bool changed = false;
+
+  for (Attribute attr : args) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+      if (isa<IndexType>(intAttr.getType())) {
+        Attribute normalizedAttr =
+            normalizeEmitCIndexPlaceholderAttr(ctx, intAttr);
+        changed |= normalizedAttr != attr;
+        normalized.push_back(normalizedAttr);
+        continue;
+      }
+
+      Attribute normalizedAttr =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
+      changed |= normalizedAttr != attr;
+      normalized.push_back(normalizedAttr);
+      continue;
+    }
+
+    Attribute normalizedAttr =
+        normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
+    changed |= normalizedAttr != attr;
+    normalized.push_back(normalizedAttr);
+  }
+
+  return changed ? ArrayAttr::get(ctx, normalized) : args;
+}
+
+static ArrayAttr normalizeEmitCTemplateArgsForCppEmission(MLIRContext *ctx,
+                                                          ArrayAttr args) {
+  SmallVector<Attribute> normalized;
+  normalized.reserve(args.size());
+  bool changed = false;
+
+  for (Attribute attr : args) {
+    Attribute normalizedAttr =
+        normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
+    changed |= normalizedAttr != attr;
+    normalized.push_back(normalizedAttr);
+  }
+
+  return changed ? ArrayAttr::get(ctx, normalized) : args;
+}
+
+static void normalizeEmitCIntegerAttrsForCppEmission(Operation *rootOp) {
+  MLIRContext *ctx = rootOp->getContext();
+  rootOp->walk([&](Operation *op) {
+    if (auto constant = dyn_cast<emitc::ConstantOp>(op)) {
+      Attribute value = constant.getValue();
+      Attribute normalized =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, value);
+      if (normalized != value)
+        constant.getProperties().setValue(normalized);
+      return;
+    }
+
+    if (auto variable = dyn_cast<emitc::VariableOp>(op)) {
+      Attribute value = variable.getValue();
+      Attribute normalized =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, value);
+      if (normalized != value)
+        variable.getProperties().setValue(normalized);
+      return;
+    }
+
+    if (auto global = dyn_cast<emitc::GlobalOp>(op)) {
+      std::optional<Attribute> initialValue = global.getInitialValue();
+      if (!initialValue)
+        return;
+      Attribute normalized =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, *initialValue);
+      if (normalized != *initialValue)
+        global.getProperties().setInitialValue(normalized);
+      return;
+    }
+
+    if (auto call = dyn_cast<emitc::CallOpaqueOp>(op)) {
+      if (std::optional<ArrayAttr> args = call.getArgs()) {
+        ArrayAttr normalized = normalizeEmitCCallArgsForCppEmission(ctx, *args);
+        if (normalized != *args)
+          call.getProperties().setArgs(normalized);
+      }
+      if (std::optional<ArrayAttr> templateArgs = call.getTemplateArgs()) {
+        ArrayAttr normalized =
+            normalizeEmitCTemplateArgsForCppEmission(ctx, *templateArgs);
+        if (normalized != *templateArgs)
+          call.getProperties().setTemplateArgs(normalized);
+      }
+      return;
+    }
+  });
+}
+
 static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
-  if (auto intTy = dyn_cast<IntegerType>(type))
+  if (auto intTy = dyn_cast<IntegerType>(type)) {
+    if (intTy.getWidth() == 0)
+      return emitc::OpaqueAttr::get(builder.getContext(), "0");
     return builder.getIntegerAttr(intTy, 0);
+  }
   if (isa<IndexType>(type))
     return builder.getIndexAttr(0);
   if (auto floatTy = dyn_cast<FloatType>(type))
@@ -1525,6 +1745,12 @@ static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) 
   if (isa<emitc::OpaqueType, emitc::PointerType>(type))
     return emitc::OpaqueAttr::get(builder.getContext(), "");
   return Attribute{};
+}
+
+static Type getEmitCVariableStorageType(Type valueType) {
+  if (isa<emitc::ArrayType, emitc::LValueType>(valueType))
+    return valueType;
+  return emitc::LValueType::get(valueType);
 }
 
 // FormExpressions may inline conditions into emitc.expression, but the C++
@@ -1995,6 +2221,36 @@ static void rewriteHoistedGlobalTensorDecls(std::string &cpp) {
 
 static std::optional<llvm::SmallVector<std::string, 4>>
 parseNameHintMarker(llvm::StringRef markerBody) {
+  auto decodeHintMarkerToken = [](llvm::StringRef token) {
+    auto hexValue = [](char c) -> int {
+      if (c >= '0' && c <= '9')
+        return c - '0';
+      if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+      if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+      return -1;
+    };
+
+    std::string decoded;
+    decoded.reserve(token.size());
+    for (size_t i = 0; i < token.size();) {
+      if (token[i] == '%' && i + 2 < token.size()) {
+        int hi = hexValue(token[i + 1]);
+        int lo = hexValue(token[i + 2]);
+        if (hi >= 0 && lo >= 0) {
+          decoded.push_back(
+              static_cast<char>((static_cast<unsigned>(hi) << 4) | lo));
+          i += 3;
+          continue;
+        }
+      }
+      decoded.push_back(token[i]);
+      ++i;
+    }
+    return decoded;
+  };
+
   llvm::SmallVector<std::string, 4> hints;
   markerBody = markerBody.trim();
   if (markerBody.empty())
@@ -2007,7 +2263,7 @@ parseNameHintMarker(llvm::StringRef markerBody) {
         start, comma == llvm::StringRef::npos ? markerBody.size() : comma);
     token = token.trim();
     if (!token.empty())
-      hints.push_back(token.str());
+      hints.push_back(decodeHintMarkerToken(token));
     if (comma == llvm::StringRef::npos)
       break;
     start = comma + 1;
@@ -2359,85 +2615,91 @@ parseGeneratedDeclarationName(llvm::StringRef line) {
   return declaredName;
 }
 
-static std::set<std::string> collectDeclaredIdentifiersInFunctionSegment(
+static std::set<std::string> collectUsedIdentifiersInFunctionSegment(
     llvm::StringRef segment) {
-  std::set<std::string> declaredNames;
+  std::set<std::string> usedNames;
 
-  if (size_t lParenPos = segment.find('('); lParenPos != llvm::StringRef::npos) {
-    int parenDepth = 0;
-    size_t rParenPos = llvm::StringRef::npos;
-    for (size_t i = lParenPos; i < segment.size(); ++i) {
-      char c = segment[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        --parenDepth;
-        if (parenDepth == 0) {
-          rParenPos = i;
-          break;
-        }
+  enum class LexState {
+    Normal,
+    LineComment,
+    BlockComment,
+    StringLiteral,
+    CharLiteral,
+  };
+  LexState state = LexState::Normal;
+
+  for (size_t i = 0; i < segment.size();) {
+    char c = segment[i];
+    char next = i + 1 < segment.size() ? segment[i + 1] : '\0';
+
+    switch (state) {
+    case LexState::Normal:
+      if (c == '/' && next == '/') {
+        state = LexState::LineComment;
+        i += 2;
+        continue;
       }
-    }
-    if (rParenPos != llvm::StringRef::npos) {
-      llvm::StringRef params = segment.slice(lParenPos + 1, rParenPos);
-      size_t partBegin = 0;
-      int angleDepth = 0;
-      int bracketDepth = 0;
-      parenDepth = 0;
-      for (size_t i = 0; i <= params.size(); ++i) {
-        char c = i < params.size() ? params[i] : ',';
-        if (c == '<') {
-          ++angleDepth;
-        } else if (c == '>' && angleDepth > 0) {
-          --angleDepth;
-        } else if (c == '[') {
-          ++bracketDepth;
-        } else if (c == ']' && bracketDepth > 0) {
-          --bracketDepth;
-        } else if (c == '(') {
-          ++parenDepth;
-        } else if (c == ')' && parenDepth > 0) {
-          --parenDepth;
-        }
-
-        bool atSeparator =
-            (i == params.size()) ||
-            (c == ',' && angleDepth == 0 && bracketDepth == 0 &&
-             parenDepth == 0);
-        if (!atSeparator)
-          continue;
-
-        llvm::StringRef param = params.slice(partBegin, i).trim();
-        partBegin = i + 1;
-        if (param.empty())
-          continue;
-
-        size_t end = param.size();
-        while (end > 0 &&
-               std::isspace(static_cast<unsigned char>(param[end - 1])))
-          --end;
-        size_t begin = end;
-        while (begin > 0 && isCppIdentifierChar(param[begin - 1]))
-          --begin;
-        llvm::StringRef name = param.slice(begin, end);
-        if (!name.empty() && isCppIdentifierStart(name.front()) &&
-            llvm::all_of(name, isCppIdentifierChar))
-          declaredNames.insert(name.str());
+      if (c == '/' && next == '*') {
+        state = LexState::BlockComment;
+        i += 2;
+        continue;
       }
+      if (c == '"') {
+        state = LexState::StringLiteral;
+        ++i;
+        continue;
+      }
+      if (c == '\'') {
+        state = LexState::CharLiteral;
+        ++i;
+        continue;
+      }
+      if (isCppIdentifierStart(c)) {
+        size_t end = i + 1;
+        while (end < segment.size() && isCppIdentifierChar(segment[end]))
+          ++end;
+        usedNames.insert(std::string(segment.slice(i, end)));
+        i = end;
+        continue;
+      }
+      ++i;
+      continue;
+
+    case LexState::LineComment:
+      ++i;
+      if (c == '\n')
+        state = LexState::Normal;
+      continue;
+
+    case LexState::BlockComment:
+      ++i;
+      if (c == '*' && next == '/') {
+        ++i;
+        state = LexState::Normal;
+      }
+      continue;
+
+    case LexState::StringLiteral:
+      ++i;
+      if (c == '\\' && i < segment.size()) {
+        ++i;
+      } else if (c == '"') {
+        state = LexState::Normal;
+      }
+      continue;
+
+    case LexState::CharLiteral:
+      ++i;
+      if (c == '\\' && i < segment.size()) {
+        ++i;
+      } else if (c == '\'') {
+        state = LexState::Normal;
+      }
+      continue;
     }
   }
 
-  llvm::StringRef remaining = segment;
-  while (!remaining.empty()) {
-    auto split = remaining.split('\n');
-    llvm::StringRef line = split.first;
-    llvm::StringRef rest = split.second;
-    if (auto declaredName = parseAnyDeclaredIdentifierName(line))
-      declaredNames.insert(*declaredName);
-    remaining = rest;
-  }
-
-  return declaredNames;
+  return usedNames;
 }
 
 struct PendingIdentifierRename {
@@ -2582,6 +2844,40 @@ findTopLevelGeneratedDeclarations(llvm::StringRef segment) {
   return names;
 }
 
+static std::string sanitizeCommentText(llvm::StringRef text) {
+  auto hexDigit = [](unsigned value) -> char {
+    return value < 10 ? static_cast<char>('0' + value)
+                      : static_cast<char>('A' + (value - 10));
+  };
+
+  std::string sanitized;
+  sanitized.reserve(text.size());
+  for (unsigned char c : text.bytes()) {
+    switch (c) {
+    case '\n':
+      sanitized.append("\\n");
+      break;
+    case '\r':
+      sanitized.append("\\r");
+      break;
+    case '\t':
+      sanitized.append("\\t");
+      break;
+    default:
+      if (std::iscntrl(c)) {
+        sanitized.push_back('\\');
+        sanitized.push_back('x');
+        sanitized.push_back(hexDigit((c >> 4) & 0xF));
+        sanitized.push_back(hexDigit(c & 0xF));
+      } else {
+        sanitized.push_back(static_cast<char>(c));
+      }
+      break;
+    }
+  }
+  return sanitized;
+}
+
 // Convert `/* PTOAS_PROVENANCE:rawname,... */` markers into trailing
 // `// pto: %rawname` comments on the next generated-value declaration line.
 // This gives issue #337 point 1 locatability: each generated C++ local that
@@ -2644,7 +2940,7 @@ static void emitProvenanceComments(std::string &segment) {
       if (i != 0)
         comment += ", ";
       comment += "%";
-      comment += m.names[i];
+      comment += sanitizeCommentText(m.names[i]);
     }
     // Find the end of the declaration line that mentions the first generated
     // name, and insert the comment right before the newline.
@@ -2699,11 +2995,15 @@ static void rewriteNameHintsInFunctionSegment(
   llvm::SmallVector<PendingIdentifierRename, 8> pendingRenames =
       collectPendingIdentifierRenames(segment, functionParamHints, blockArgHints);
   std::set<std::string> usedNames =
-      collectDeclaredIdentifiersInFunctionSegment(segment);
+      collectUsedIdentifiersInFunctionSegment(segment);
   std::set<std::string> typeAliasNames =
       collectTypeAliasNamesInFunctionSegment(segment);
-  for (const PendingIdentifierRename &rename : pendingRenames)
-    usedNames.erase(rename.oldName);
+  for (const PendingIdentifierRename &rename : pendingRenames) {
+    if (functionNames.count(rename.oldName) == 0 &&
+        typeAliasNames.count(rename.oldName) == 0 &&
+        !isReservedCppIdentifier(rename.oldName))
+      usedNames.erase(rename.oldName);
+  }
 
   for (const PendingIdentifierRename &rename : pendingRenames) {
     llvm::StringRef oldName = rename.oldName;
