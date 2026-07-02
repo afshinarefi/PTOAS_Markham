@@ -5,18 +5,14 @@
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
-
-// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto %s -o %t 2>&1 | FileCheck %s
-
-// Test that pto.stg rejects non-GM address space (UB pointer).
-
-module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  func.func @bad_stg_addr_space(%ub: !pto.ptr<i32, ub>) attributes {pto.aicore} {
-    %c0 = arith.constant 0 : index
-    %v = arith.constant 42 : i32
-    pto.stg %v, %ub[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, ub>, i32
-    return
-  }
+#ifndef __VEC_SCOPE__
+#define __VEC_SCOPE__
+#endif
+#include <stdint.h>
+#ifndef __CPU_SIM
+#include "acl/acl.h"
+#endif
+extern "C" __global__ [aicore] void simt_vector_ldg_stg_core_kernel(__gm__ float *v1);
+void LaunchSimt_vector_ldg_stg_core_kernel(float *v1, void *stream) {
+  simt_vector_ldg_stg_core_kernel<<<1, nullptr, stream>>>((__gm__ float *)v1);
 }
-
-// CHECK: requires GM pointer
