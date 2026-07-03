@@ -222,21 +222,34 @@ A3 should reuse the existing `PTOPlanMemory` path by converting tile buffers to
 memref-backed local buffers before UB intrinsic lowering, then materializing
 planned tile handles for `LowerPTOToUBufOps`.
 
-## Initial Implementation Status
+## Implementation Status
 
-The first Option 1 increment is implemented for A3 VPTO:
+Option 1 is implemented and validated for A3 VPTO:
 
 - A3 VPTO enters the local tile planning path.
 - `PTOViewToMemref`, `PTOPlanMemory`, `PTOResolveReservedBuffers`, and
   `PTOMaterializeTileHandles` run before A3 UB intrinsic lowering.
-- `LowerPTOToUBufOps` consumes `alloc_tile addr = ...` when all tile allocations
-  have planned addresses.
-- The manual allocator remains only as a fallback for standalone or direct pass
-  tests that do not run the shared planning pipeline.
+- `LowerPTOToUBufOps` requires planned addresses by default
+  (`allowManualAllocationFallback` defaults to `false`).
+- The manual allocator remains available only via
+  `--allow-manual-allocation-fallback` for standalone or direct pass tests.
 - A3 transfer lowering accepts planned-path GM memref views and lowers them to
   MTE ops before VPTO LLVM emission.
+- Dead `memref.subview` / `memref.reinterpret_cast` / `memref.cast` ops are
+  cleaned up after transfer lowering.
+- Lit test `vpto/ub/planned_addresses/txor_planned_addr.pto` verifies that all
+  four TXOR tiles (including `tmp`) receive compact planned addresses.
 
-Validated coverage:
+### Migration Step Progress
 
-- UB lit suite: `48 passed`.
+| Step | Status |
+|---|---|
+| Step 1: Keep current fix as safety net | Done — 256-byte alignment, capacity checks |
+| Step 2: Add A3 pre-planning pipeline | Done — `PTOViewToMemref` + `PTOPlanMemory` + materialization |
+| Step 3: Split `LowerPTOToUBufOps` | Partial — fallback is opt-in via `allowManualAllocationFallback`; full split deferred |
+| Step 4: Remove manual allocator | Pending — fallback still present behind option |
+
+### Validated Coverage
+
+- UB lit suite: `49 passed` (48 existing + 1 planned-address test).
 - Binary elementwise hardware e2e: `171 passed`.

@@ -243,6 +243,17 @@ struct LowerPTOToUBufOpsPass
         signalPassFailure();
         return;
       }
+      if (!allocOps.empty() && !hasPlannedAddr &&
+          !allowManualAllocationFallback) {
+        func.emitError("A3 VPTO UB lowering requires planned alloc_tile "
+                       "addresses; run PTOViewToMemref, PTOPlanMemory, "
+                       "PTOResolveReservedBuffers, and "
+                       "PTOMaterializeTileHandles before "
+                       "LowerPTOToUBufOps, or pass "
+                       "--allow-manual-allocation-fallback for isolated tests");
+        signalPassFailure();
+        return;
+      }
       uint64_t offset = 0;
       for (auto op : allocOps) {
         auto tbTy = cast<pto::TileBufType>(op.getResult().getType());
