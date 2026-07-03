@@ -27,7 +27,7 @@ import threading
 
 from .. import constraints as _constraints
 from .. import registry as _registry
-from ..metadata import ScalarSpec, ScalarType, TileSpec
+from ..metadata import ScalarSpec, ScalarType, TileSpec, VectorSpec, ViewSpec
 from ..templates import load_template
 from .wire import recv_message, send_message
 
@@ -68,9 +68,41 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
                 ) from exc
             continue
 
+        if kind == "vector":
+            try:
+                specs[name] = VectorSpec(
+                    shape=tuple(spec["shape"]),
+                    dtype=ScalarType(spec["dtype"]),
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"vector operand {index} ({name!r}) is missing {exc.args[0]!r}"
+                ) from exc
+            continue
+
+        if kind == "view":
+            config = spec.get("config") or {}
+            if not isinstance(config, dict):
+                raise TypeError(f"operand_specs[{index}].config must be an object")
+            try:
+                strides = spec.get("strides")
+                specs[name] = ViewSpec(
+                    shape=tuple(spec["shape"]),
+                    dtype=ScalarType(spec["dtype"]),
+                    memory_space=spec.get("memory_space", "gm"),
+                    strides=tuple(strides) if strides is not None else None,
+                    layout=config.get("layout"),
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"view operand {index} ({name!r}) is missing {exc.args[0]!r}"
+                ) from exc
+            continue
+
         if kind != "tile":
             raise NotImplementedError(
-                "PTODSL TileLib daemon currently supports tile and scalar operands; "
+                "PTODSL TileLib daemon currently supports tile, scalar, view, "
+                f"and vector operands; "
                 f"operand {index} ({name!r}) has kind {kind!r}"
             )
 
@@ -94,6 +126,7 @@ def _build_tile_specs(descriptor, operand_specs: list) -> dict:
             valid_shape=tuple(valid_shape) if valid_shape is not None else None,
             b_layout=config.get("b_layout", "row_major"),
             s_layout=config.get("s_layout", "none_box"),
+            pad_value=spec.get("pad_value", config.get("pad_value", "Null")),
         )
     return specs
 
@@ -135,7 +168,7 @@ def _metadata_for_descriptor(descriptor, constraint_context: dict) -> dict:
     }
 
 
-def _tile_specs_for_request(target: str, op: str, operand_specs: list) -> dict:
+def _registered_candidates(target: str, op: str) -> list:
     # Import only this op's template module. Registration happens as an import
     # side effect and repeated requests are no-ops because the loader is cached.
     load_template(op, target)
@@ -144,10 +177,96 @@ def _tile_specs_for_request(target: str, op: str, operand_specs: list) -> dict:
         raise _registry.NoMatchingTemplate(
             f"no template registered for op={op!r} target={target!r}"
         )
+    return candidates
 
-    # All versions of an op share one parameter order. Any candidate can map the
-    # positional wire operands before legality filtering chooses a version.
-    return _build_tile_specs(candidates[0], operand_specs)
+
+def _legal_candidate_specs(
+    target: str,
+    op: str,
+    operand_specs: list,
+    context_attrs: dict | None = None,
+) -> list:
+    """Return legal ``(descriptor, specs)`` pairs for this concrete request.
+
+    Different template versions may have different parameter counts/order.  The
+    wire operands are positional, so bind them against each descriptor before
+    asking the Python constraint legalizer.
+    """
+    evaluated = []
+    for descriptor in _registered_candidates(target, op):
+        try:
+            specs = _build_tile_specs(descriptor, operand_specs)
+        except Exception as exc:
+            evaluated.append((descriptor, None, f"operand binding failed: {exc}"))
+            continue
+
+        legality = _constraints.evaluate_candidate(
+            descriptor,
+            specs,
+            target,
+            op,
+            context_attrs,
+        )
+        evaluated.append(
+            (
+                descriptor,
+                specs,
+                legality.reason if not legality.legal else None,
+            )
+        )
+
+    legal = [
+        (descriptor, specs)
+        for descriptor, specs, reason in evaluated
+        if specs is not None and reason is None
+    ]
+    if not legal:
+        reasons = "; ".join(
+            f"{descriptor.name}: {reason}"
+            for descriptor, _, reason in evaluated
+        )
+        raise _registry.NoMatchingTemplate(
+            f"no legal template for op={op!r} target={target!r}; {reasons}"
+        )
+
+    legal.sort(key=lambda pair: pair[0].metadata.priority, reverse=True)
+    return legal
+
+
+def _select_descriptor_and_specs(
+    target: str,
+    op: str,
+    operand_specs: list,
+    context_attrs: dict | None = None,
+    candidate_id: str | None = None,
+):
+    legal = _legal_candidate_specs(target, op, operand_specs, context_attrs)
+    if candidate_id:
+        for descriptor, specs in legal:
+            if descriptor.name == candidate_id:
+                return descriptor, specs
+        legal_names = ", ".join(descriptor.name for descriptor, _ in legal)
+        raise _registry.NoMatchingTemplate(
+            f"candidate {candidate_id!r} is not a legal template for op={op!r} "
+            f"target={target!r}; legal candidates: {legal_names}"
+        )
+
+    if len(legal) == 1:
+        return legal[0]
+
+    top_priority = legal[0][0].metadata.priority
+    winners = [
+        (descriptor, specs)
+        for descriptor, specs in legal
+        if descriptor.metadata.priority == top_priority
+    ]
+    if len(winners) > 1:
+        names = ", ".join(descriptor.name for descriptor, _ in winners)
+        raise _registry.AmbiguousTemplate(
+            f"multiple templates tie at priority {top_priority} for op={op!r} "
+            f"target={target!r}: {names}"
+        )
+    return legal[0]
 
 
 def metadata_request(
@@ -157,20 +276,19 @@ def metadata_request(
     context_attrs: dict | None = None,
 ) -> dict:
     """Return every legal candidate and its selection metadata."""
-    tile_specs = _tile_specs_for_request(target, op, operand_specs)
-    legal = _registry.legal_candidates(op, target, tile_specs, context_attrs)
-    constraint_context = _constraints.build_context(tile_specs, target, op)
-    if context_attrs:
-        constraint_context.update(context_attrs)
+    legal = _legal_candidate_specs(target, op, operand_specs, context_attrs)
     return {
         "target": target,
         "op": op,
         "candidates": {
             descriptor.name: _metadata_for_descriptor(
                 descriptor,
-                constraint_context,
+                {
+                    **_constraints.build_context(specs, target, op),
+                    **(context_attrs or {}),
+                },
             )
-            for descriptor in legal
+            for descriptor, specs in legal
         },
     }
 
@@ -183,11 +301,10 @@ def render_request(
     candidate_id: str | None = None,
 ) -> str:
     """Select and render one PTODSL template as MLIR text."""
-    tile_specs = _tile_specs_for_request(target, op, operand_specs)
-    descriptor = _registry.select(
-        op,
+    descriptor, tile_specs = _select_descriptor_and_specs(
         target,
-        tile_specs,
+        op,
+        operand_specs,
         context_attrs,
         candidate_id,
     )

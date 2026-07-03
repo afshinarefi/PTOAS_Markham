@@ -13,7 +13,8 @@ tcolmax is legal only for row-major / none-box operands with a 1-row output
 
 import unittest
 
-from ptodsl.tilelib import ScalarType, TileSpec, select
+from ptodsl.tilelib import ScalarType, TileSpec, VectorSpec, ViewSpec, select
+from ptodsl.tilelib.constraints import build_context
 from ptodsl.tilelib.registry import NoMatchingTemplate
 
 F32 = ScalarType("f32")
@@ -50,6 +51,30 @@ class TileLibConstraintTest(unittest.TestCase):
                    "pto.vmax", "pto.vsts", "pto.tilelang.instance"):
             self.assertIn(op, mlir)
         self.assertNotIn("pto.castptr", mlir)
+
+    def test_context_tracks_view_and_vector_operands(self):
+        context = build_context(
+            {
+                "src": ViewSpec(
+                    shape=(16, 64),
+                    dtype=F32,
+                    memory_space="gm",
+                    strides=(64, 1),
+                    layout="ND",
+                ),
+                "aux": VectorSpec(shape=(4,), dtype=ScalarType("i32")),
+            },
+            "a5",
+            "pto.example",
+        )
+
+        self.assertEqual(context["operand_kinds"], ("view", "vector"))
+        self.assertEqual(context["src_shape"], (16, 64))
+        self.assertEqual(context["src_strides"], (64, 1))
+        self.assertEqual(context["src_memory_space"], "gm")
+        self.assertEqual(context["src_layout"], "ND")
+        self.assertEqual(context["aux_shape"], (4,))
+        self.assertEqual(context["aux_size"], 4)
 
 
 if __name__ == "__main__":

@@ -159,8 +159,11 @@ def _pad_token(value: str) -> str:
         "Null": "Null",
         "zero": "Zero",
         "Zero": "Zero",
+        "0x0": "Null",
+        "0x00": "Null",
+        0: "Null",
     }
-    return aliases.get(str(value), str(value))
+    return aliases.get(value, aliases.get(str(value), str(value)))
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,51 @@ class ScalarSpec:
 
     def mlir_type(self):
         return _resolve(scalar_descriptor(self.dtype))
+
+
+@dataclass(frozen=True)
+class ViewSpec:
+    """Concrete specialization of one view/memref TileOp operand."""
+
+    shape: tuple
+    dtype: ScalarType
+    memory_space: str = "gm"
+    strides: tuple | None = None
+    layout: str | None = None
+
+    def mlir_type(self):
+        dims = "x".join("?" if dim is None else str(dim) for dim in self.shape)
+        addr_space = _memref_address_space_token(self.memory_space)
+        return Type.parse(
+            f"memref<{dims}x{self.dtype.name}, #pto.address_space<{addr_space}>>"
+        )
+
+
+@dataclass(frozen=True)
+class VectorSpec:
+    """Concrete specialization of one builtin vector TileOp operand."""
+
+    shape: tuple
+    dtype: ScalarType
+
+    def mlir_type(self):
+        dims = "x".join(str(dim) for dim in self.shape)
+        return Type.parse(f"vector<{dims}x{self.dtype.name}>")
+
+
+def _memref_address_space_token(value: str) -> str:
+    aliases = {
+        "ub": "vec",
+        "vec": "vec",
+        "gm": "gm",
+        "mat": "mat",
+        "left": "left",
+        "right": "right",
+        "acc": "acc",
+        "bias": "bias",
+        "scaling": "scaling",
+    }
+    return aliases.get(str(value), str(value))
 
 
 @dataclass(frozen=True)
@@ -224,6 +272,8 @@ __all__ = [
     "ScalarType",
     "TileSpec",
     "ScalarSpec",
+    "ViewSpec",
+    "VectorSpec",
     "TemplateMetadata",
     "scalar_descriptor",
     "f32",

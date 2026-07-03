@@ -205,11 +205,24 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn("func.func @template_tadds", mlir)
         self.assertIn("pto.vadds", mlir)
 
+    def test_vector_operand_metadata_is_accepted(self):
+        operands = [
+            _tile_spec(),
+            _tile_spec(),
+            _tile_spec(),
+            _tile_spec(),
+            {"kind": "vector", "dtype": "i32", "shape": [4]},
+        ]
+
+        metadata = self.client.get_metadata("a5", "pto.tmrgsort", operands)
+
+        self.assertIn("template_tmrgsort_multi_list2", metadata["candidates"])
+
     def test_unsupported_operand_kind_is_rejected_explicitly(self):
         operands = list(TADD_OPERANDS)
-        operands[0] = {"kind": "vector", "dtype": "f32", "shape": [64]}
+        operands[0] = {"kind": "mystery", "dtype": "f32", "shape": [64]}
 
-        with self.assertRaisesRegex(DaemonError, "supports tile and scalar operands"):
+        with self.assertRaisesRegex(DaemonError, "supports tile, scalar, view, and vector operands"):
             self.client.instantiate(
                 "a5",
                 "pto.tadd",

@@ -26,7 +26,7 @@ from __future__ import annotations
 import inspect
 from dataclasses import dataclass
 
-from .metadata import ScalarSpec, TileSpec, scalar_descriptor
+from .metadata import ScalarSpec, TileSpec, VectorSpec, ViewSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
 from .._bootstrap import make_context
 from .._surface_types import Tile
@@ -127,6 +127,13 @@ class _TemplateTrace(TracingRuntime):
                         f"tile-template scalar parameter {param_name!r} cannot be annotated Tile"
                     )
                 arg_types.append(_scalar_argument_type(param.annotation, spec))
+            elif isinstance(spec, (ViewSpec, VectorSpec)):
+                if _is_tile_annotation(param.annotation):
+                    raise TypeError(
+                        f"tile-template {type(spec).__name__} parameter "
+                        f"{param_name!r} cannot be annotated Tile"
+                    )
+                arg_types.append(spec.mlir_type())
             else:
                 raise TypeError(
                     f"unsupported operand spec for parameter {param_name!r}: {type(spec).__name__}"
@@ -141,6 +148,8 @@ class _TemplateTrace(TracingRuntime):
             if isinstance(spec, TileSpec):
                 bound.append(_TemplateTile(arg, spec))
             elif isinstance(spec, ScalarSpec):
+                bound.append(wrap_surface_value(arg))
+            elif isinstance(spec, (ViewSpec, VectorSpec)):
                 bound.append(wrap_surface_value(arg))
             else:
                 raise TypeError(f"unsupported operand spec {type(spec).__name__}")

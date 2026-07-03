@@ -28,6 +28,8 @@ import inspect
 from dataclasses import dataclass
 from enum import Enum
 
+from .metadata import ScalarSpec, VectorSpec, ViewSpec
+
 
 class BLayout(str, Enum):
     ROW_MAJOR = "row_major"
@@ -74,11 +76,44 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
         operand_dtypes.append(dtype)
         context[f"{name}_dtype"] = dtype
 
-        if not hasattr(spec, "shape"):
+        if isinstance(spec, ScalarSpec):
             operand_kinds.append("scalar")
             context[f"{name}_kind"] = "scalar"
             if hasattr(spec, "value"):
                 context[f"{name}_value"] = spec.value
+            continue
+
+        if isinstance(spec, VectorSpec):
+            operand_kinds.append("vector")
+            shape = tuple(spec.shape)
+            operand_sizes.append(_shape_size(shape))
+            context[f"{name}_kind"] = "vector"
+            context[f"{name}_shape"] = shape
+            context[f"{name}_size"] = _shape_size(shape)
+            continue
+
+        if isinstance(spec, ViewSpec):
+            operand_kinds.append("view")
+            shape = tuple(spec.shape)
+            memory_space = getattr(spec, "memory_space", "gm")
+            operand_memory_spaces.append(memory_space)
+            if _is_static_shape(shape):
+                operand_sizes.append(_shape_size(shape))
+            context[f"{name}_kind"] = "view"
+            context[f"{name}_shape"] = shape
+            context[f"{name}_strides"] = tuple(spec.strides) if spec.strides else None
+            context[f"{name}_memory_space"] = memory_space
+            context[f"{name}_layout"] = spec.layout
+            if len(shape) == 2:
+                context[f"{name}_rows"], context[f"{name}_cols"] = shape
+                if all(isinstance(dim, int) for dim in shape):
+                    operand_rows.append(shape[0])
+                    operand_cols.append(shape[1])
+            continue
+
+        if not hasattr(spec, "shape"):
+            operand_kinds.append(type(spec).__name__)
+            context[f"{name}_kind"] = type(spec).__name__
             continue
 
         operand_kinds.append("tile")
@@ -120,8 +155,14 @@ def build_context(tile_specs: dict, target: str, op: str) -> dict:
 def _shape_size(shape):
     size = 1
     for dim in shape:
+        if not isinstance(dim, int):
+            return None
         size *= dim
     return size
+
+
+def _is_static_shape(shape):
+    return all(isinstance(dim, int) for dim in shape)
 
 
 def evaluate_candidate(

@@ -33,6 +33,8 @@ from .metadata import (
     ScalarType,
     TemplateMetadata,
     TileSpec,
+    VectorSpec,
+    ViewSpec,
     bf16,
     f4e1m2x2,
     f4e2m1x2,
@@ -71,6 +73,8 @@ __all__ = [
     # specs / metadata
     "TileSpec",
     "ScalarSpec",
+    "ViewSpec",
+    "VectorSpec",
     "ScalarType",
     "TemplateMetadata",
     "BLayout",
