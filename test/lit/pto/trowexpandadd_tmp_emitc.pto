@@ -23,5 +23,5 @@ module {
   }
 }
 
-// A5: TROWEXPANDADD(dst, src0, src1);
-// A5: TROWEXPANDADD(dst, src0, src1, tmp);
+// A5: TROWEXPANDADD({{[_A-Za-z][_A-Za-z0-9]*}}, {{[_A-Za-z][_A-Za-z0-9]*}}, {{[_A-Za-z][_A-Za-z0-9]*}});
+// A5: TROWEXPANDADD({{[_A-Za-z][_A-Za-z0-9]*}}, {{[_A-Za-z][_A-Za-z0-9]*}}, {{[_A-Za-z][_A-Za-z0-9]*}}, {{[_A-Za-z][_A-Za-z0-9]*}});

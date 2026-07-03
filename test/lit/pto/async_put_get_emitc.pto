@@ -15,9 +15,11 @@ module {
 }
 
 // A3-LABEL: AICORE void async_put_get(
-// A3: Tile<TileType::Vec, int8_t, 1, 256, BLayout::RowMajor, 1, 256, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SCRATCH:[_A-Za-z][_A-Za-z0-9]*]];
+// A3: Tile<TileType::Vec, int8_t, 1, 256, BLayout::RowMajor, 1, 256, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SCRATCH_STORAGE:[_A-Za-z][_A-Za-z0-9]*]]
+// A3: Tile<TileType::Vec, int8_t, 1, 256, BLayout::RowMajor, 1, 256, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SCRATCH:[_A-Za-z][_A-Za-z0-9]*]] = [[SCRATCH_STORAGE]];
 // A3: TASSIGN([[SCRATCH]], {{[_A-Za-z][_A-Za-z0-9]*}});
-// A3: pto::comm::AsyncSession [[SESSION:[_A-Za-z][_A-Za-z0-9]*]];
+// A3: pto::comm::AsyncSession [[SESSION_STORAGE:[_A-Za-z][_A-Za-z0-9]*]]
+// A3: pto::comm::AsyncSession [[SESSION:[_A-Za-z][_A-Za-z0-9]*]] = [[SESSION_STORAGE]];
 // A3: pto::comm::sdma::SdmaBaseConfig {{[_A-Za-z][_A-Za-z0-9]*}} = {32768ULL, 0ULL, 1u};
 // A3: pto::comm::BuildAsyncSession<pto::comm::DmaEngine::SDMA>([[SCRATCH]], {{.*}}, [[SESSION]], {{.*}}, {{[_A-Za-z][_A-Za-z0-9]*}}, {{.*}});
 // A3: using [[SHAPETY:.*]] = pto::Shape<1, 1, 1, 1, 128>;
@@ -32,5 +34,5 @@ module {
 // A3: [[GLTNSRTY]] [[GT1:[_A-Za-z][_A-Za-z0-9]*]] = [[GLTNSRTY]]({{.*}}, [[SHAPE1]], [[STRIDE1]]);
 // A3: pto::comm::AsyncEvent [[PUT_EVT:[_A-Za-z][_A-Za-z0-9]*]] = pto::comm::TPUT_ASYNC<pto::comm::DmaEngine::SDMA>(
 // A3: pto::comm::AsyncEvent [[GET_EVT:[_A-Za-z][_A-Za-z0-9]*]] = pto::comm::TGET_ASYNC<pto::comm::DmaEngine::SDMA>(
-// A3: bool [[PUT_DONE:[_A-Za-z][_A-Za-z0-9]*]] = [[PUT_EVT]].Wait([[SESSION]]);
-// A3: bool [[GET_DONE:[_A-Za-z][_A-Za-z0-9]*]] = [[GET_EVT]].Test([[SESSION]]);
+// A3: bool {{[_A-Za-z][_A-Za-z0-9]*}} = [[PUT_EVT]].Wait([[SESSION]]);
+// A3: bool {{[_A-Za-z][_A-Za-z0-9]*}} = [[GET_EVT]].Test([[SESSION]]);
