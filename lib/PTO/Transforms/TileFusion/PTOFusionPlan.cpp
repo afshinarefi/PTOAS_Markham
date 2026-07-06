@@ -199,6 +199,41 @@ static bool isSupportedPlanningNode(const pto::FusionComputeNode &node) {
          isCurrentlyPlannableOp(node.semantics.opName);
 }
 
+static TileOpImplVersion getDefaultImplVersion() {
+  return TileOpImplVersion{/*id=*/0, /*name=*/"default", /*loopDepth=*/2,
+                           /*isPostUpdate=*/false, /*hasTail=*/false};
+}
+
+static FailureOr<SmallVector<TileOpImplVersion, 4>>
+getLegalImplVersions(const pto::FusionComputeNode &node) {
+  auto candidates = node.op->getAttrOfType<ArrayAttr>(kTemplateCandidatesAttr);
+  if (!candidates || candidates.empty())
+    return SmallVector<TileOpImplVersion, 4>{getDefaultImplVersion()};
+
+  SmallVector<TileOpImplVersion, 4> versions;
+  versions.reserve(candidates.size());
+
+  for (Attribute attr : candidates) {
+    auto dict = dyn_cast<DictionaryAttr>(attr);
+    if (!dict)
+      return failure();
+
+    auto id = dyn_cast_or_null<IntegerAttr>(dict.get("id"));
+    auto name = dyn_cast_or_null<StringAttr>(dict.get("name"));
+    auto loopDepth = dyn_cast_or_null<IntegerAttr>(dict.get("loop_depth"));
+    auto postUpdate = dyn_cast_or_null<IntegerAttr>(dict.get("postupdate"));
+    auto tail = dyn_cast_or_null<IntegerAttr>(dict.get("tail"));
+    if (!id || !name || !loopDepth || !postUpdate || !tail)
+      return failure();
+
+    versions.push_back(TileOpImplVersion{
+        id.getInt(), name.getValue().str(), loopDepth.getInt(),
+        postUpdate.getInt() != 0, tail.getInt() != 0});
+  }
+
+  return versions;
+}
+
 static unsigned
 countEdgesFromGroup(const pto::FusionBlockAnalysis &blockAnalysis,
                     ArrayRef<const pto::FusionComputeNode *> group,
