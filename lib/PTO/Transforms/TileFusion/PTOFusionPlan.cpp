@@ -44,21 +44,12 @@ static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 
 struct TileOpImplVersion {
   int64_t id;
-  string name;
+  std::string name;
   int64_t loopDepth;
   bool isPostUpdate;
   bool hasTail; 
-}
-
-struct PlannedFusionMember {
-  const pto::FusionComputeNode *node = nullptr;
-  TileOpImplVersion version;
-}
-
-struct PlannedFusionGroup {
-  SmallVector<PlannedFusionMember, 8> members;
-  PlanningCost cost;
 };
+
 
 struct PlanningContext {
   const pto::FusionBlockAnalysis &blockAnalysis;
@@ -75,6 +66,16 @@ struct PlanningCost {
     return dependencyBenefit + loopMergeBenefit - liveTilePenalty -
            vfParameterPenalty;
   }
+};
+
+struct PlannedFusionMember {
+  const pto::FusionComputeNode *node = nullptr;
+  TileOpImplVersion version;
+};
+
+struct PlannedFusionGroup {
+  SmallVector<PlannedFusionMember, 8> members;
+  PlanningCost cost;
 };
 
 struct PlanningDecision {
