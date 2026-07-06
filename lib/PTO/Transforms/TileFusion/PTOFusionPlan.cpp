@@ -41,13 +41,14 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr =
     "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
+static constexpr llvm::StringLiteral kTemplateCandidatesAttr = "versions";
 
 struct TileOpImplVersion {
-  int64_t id;
+  int64_t id = 0;
   std::string name;
-  int64_t loopDepth;
-  bool isPostUpdate;
-  bool hasTail; 
+  int64_t loopDepth = 0;
+  bool isPostUpdate = false;
+  bool hasTail = false;
 };
 
 
