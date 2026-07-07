@@ -2819,15 +2819,27 @@ def BarrierOp : PTO_Op<"barrier"> {
 def CmoCacheInvalidOp : PTO_Op<"cmo.cacheinvalid"> {
   let summary = "Perform cache maintenance for a memory space";
   let description = [{
-    Cache maintenance operation for the specified memory space. The first
-    version supports whole-cache GM maintenance and lowers to PTO-ISA's
-    two-argument `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
-    MemoryConsistency interprets it as an explicit CMO boundary on both
-    producer release and consumer acquire paths.
+    Cache maintenance operation for the specified memory space.
+
+    The whole-cache form lowers to PTO-ISA's two-argument
+    `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
+
+    The single-cache-line form lowers to
+    `dcci(addr, cache_line_t::SINGLE_CACHE_LINE)`, where `addr` is a GM
+    pointer whose cache line should be maintained.
+
+    MemoryConsistency interprets both forms as explicit CMO boundaries on
+    producer release and consumer acquire paths. Precise coverage of the
+    selected line is the producer DSL/user's responsibility in this phase.
   }];
 
-  let arguments = (ins PTO_AddressSpaceAttr:$space);
-  let assemblyFormat = "`all` $space attr-dict";
+  let arguments = (ins
+    Optional<AnyType>:$addr,
+    PTO_AddressSpaceAttr:$space
+  );
+
+  let hasVerifier = 1;
+  let hasCustomAssemblyFormat = 1;
 }
 
 def FenceBarrierAllOp : PTO_Op<"fence.barrier_all"> {

@@ -28,6 +28,35 @@ def main() -> None:
         assert_contains(text, "pto.cmo.cacheinvalid all <gm>")
         assert_contains(text, "pto.fence.barrier_all <gm>")
 
+        single_line = Module.parse(
+            """
+            module {
+              func.func @single_line_parse(%payload_ptr: !pto.ptr<i32>)
+                  attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+                pto.cmo.cacheinvalid %payload_ptr single_cache_line : !pto.ptr<i32>
+                return
+              }
+            }
+            """
+        )
+        assert_contains(str(single_line), "single_cache_line")
+
+        single_line_ctor = Module.parse(
+            """
+            module {
+              func.func @single_line_ctor(%payload_ptr: !pto.ptr<i32>)
+                  attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+                return
+              }
+            }
+            """
+        )
+        func = single_line_ctor.body.operations[0]
+        block = func.regions[0].blocks[0]
+        with InsertionPoint.at_block_begin(block):
+            pto.CmoCacheInvalidOp(pto.AddressSpace.GM, addr=block.arguments[0])
+        assert_contains(str(single_line_ctor), "single_cache_line")
+
     print("memory_consistency_bindings: PASS")
 
 

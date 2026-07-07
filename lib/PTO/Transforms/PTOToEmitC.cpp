@@ -6503,8 +6503,8 @@ struct PTOTAssignToEmitC : public OpConversionPattern<pto::TAssignOp> {
 // pto.load_scalar / pto.store_scalar lowering -> ptr[offset]
 //===----------------------------------------------------------------------===//
 
-static void emitInvalidateGmCache(ConversionPatternRewriter &rewriter,
-                                  Location loc) {
+static void emitInvalidateGmCacheAll(ConversionPatternRewriter &rewriter,
+                                     Location loc) {
   auto *ctx = rewriter.getContext();
   auto args = rewriter.getArrayAttr({
       emitc::OpaqueAttr::get(ctx, "(__gm__ void*)0"),
@@ -6512,6 +6512,13 @@ static void emitInvalidateGmCache(ConversionPatternRewriter &rewriter,
   });
   rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dcci", args,
                                        ArrayAttr{}, ValueRange{});
+}
+
+static void emitInvalidateGmCacheSingleLine(ConversionPatternRewriter &rewriter,
+                                            Location loc, Value addr) {
+  rewriter.create<emitc::CallOpaqueOp>(
+      loc, TypeRange{}, "PTOAS__DCCI_SINGLE_CACHE_LINE",
+      ArrayAttr{}, ArrayAttr{}, ValueRange{addr});
 }
 
 static bool isGmCmoSpace(pto::AddressSpace space) {
@@ -6524,10 +6531,14 @@ struct PTOCmoCacheInvalidToEmitC
 
   LogicalResult matchAndRewrite(pto::CmoCacheInvalidOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    (void)adaptor;
     if (!isGmCmoSpace(op.getSpace().getAddressSpace()))
       return rewriter.notifyMatchFailure(op, "unsupported CMO invalidate space");
-    emitInvalidateGmCache(rewriter, op.getLoc());
+    if (op.getAddr()) {
+      Value addr = peelUnrealized(adaptor.getAddr());
+      emitInvalidateGmCacheSingleLine(rewriter, op.getLoc(), addr);
+    } else {
+      emitInvalidateGmCacheAll(rewriter, op.getLoc());
+    }
     rewriter.eraseOp(op);
     return success();
   }
@@ -13973,6 +13984,11 @@ static AICORE inline void ptoas_auto_sync_tail(
     pipe_barrier(PIPE_ALL);
     break;
   }
+}
+
+template <typename Ptr>
+static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
+  dcci((__gm__ void*)ptr, cache_line_t::SINGLE_CACHE_LINE);
 }
 )cpp"));
 	    // Only inject the bitcast helper when we actually lower ops that need it
