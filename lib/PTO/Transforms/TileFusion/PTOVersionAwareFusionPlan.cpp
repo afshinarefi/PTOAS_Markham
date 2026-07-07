@@ -11,6 +11,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TemplateAttributes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -42,15 +43,8 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr =
     "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
-static constexpr llvm::StringLiteral kTemplateCandidatesAttr = "candidates";
 
-struct TileOpImplVersion {
-  int64_t id = 0;
-  std::string name;
-  int64_t loopDepth = 0;
-  bool isPostUpdate = false;
-  bool hasTail = false;
-};
+using TileOpImplVersion = pto::TemplateCandidateMetadata;
 
 struct PlanningContext {
   const pto::FusionBlockAnalysis &blockAnalysis;
@@ -219,31 +213,17 @@ static TileOpImplVersion getDefaultImplVersion() {
 
 static FailureOr<SmallVector<TileOpImplVersion, 4>>
 getLegalImplVersions(const pto::FusionComputeNode &node) {
-  auto candidates = node.op->getAttrOfType<ArrayAttr>(kTemplateCandidatesAttr);
-  if (!candidates || candidates.empty())
+  FailureOr<SmallVector<pto::TemplateCandidateMetadata, 4>> candidates =
+      pto::getTemplateCandidateAttrs(node.op);
+  if (failed(candidates))
+    return failure();
+  if (candidates->empty())
     return SmallVector<TileOpImplVersion, 4>{getDefaultImplVersion()};
 
   SmallVector<TileOpImplVersion, 4> versions;
-  versions.reserve(candidates.size());
-
-  for (Attribute attr : candidates) {
-    auto dict = dyn_cast<DictionaryAttr>(attr);
-    if (!dict)
-      return failure();
-
-    auto id = dyn_cast_or_null<IntegerAttr>(dict.get("id"));
-    auto name = dyn_cast_or_null<StringAttr>(dict.get("name"));
-    auto loopDepth = dyn_cast_or_null<IntegerAttr>(dict.get("loop_depth"));
-    auto postUpdate = dyn_cast_or_null<IntegerAttr>(dict.get("postupdate"));
-    auto tail = dyn_cast_or_null<IntegerAttr>(dict.get("tail"));
-    if (!id || !name || !loopDepth || !postUpdate || !tail)
-      return failure();
-
-    versions.push_back(TileOpImplVersion{
-        id.getInt(), name.getValue().str(), loopDepth.getInt(),
-        postUpdate.getInt() != 0, tail.getInt() != 0});
-  }
-
+  versions.reserve(candidates->size());
+  for (const pto::TemplateCandidateMetadata &candidate : *candidates)
+    versions.push_back(candidate);
   return versions;
 }
 

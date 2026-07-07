@@ -9,6 +9,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/TemplateAttributes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -50,16 +51,6 @@ namespace pto {
 } // namespace mlir
 
 namespace {
-
-constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
-
-struct CandidateMetadata {
-  int64_t id;
-  std::string name;
-  int64_t loopDepth;
-  bool postUpdate;
-  bool tail;
-};
 
 static std::string getDtypeString(Type elementType) {
   if (elementType.isIndex())
@@ -855,7 +846,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     return failure();
   }
 
-  SmallVector<CandidateMetadata> parsedCandidates;
+  SmallVector<pto::TemplateCandidateMetadata> parsedCandidates;
   parsedCandidates.reserve(candidates->size());
   for (const auto &entry : *candidates) {
     auto *metadata = entry.second.getAsObject();
@@ -883,7 +874,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
       return failure();
     }
 
-    parsedCandidates.push_back(CandidateMetadata{
+    parsedCandidates.push_back(pto::TemplateCandidateMetadata{
         id.value_or(0),
         name->str(),
         *loopDepth,
@@ -893,8 +884,8 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   }
 
   llvm::sort(parsedCandidates,
-             [](const CandidateMetadata &left,
-                const CandidateMetadata &right) {
+             [](const pto::TemplateCandidateMetadata &left,
+                const pto::TemplateCandidateMetadata &right) {
                if (left.id != right.id)
                  return left.id < right.id;
                return left.name < right.name;
@@ -907,27 +898,8 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     }
   }
 
-  Builder builder(operation->getContext());
-  SmallVector<Attribute> attributes;
-  attributes.reserve(parsedCandidates.size());
-  for (const CandidateMetadata &candidate : parsedCandidates) {
-    attributes.push_back(DictionaryAttr::get(
-        operation->getContext(),
-        {
-            builder.getNamedAttr("id", builder.getI64IntegerAttr(candidate.id)),
-            builder.getNamedAttr("name",
-                                 builder.getStringAttr(candidate.name)),
-            builder.getNamedAttr(
-                "loop_depth",
-                builder.getI64IntegerAttr(candidate.loopDepth)),
-            builder.getNamedAttr(
-                "postupdate",
-                builder.getI64IntegerAttr(candidate.postUpdate ? 1 : 0)),
-            builder.getNamedAttr(
-                "tail", builder.getI64IntegerAttr(candidate.tail ? 1 : 0)),
-        }));
-  }
-  return builder.getArrayAttr(attributes);
+  return pto::buildTemplateCandidateArrayAttr(operation->getContext(),
+                                              parsedCandidates);
 }
 
 struct InsertTemplateAttributesPass
@@ -961,7 +933,7 @@ struct InsertTemplateAttributesPass
       auto candidates = parseCandidateAttributes(operation, *metadata);
       if (failed(candidates))
         return signalPassFailure();
-      operation->setAttr(kCandidatesAttr, *candidates);
+      operation->setAttr(pto::kTemplateCandidatesAttr, *candidates);
     }
   }
 };
