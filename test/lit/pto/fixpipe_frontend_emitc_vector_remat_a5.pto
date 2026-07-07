@@ -6,6 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 //
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir --mlir-print-ir-after=pto-plan-memory %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 // RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
 
 module {
@@ -117,3 +118,11 @@ module {
 // A5-NEXT: TPUSH<{{.*}}, Pipe1FixpipeConfig>(
 // A5: SET_QUANT_VECTOR([[FP0]]);
 // A5-NEXT: TPUSH<{{.*}}, Pipe0FixpipeConfig>(
+
+// PLAN-LABEL: func.func @cube_kernel()
+// PLAN: pto.set_quant_vector(%{{.*}} : memref<1x32xf16{{.*}}#pto.address_space<scaling>>) {id = 0}
+// PLAN-NEXT: pto.tpush(
+// PLAN: pto.set_quant_vector(%{{.*}} : memref<1x32xf16{{.*}}#pto.address_space<scaling>>) {id = 1}
+// PLAN-NEXT: pto.tpush(
+// PLAN: pto.set_quant_vector(%{{.*}} : memref<1x32xf16{{.*}}#pto.address_space<scaling>>) {id = 0}
+// PLAN-NEXT: pto.tpush(
