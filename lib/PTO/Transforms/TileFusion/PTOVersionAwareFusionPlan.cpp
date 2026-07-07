@@ -232,6 +232,47 @@ buildStableInGroupMemberOrder(ArrayRef<PlannedFusionMember> members) {
   return ordered;
 }
 
+static unsigned
+getEarliestBlockOrder(ArrayRef<PlannedFusionMember> members) {
+  unsigned earliest = ~0u;
+  for (const PlannedFusionMember &member : members)
+    earliest = std::min(earliest, member.node->blockOrder);
+  return earliest;
+}
+
+[[maybe_unused]] static bool
+isBetterCandidateGroup(ArrayRef<PlannedFusionMember> lhsMembers,
+                       const PlanningCost &lhsCost,
+                       ArrayRef<PlannedFusionMember> rhsMembers,
+                       const PlanningCost &rhsCost) {
+  if (rhsMembers.empty())
+    return !lhsMembers.empty();
+
+  if (lhsCost.total() != rhsCost.total())
+    return lhsCost.total() > rhsCost.total();
+
+  if (lhsMembers.size() != rhsMembers.size())
+    return lhsMembers.size() > rhsMembers.size();
+
+  const unsigned lhsFirstOrder = getEarliestBlockOrder(lhsMembers);
+  const unsigned rhsFirstOrder = getEarliestBlockOrder(rhsMembers);
+  if (lhsFirstOrder != rhsFirstOrder)
+    return lhsFirstOrder < rhsFirstOrder;
+
+  SmallVector<PlannedFusionMember, 8> lhsOrdered =
+      buildStableInGroupMemberOrder(lhsMembers);
+  SmallVector<PlannedFusionMember, 8> rhsOrdered =
+      buildStableInGroupMemberOrder(rhsMembers);
+  for (auto [lhsMember, rhsMember] : llvm::zip(lhsOrdered, rhsOrdered)) {
+    if (lhsMember.node->id != rhsMember.node->id)
+      return lhsMember.node->id < rhsMember.node->id;
+    if (lhsMember.version.id != rhsMember.version.id)
+      return lhsMember.version.id < rhsMember.version.id;
+  }
+
+  return false;
+}
+
 static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
                                       MLIRContext *ctx,
                                       int64_t &nextGroupId) {
