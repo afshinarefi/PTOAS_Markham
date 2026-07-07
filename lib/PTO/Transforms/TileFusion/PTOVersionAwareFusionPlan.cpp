@@ -332,6 +332,23 @@ getLegalImplVersions(const pto::FusionComputeNode &node) {
   return versions;
 }
 
+[[maybe_unused]] static FailureOr<SmallVector<GroupState, 4>>
+createSeedStates(const pto::FusionComputeNode &seed) {
+  FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
+      getLegalImplVersions(seed);
+  if (failed(versions))
+    return failure();
+
+  SmallVector<GroupState, 4> states;
+  states.reserve(versions->size());
+  for (const TileOpImplVersion &version : *versions) {
+    GroupState state;
+    state.append(PlannedFusionMember{&seed, version});
+    states.push_back(std::move(state));
+  }
+  return states;
+}
+
 static PlannedFusionMember
 makePlannedFusionMemberWithDefaultVersion(const pto::FusionComputeNode &node) {
   TileOpImplVersion version = getDefaultImplVersion();
