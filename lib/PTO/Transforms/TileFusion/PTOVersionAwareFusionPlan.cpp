@@ -78,6 +78,34 @@ struct PlanningDecision {
   PlanningCost cost;
 };
 
+struct GroupState {
+  SmallVector<PlannedFusionMember, 8> members;
+  DenseSet<unsigned> nodeIds;
+  PlanningCost cost;
+
+  bool contains(const pto::FusionComputeNode &node) const {
+    return nodeIds.contains(node.id);
+  }
+
+  SmallVector<const pto::FusionComputeNode *, 8> getNodes() const {
+    SmallVector<const pto::FusionComputeNode *, 8> nodes;
+    nodes.reserve(members.size());
+    for (const PlannedFusionMember &member : members)
+      nodes.push_back(member.node);
+    return nodes;
+  }
+
+  void append(PlannedFusionMember member, const PlanningCost &appendCost = {}) {
+    nodeIds.insert(member.node->id);
+    cost.dependencyBenefit += appendCost.dependencyBenefit;
+    cost.loopMergeBenefit += appendCost.loopMergeBenefit;
+    cost.liveTilePenalty += appendCost.liveTilePenalty;
+    cost.vfParameterPenalty += appendCost.vfParameterPenalty;
+    cost.rejectedForDynamicShape |= appendCost.rejectedForDynamicShape;
+    members.push_back(std::move(member));
+  }
+};
+
 static bool isCurrentlyPlannableOp(StringRef opName) {
   return llvm::StringSwitch<bool>(opName)
       .Cases("tmul", "tdiv", "tadd", "tsub", "tmax", "tmin", true)
