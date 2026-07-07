@@ -53,13 +53,16 @@ struct PlanningContext {
 struct PlanningCost {
   int64_t dependencyBenefit = 0;
   int64_t loopMergeBenefit = 0;
+  int64_t versionCompatibilityBenefit = 0;
   int64_t liveTilePenalty = 0;
   int64_t vfParameterPenalty = 0;
+  int64_t versionPenalty = 0;
   bool rejectedForDynamicShape = false;
 
   int64_t total() const {
-    return dependencyBenefit + loopMergeBenefit - liveTilePenalty -
-           vfParameterPenalty;
+    return dependencyBenefit + loopMergeBenefit +
+           versionCompatibilityBenefit - liveTilePenalty -
+           vfParameterPenalty - versionPenalty;
   }
 };
 
@@ -99,12 +102,45 @@ struct GroupState {
     nodeIds.insert(member.node->id);
     cost.dependencyBenefit += appendCost.dependencyBenefit;
     cost.loopMergeBenefit += appendCost.loopMergeBenefit;
+    cost.versionCompatibilityBenefit +=
+        appendCost.versionCompatibilityBenefit;
     cost.liveTilePenalty += appendCost.liveTilePenalty;
     cost.vfParameterPenalty += appendCost.vfParameterPenalty;
+    cost.versionPenalty += appendCost.versionPenalty;
     cost.rejectedForDynamicShape |= appendCost.rejectedForDynamicShape;
     members.push_back(std::move(member));
   }
 };
+
+[[maybe_unused]] static PlanningCost
+computeVersionTraitCost(ArrayRef<PlannedFusionMember> members) {
+  static constexpr int64_t kAllOneDimensionalBenefit = 3;
+  static constexpr int64_t kMixedLoopDepthPenalty = 2;
+  static constexpr int64_t kTailPenalty = 1;
+  static constexpr int64_t kPostUpdatePenalty = 2;
+
+  PlanningCost cost;
+  if (members.empty())
+    return cost;
+
+  bool allOneDimensional = true;
+  DenseSet<int64_t> loopDepths;
+  for (const PlannedFusionMember &member : members) {
+    loopDepths.insert(member.version.loopDepth);
+    allOneDimensional &= member.version.loopDepth == 1;
+    if (member.version.hasTail)
+      cost.versionPenalty += kTailPenalty;
+    if (member.version.isPostUpdate)
+      cost.versionPenalty += kPostUpdatePenalty;
+  }
+
+  if (members.size() > 1 && allOneDimensional)
+    cost.versionCompatibilityBenefit += kAllOneDimensionalBenefit;
+  if (loopDepths.size() > 1)
+    cost.versionPenalty +=
+        kMixedLoopDepthPenalty * static_cast<int64_t>(loopDepths.size() - 1);
+  return cost;
+}
 
 static bool isCurrentlyPlannableOp(StringRef opName) {
   return llvm::StringSwitch<bool>(opName)
