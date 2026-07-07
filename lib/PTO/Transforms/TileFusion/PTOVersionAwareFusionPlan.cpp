@@ -21,15 +21,16 @@
 #include "llvm/ADT/StringSwitch.h"
 
 #include <algorithm>
+#include <string>
 
 namespace mlir {
 namespace pto {
 // Passes.h (included above) pulls in the global GEN_PASS_DECL block, which
-// defines GEN_PASS_DECL_FUSIONPLAN and leaves it set.  Undef it before
+// defines GEN_PASS_DECL_VERSIONAWAREFUSIONPLAN and leaves it set.  Undef it before
 // re-including the .inc for GEN_PASS_DEF so the options struct is not defined
 // twice.
-#undef GEN_PASS_DECL_FUSIONPLAN
-#define GEN_PASS_DEF_FUSIONPLAN
+#undef GEN_PASS_DECL_VERSIONAWAREFUSIONPLAN
+#define GEN_PASS_DEF_VERSIONAWAREFUSIONPLAN
 #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
 } // namespace mlir
@@ -41,9 +42,14 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr =
     "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
+static constexpr llvm::StringLiteral kTemplateCandidatesAttr = "candidates";
 
-struct PlannedFusionGroup {
-  SmallVector<const pto::FusionComputeNode *, 8> members;
+struct TileOpImplVersion {
+  int64_t id = 0;
+  std::string name;
+  int64_t loopDepth = 0;
+  bool isPostUpdate = false;
+  bool hasTail = false;
 };
 
 struct PlanningContext {
@@ -61,6 +67,16 @@ struct PlanningCost {
     return dependencyBenefit + loopMergeBenefit - liveTilePenalty -
            vfParameterPenalty;
   }
+};
+
+struct PlannedFusionMember {
+  const pto::FusionComputeNode *node = nullptr;
+  TileOpImplVersion version;
+};
+
+struct PlannedFusionGroup {
+  SmallVector<PlannedFusionMember, 8> members;
+  PlanningCost cost;
 };
 
 struct PlanningDecision {
@@ -146,6 +162,18 @@ buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
   return ordered;
 }
 
+static SmallVector<PlannedFusionMember, 8>
+buildStableInGroupMemberOrder(ArrayRef<PlannedFusionMember> members) {
+  SmallVector<PlannedFusionMember, 8> ordered(members.begin(), members.end());
+  llvm::stable_sort(ordered, [](const PlannedFusionMember &lhs,
+                                const PlannedFusionMember &rhs) {
+    if (lhs.node->blockOrder != rhs.node->blockOrder)
+      return lhs.node->blockOrder < rhs.node->blockOrder;
+    return lhs.node->id < rhs.node->id;
+  });
+  return ordered;
+}
+
 static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
                                       MLIRContext *ctx,
                                       int64_t &nextGroupId) {
@@ -156,8 +184,8 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
 
   llvm::stable_sort(orderedGroups, [](const PlannedFusionGroup *lhs,
                                       const PlannedFusionGroup *rhs) {
-    const pto::FusionComputeNode *lhsFirst = lhs->members.front();
-    const pto::FusionComputeNode *rhsFirst = rhs->members.front();
+    const pto::FusionComputeNode *lhsFirst = lhs->members.front().node;
+    const pto::FusionComputeNode *rhsFirst = rhs->members.front().node;
     if (lhsFirst->blockOrder != rhsFirst->blockOrder)
       return lhsFirst->blockOrder < rhsFirst->blockOrder;
     return lhsFirst->id < rhsFirst->id;
@@ -165,9 +193,10 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
 
   for (const PlannedFusionGroup *group : orderedGroups) {
     const int64_t groupId = nextGroupId++;
-    SmallVector<const pto::FusionComputeNode *, 8> stableOrder =
-        buildStableInGroupOrder(group->members);
-    for (auto [order, node] : llvm::enumerate(stableOrder)) {
+    SmallVector<PlannedFusionMember, 8> stableOrder =
+        buildStableInGroupMemberOrder(group->members);
+    for (auto [order, member] : llvm::enumerate(stableOrder)) {
+      const pto::FusionComputeNode *node = member.node;
       node->op->setAttr(kFusionGroupIdAttr,
                         IntegerAttr::get(IntegerType::get(ctx, 64), groupId));
       node->op->setAttr(
@@ -181,6 +210,61 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
 static bool isSupportedPlanningNode(const pto::FusionComputeNode &node) {
   return node.semantics.kind == pto::FusionOpKind::Compute &&
          isCurrentlyPlannableOp(node.semantics.opName);
+}
+
+static TileOpImplVersion getDefaultImplVersion() {
+  return TileOpImplVersion{/*id=*/0, /*name=*/"default", /*loopDepth=*/2,
+                           /*isPostUpdate=*/false, /*hasTail=*/false};
+}
+
+static FailureOr<SmallVector<TileOpImplVersion, 4>>
+getLegalImplVersions(const pto::FusionComputeNode &node) {
+  auto candidates = node.op->getAttrOfType<ArrayAttr>(kTemplateCandidatesAttr);
+  if (!candidates || candidates.empty())
+    return SmallVector<TileOpImplVersion, 4>{getDefaultImplVersion()};
+
+  SmallVector<TileOpImplVersion, 4> versions;
+  versions.reserve(candidates.size());
+
+  for (Attribute attr : candidates) {
+    auto dict = dyn_cast<DictionaryAttr>(attr);
+    if (!dict)
+      return failure();
+
+    auto id = dyn_cast_or_null<IntegerAttr>(dict.get("id"));
+    auto name = dyn_cast_or_null<StringAttr>(dict.get("name"));
+    auto loopDepth = dyn_cast_or_null<IntegerAttr>(dict.get("loop_depth"));
+    auto postUpdate = dyn_cast_or_null<IntegerAttr>(dict.get("postupdate"));
+    auto tail = dyn_cast_or_null<IntegerAttr>(dict.get("tail"));
+    if (!id || !name || !loopDepth || !postUpdate || !tail)
+      return failure();
+
+    versions.push_back(TileOpImplVersion{
+        id.getInt(), name.getValue().str(), loopDepth.getInt(),
+        postUpdate.getInt() != 0, tail.getInt() != 0});
+  }
+
+  return versions;
+}
+
+static PlannedFusionMember
+makePlannedFusionMemberWithDefaultVersion(const pto::FusionComputeNode &node) {
+  TileOpImplVersion version = getDefaultImplVersion();
+  FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
+      getLegalImplVersions(node);
+  if (succeeded(versions) && !versions->empty())
+    version = versions->front();
+  return PlannedFusionMember{&node, std::move(version)};
+}
+
+static SmallVector<PlannedFusionMember, 8>
+makePlannedFusionMembersWithDefaultVersions(
+    ArrayRef<const pto::FusionComputeNode *> nodes) {
+  SmallVector<PlannedFusionMember, 8> members;
+  members.reserve(nodes.size());
+  for (const pto::FusionComputeNode *node : nodes)
+    members.push_back(makePlannedFusionMemberWithDefaultVersion(*node));
+  return members;
 }
 
 static unsigned
@@ -429,7 +513,7 @@ public:
       }
 
       PlannedFusionGroup group;
-      group.members = chain;
+      group.members = makePlannedFusionMembersWithDefaultVersions(chain);
       groups.push_back(std::move(group));
       chain.clear();
     };
@@ -507,10 +591,12 @@ public:
         continue;
 
       PlannedFusionGroup group;
-      group.members = buildStableInGroupOrder(groupMembers);
+      SmallVector<const pto::FusionComputeNode *, 8> stableNodes =
+          buildStableInGroupOrder(groupMembers);
+      group.members = makePlannedFusionMembersWithDefaultVersions(stableNodes);
       groups.push_back(group);
-      for (const pto::FusionComputeNode *member : group.members)
-        assignedNodes.insert(member->id);
+      for (const PlannedFusionMember &member : group.members)
+        assignedNodes.insert(member.node->id);
     }
 
     return groups;
@@ -524,10 +610,13 @@ static void clearPlanningAttrs(func::FuncOp func) {
   });
 }
 
-struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
-  using pto::impl::FusionPlanBase<FusionPlanPass>::FusionPlanBase;
+struct VersionAwareFusionPlanPass
+    : public pto::impl::VersionAwareFusionPlanBase<
+          VersionAwareFusionPlanPass> {
+  using pto::impl::VersionAwareFusionPlanBase<
+      VersionAwareFusionPlanPass>::VersionAwareFusionPlanBase;
 
-  FusionPlanPass() = default;
+  VersionAwareFusionPlanPass() = default;
 
   void runOnOperation() override {
     func::FuncOp func = getOperation();
@@ -578,11 +667,12 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
 
 } // namespace
 
-std::unique_ptr<Pass> mlir::pto::createFusionPlanPass() {
-  return std::make_unique<FusionPlanPass>();
+std::unique_ptr<Pass> mlir::pto::createVersionAwareFusionPlanPass() {
+  return std::make_unique<VersionAwareFusionPlanPass>();
 }
 
 std::unique_ptr<Pass>
-mlir::pto::createFusionPlanPass(const pto::FusionPlanOptions &options) {
-  return std::make_unique<FusionPlanPass>(options);
+mlir::pto::createVersionAwareFusionPlanPass(
+    const pto::VersionAwareFusionPlanOptions &options) {
+  return std::make_unique<VersionAwareFusionPlanPass>(options);
 }

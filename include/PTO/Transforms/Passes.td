@@ -284,6 +284,29 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
   ];
 }
 
+def VersionAwareFusionPlan
+    : Pass<"pto-version-aware-fusion-plan", "func::FuncOp"> {
+  let summary = "Build version-aware tile-fusion planning groups from block-local analysis";
+  let description = [{
+    Consumes PreFusionAnalysis results, forms conservative block-local fusion
+    groups for currently supported tile-native compute ops, reads TileOp
+    implementation candidates from the candidates attribute, and annotates
+    accepted group members with:
+      - pto.fusion.group_id
+      - pto.fusion.order
+  }];
+  let constructor = "mlir::pto::createVersionAwareFusionPlanPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+  let options = [
+    Option<"enableShapeInference", "enable-shape-inference",
+           "bool", /*default=*/"false",
+           "Enable shape inference (ShapeConstraintSolver) for tile fusion. "
+           "When disabled (default), fall back to static/direct-bound "
+           "iteration-domain inference.  VersionAwareFusionPlan consumes this "
+           "option for the same iteration-domain inference step as FusionPlan.">
+  ];
+}
+
 def OpScheduling : Pass<"pto-op-scheduling", "func::FuncOp"> {
   let summary = "Compact planned fusion groups into block-local contiguous spans";
   let description = [{
