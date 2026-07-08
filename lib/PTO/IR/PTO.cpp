@@ -15808,12 +15808,10 @@ static bool matchesFixpipeConsumerElementType(FixpipeQuant quant,
 static bool isFixpipeQuantPayloadElemType(Type elemTy, PTOArch arch) {
   if (!elemTy)
     return false;
-  if (elemTy.isF16() || elemTy.isBF16() || elemTy.isF32())
-    return true;
-  // A2/A3 pto-isa fixpipe vector quant uses packed uint64/int64 scaling payloads
-  // in __fbuf__, while A5 consumes direct floating-point scaling tiles.
-  return arch == PTOArch::A3 && (elemTy.isUnsignedInteger(64) || elemTy.isSignlessInteger(64) ||
-                                 elemTy.isSignedInteger(64));
+  if (arch == PTOArch::A3)
+    return elemTy.isUnsignedInteger(64) || elemTy.isSignlessInteger(64) ||
+           elemTy.isSignedInteger(64);
+  return elemTy.isF16() || elemTy.isBF16() || elemTy.isF32();
 }
 
 static bool matchesFixpipeProducerAndConsumerTypes(FixpipeQuant quant,
@@ -17137,9 +17135,9 @@ LogicalResult SetQuantVectorOp::verify() {
   if (!isFixpipeQuantPayloadElemType(scalingElemTy, arch)) {
     if (arch == PTOArch::A3)
       return emitOpError(
-          "expects 'scaling_tile' element type to be f16, bf16, f32, or packed i64/ui64 on A2/A3");
+          "expects 'scaling_tile' element type to be packed i64/ui64 on A3");
     return emitOpError(
-        "expects 'scaling_tile' element type to be f16, bf16, or f32");
+        "expects 'scaling_tile' element type to be f16, bf16, or f32 on A5");
   }
 
   return success();

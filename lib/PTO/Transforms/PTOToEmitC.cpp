@@ -19,6 +19,7 @@
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -210,8 +211,6 @@ static constexpr llvm::StringLiteral kTNotifyDrainMte2AttrName =
     "__pto.emitc.tnotify_drain_mte2";
 static constexpr llvm::StringLiteral kTNotifyDrainMte3AttrName =
     "__pto.emitc.tnotify_drain_mte3";
-static constexpr llvm::StringLiteral kFrontendPipeIdAttrName =
-    "__pto.frontend_id";
 static constexpr llvm::StringLiteral kPipePeerOwnerFuncAttrName =
     "__pto.peer_owner_func";
 static constexpr llvm::StringLiteral kPipePeerReserveNameAttrName =
@@ -361,12 +360,6 @@ static void createLastUseAwareOpaqueCall(ConversionPatternRewriter &rewriter,
   rewriter.create<emitc::CallOpaqueOp>(op->getLoc(), resultTypes,
                                        effectiveCallee, args, templateArgs,
                                        operands);
-}
-
-static Value peelUnrealized(Value v) {
-  if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>())
-    return castOp.getOperand(0);
-  return v;
 }
 
 static unsigned getMteDrainMaskForPipe(pto::PIPE pipe) {
@@ -1202,59 +1195,6 @@ static FailureOr<std::string> buildTPipeTokenFromInitOp(Operation *op,
   }
 
   return failure();
-}
-
-static bool isScalarFixpipeQuant(FixpipeQuant quant) {
-  switch (quant) {
-  case FixpipeQuant::DEQF16Scalar:
-  case FixpipeQuant::REQ8Scalar:
-  case FixpipeQuant::QF322B8PreScalar:
-  case FixpipeQuant::QF322F16PreScalar:
-  case FixpipeQuant::QF322BF16PreScalar:
-  case FixpipeQuant::QS322BF16PreScalar:
-  case FixpipeQuant::QF322HIF8PreScalar:
-  case FixpipeQuant::QF322FP8PreScalar:
-    return true;
-  default:
-    return false;
-  }
-}
-
-static bool isVectorFixpipeQuant(FixpipeQuant quant) {
-  switch (quant) {
-  case FixpipeQuant::DEQF16Vec:
-  case FixpipeQuant::REQ8Vec:
-  case FixpipeQuant::QF322B8PreVec:
-  case FixpipeQuant::QS322BF16PreVec:
-    return true;
-  default:
-    return false;
-  }
-}
-
-static Operation *getPipeInitDef(Value pipeHandle) {
-  pipeHandle = peelUnrealized(pipeHandle);
-  return pipeHandle ? pipeHandle.getDefiningOp() : nullptr;
-}
-
-static AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp) {
-  if (auto init = dyn_cast_or_null<pto::InitializeL2LPipeOp>(initOp))
-    return init.getAccPushEpilogueAttr();
-  if (auto init = dyn_cast_or_null<pto::InitializeL2G2LPipeOp>(initOp))
-    return init.getAccPushEpilogueAttr();
-  return {};
-}
-
-static std::optional<int32_t> getFrontendPipeIdFromInit(Operation *initOp) {
-  if (!initOp)
-    return std::nullopt;
-  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
-    return static_cast<int32_t>(getIntegerAttrSignedValue(attr));
-  return std::nullopt;
-}
-
-static std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle) {
-  return getFrontendPipeIdFromInit(getPipeInitDef(pipeHandle));
 }
 
 static std::string buildFixpipeConfigAliasName(int32_t pipeId) {

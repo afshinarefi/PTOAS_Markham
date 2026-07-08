@@ -11,6 +11,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -36,52 +37,6 @@ using namespace mlir;
 using namespace mlir::pto;
 
 namespace {
-
-static constexpr llvm::StringLiteral kFrontendPipeIdAttrName = "__pto.frontend_id";
-
-static bool isVectorFixpipeQuant(FixpipeQuant quant) {
-  switch (quant) {
-  case FixpipeQuant::DEQF16Vec:
-  case FixpipeQuant::REQ8Vec:
-  case FixpipeQuant::QF322B8PreVec:
-  case FixpipeQuant::QS322BF16PreVec:
-    return true;
-  default:
-    return false;
-  }
-}
-
-static Value peelUnrealized(Value value) {
-  while (auto cast =
-             value.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast->getNumOperands() != 1)
-      break;
-    value = cast.getOperand(0);
-  }
-  return value;
-}
-
-static Operation *getPipeInitDef(Value pipeHandle) {
-  pipeHandle = peelUnrealized(pipeHandle);
-  return pipeHandle ? pipeHandle.getDefiningOp() : nullptr;
-}
-
-static AccPushEpilogueAttr getPipeInitAccPushEpilogue(Operation *initOp) {
-  if (auto init = dyn_cast_or_null<InitializeL2LPipeOp>(initOp))
-    return init.getAccPushEpilogueAttr();
-  if (auto init = dyn_cast_or_null<InitializeL2G2LPipeOp>(initOp))
-    return init.getAccPushEpilogueAttr();
-  return {};
-}
-
-static std::optional<int32_t> getFrontendPipeIdFromHandle(Value pipeHandle) {
-  Operation *initOp = getPipeInitDef(pipeHandle);
-  if (!initOp)
-    return std::nullopt;
-  if (auto attr = initOp->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
-    return static_cast<int32_t>(attr.getInt());
-  return std::nullopt;
-}
 
 struct PTORematerializeFixpipeVectorQuantPass
     : public mlir::pto::impl::PTORematerializeFixpipeVectorQuantBase<

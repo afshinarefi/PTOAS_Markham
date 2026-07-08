@@ -505,11 +505,13 @@ PTOAS 中 `nosplit = false` 则对应 `TPipe<..., IsNoSplit = false>`。
 - 当前实现已经把 `vector quant payload` 的一部分公共下限约束前移到了
   `pto.set_quant_vector` 公共 verifier：
   - 输入必须是 `loc=scaling`
-  - element type 必须属于 `f16` / `bf16` / `f32` family
+  - element type 按目标平台收紧：A5 为 `f16` / `bf16` / `f32` family，
+    A3 为 packed 64-bit integer payload（`i64` / `ui64`）
 - 但 `vector quant payload` 的精确 shape 与更细的 layout / 打包约束，仍不建议在
   当前阶段一次性写死成所有 target 共享的唯一公共 contract
-- 更稳妥的做法是：公共 verifier 负责上述公共下限约束，其余 payload shape / layout
-  由 arch-specific verifier 根据目标平台现有 fixpipe / quant-vector 约束继续细化
+- 更稳妥的做法是：公共 verifier 负责上述 arch-aware 下限约束，其余 payload
+  shape / layout 由 arch-specific verifier 根据目标平台现有 fixpipe / quant-vector
+  约束继续细化
 
 这些 quant config 不应挂在 `initialize_pipe.acc_push_epilogue` 上，也不应并入
 `FixpipeParams` 的 pipe attrs。
@@ -787,7 +789,8 @@ acc-store `pre_quant` payload surface。
 `SET_QUANT_VECTOR(fpTile)` 的输入下限收紧为：
 
 - `loc=scaling`
-- element type 属于 `f16` / `bf16` / `f32` family
+- element type 按目标平台收紧：A5 属于 `f16` / `bf16` / `f32` family，
+  A3 属于 packed 64-bit integer payload（`i64` / `ui64`）
 
 但它仍不需要像 scalar quant 那样额外暴露一份 `out_type`；更细的 payload
 shape / layout 约束仍可继续留给 arch-specific verifier 与 lowering 处理。
@@ -1482,13 +1485,11 @@ fixpipe 的生产语义由 producer `TPUSH` 和 pipe contract 保证，而不是
     `SubBlockId = 0`，即仅覆盖 `AccToVecMode::SingleModeVec0`。`SingleModeVec1`
     及更复杂的 dual-vector 目标选择不属于当前前端 contract。
 24. `pto.set_quant_vector` 的输入必须是 `loc=scaling` 的 tile；其 element type
-    还必须属于 `f16` / `bf16` / `f32` family。其大小与更细的 layout 约束仍应满足
-    目标平台 fixpipe vector quant payload 的参数布局要求。
-    某些 target 当前可能以 `uint64_t` scaling tile 访问 packed scaling buffer，
-    但这只应视为 target-specific lowering / payload 访问形式，不应上升为统一的
-    前端公共语义类型约束。
+    按目标平台收紧：A5 必须属于 `f16` / `bf16` / `f32` family，A3 必须属于
+    packed 64-bit integer payload（`i64` / `ui64`）。其大小与更细的 layout
+    约束仍应满足目标平台 fixpipe vector quant payload 的参数布局要求。
 25. 对 `pto.set_quant_vector`，第一版公共 verifier 至少检查 `loc=scaling` 与
-    `f16` / `bf16` / `f32` element type family；其余 payload shape / layout 约束，
+    上述 arch-aware element type family；其余 payload shape / layout 约束，
     可由 arch-specific verifier 按目标平台现有 fixpipe vector quant 规则继续收紧。
 26. 第一版 PTOIR 只允许显式出现 `acc_push_epilogue` 这一个前端公开复合 attr，
     其内部字段限定为 `layout`、`quant`、`relu`。
