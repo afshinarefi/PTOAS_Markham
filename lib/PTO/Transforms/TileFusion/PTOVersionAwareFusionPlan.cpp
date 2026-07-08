@@ -22,6 +22,7 @@
 #include "llvm/ADT/StringSwitch.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 
 namespace mlir {
@@ -140,6 +141,26 @@ computeVersionTraitCost(ArrayRef<PlannedFusionMember> members) {
     cost.versionPenalty +=
         kMixedLoopDepthPenalty * static_cast<int64_t>(loopDepths.size() - 1);
   return cost;
+}
+
+[[maybe_unused]] static PlanningCost combineCosts(const PlanningCost &lhs,
+                                                  const PlanningCost &rhs) {
+  PlanningCost cost;
+  cost.dependencyBenefit = lhs.dependencyBenefit + rhs.dependencyBenefit;
+  cost.loopMergeBenefit = lhs.loopMergeBenefit + rhs.loopMergeBenefit;
+  cost.versionCompatibilityBenefit =
+      lhs.versionCompatibilityBenefit + rhs.versionCompatibilityBenefit;
+  cost.liveTilePenalty = lhs.liveTilePenalty + rhs.liveTilePenalty;
+  cost.vfParameterPenalty = lhs.vfParameterPenalty + rhs.vfParameterPenalty;
+  cost.versionPenalty = lhs.versionPenalty + rhs.versionPenalty;
+  cost.rejectedForDynamicShape =
+      lhs.rejectedForDynamicShape || rhs.rejectedForDynamicShape;
+  return cost;
+}
+
+[[maybe_unused]] static PlanningCost
+computeFinalGroupCost(const GroupState &state) {
+  return combineCosts(state.cost, computeVersionTraitCost(state.members));
 }
 
 static bool isCurrentlyPlannableOp(StringRef opName) {
@@ -471,6 +492,28 @@ public:
                  ArrayRef<const pto::FusionComputeNode *> currentGroup,
                  const pto::FusionComputeNode &candidate) const = 0;
 };
+
+[[maybe_unused]] static FailureOr<std::optional<GroupState>>
+tryAppendVersionedCandidate(const PlanningContext &ctx,
+                            const CostModel &costModel,
+                            const GroupState &state,
+                            const pto::FusionComputeNode &candidate,
+                            const TileOpImplVersion &version) {
+  if (state.contains(candidate))
+    return std::optional<GroupState>{};
+
+  SmallVector<const pto::FusionComputeNode *, 8> currentNodes =
+      state.getNodes();
+  PlanningDecision appendDecision =
+      costModel.evaluateAppend(ctx, currentNodes, candidate);
+  if (!appendDecision.accept)
+    return std::optional<GroupState>{};
+
+  GroupState nextState = state;
+  nextState.append(PlannedFusionMember{&candidate, version},
+                   appendDecision.cost);
+  return std::optional<GroupState>{std::move(nextState)};
+}
 
 class ConservativeGreedyCostModel final : public CostModel {
 public:
