@@ -25,7 +25,7 @@ def main() -> None:
             pto.FenceBarrierAllOp(pto.FenceScope.GM)
 
         text = str(module)
-        assert_contains(text, "pto.cmo.cacheinvalid all <gm>")
+        assert_contains(text, "pto.cmo.cacheinvalid all #pto.address_space<gm>")
         assert_contains(text, "pto.fence.barrier_all <gm>")
 
         single_line = Module.parse(
