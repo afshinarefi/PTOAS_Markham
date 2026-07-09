@@ -81,6 +81,7 @@ struct PendingReleaseAccess {
   bool needsGmCacheCmo = false;
   bool dsbCovered = false;
   bool cmoCovered = false;
+  bool selectedByWholeCacheCmo = false;
 };
 
 struct TNotifyReleaseState {
@@ -90,6 +91,7 @@ struct TNotifyReleaseState {
   bool needsDsbDdr = false;
   bool needsGmCacheCmo = false;
   bool hasAddressedCmo = false;
+  bool hasWholeCacheCmo = false;
   bool addressedDrainMte2 = false;
   bool addressedDrainMte3 = false;
   bool addressedDrainFix = false;
@@ -105,6 +107,7 @@ struct TNotifyReleaseState {
     needsDsbDdr |= other.needsDsbDdr;
     needsGmCacheCmo |= other.needsGmCacheCmo;
     hasAddressedCmo |= other.hasAddressedCmo;
+    hasWholeCacheCmo |= other.hasWholeCacheCmo;
     addressedDrainMte2 |= other.addressedDrainMte2;
     addressedDrainMte3 |= other.addressedDrainMte3;
     addressedDrainFix |= other.addressedDrainFix;
@@ -116,7 +119,7 @@ struct TNotifyReleaseState {
                                 other.addressedCmoPayloads.end());
     refreshNeedsDsbDdr();
     refreshNeedsGmCacheCmo();
-    if (hasAddressedCmo)
+    if (hasReleaseCmoMarker())
       recomputeAddressedState();
   }
 
@@ -127,6 +130,7 @@ struct TNotifyReleaseState {
     needsDsbDdr = false;
     needsGmCacheCmo = false;
     hasAddressedCmo = false;
+    hasWholeCacheCmo = false;
     addressedDrainMte2 = false;
     addressedDrainMte3 = false;
     addressedDrainFix = false;
@@ -136,11 +140,19 @@ struct TNotifyReleaseState {
     addressedCmoPayloads.clear();
   }
 
+  bool hasReleaseCmoMarker() const {
+    return hasAddressedCmo || hasWholeCacheCmo;
+  }
+
   bool accessMatchesAddressedCmo(const PendingReleaseAccess &access) const {
     for (Value payload : addressedCmoPayloads)
       if (payloadMayAlias(access.payload, payload))
         return true;
     return false;
+  }
+
+  bool accessMatchesReleaseCmo(const PendingReleaseAccess &access) const {
+    return access.selectedByWholeCacheCmo || accessMatchesAddressedCmo(access);
   }
 
   void refreshNeedsGmCacheCmo() {
@@ -171,7 +183,7 @@ struct TNotifyReleaseState {
     addressedNeedsGmCacheCmo = false;
 
     for (const PendingReleaseAccess &access : pendingAccesses) {
-      if (!accessMatchesAddressedCmo(access))
+      if (!accessMatchesReleaseCmo(access))
         continue;
       if (access.drainPending) {
         if (access.pipe == pto::PIPE::PIPE_MTE2)
@@ -214,7 +226,7 @@ struct TNotifyReleaseState {
     }
     needsDsbDdr |= needsDsb;
     needsGmCacheCmo |= needsCmo;
-    if (hasAddressedCmo)
+    if (hasReleaseCmoMarker())
       recomputeAddressedState();
   }
 
@@ -238,7 +250,7 @@ struct TNotifyReleaseState {
       drainFix = false;
       addressedDrainFix = false;
     }
-    if (hasAddressedCmo)
+    if (hasReleaseCmoMarker())
       recomputeAddressedState();
   }
 
@@ -253,7 +265,7 @@ struct TNotifyReleaseState {
     for (PendingReleaseAccess &access : pendingAccesses) {
       if (!access.needsDsbDdr)
         continue;
-      if (hasAddressedCmo && !accessMatchesAddressedCmo(access))
+      if (hasReleaseCmoMarker() && !accessMatchesReleaseCmo(access))
         continue;
       if (access.drainPending)
         continue;
@@ -263,7 +275,7 @@ struct TNotifyReleaseState {
     }
 
     refreshNeedsDsbDdr();
-    if (hasAddressedCmo)
+    if (hasReleaseCmoMarker())
       recomputeAddressedState();
   }
 
@@ -273,12 +285,14 @@ struct TNotifyReleaseState {
       return;
     Value addr = cmo.getAddr();
     if (!addr) {
-      for (PendingReleaseAccess &access : pendingAccesses)
+      hasWholeCacheCmo = true;
+      for (PendingReleaseAccess &access : pendingAccesses) {
+        access.selectedByWholeCacheCmo = true;
         if (access.needsGmCacheCmo)
           access.cmoCovered = true;
+      }
       refreshNeedsGmCacheCmo();
-      if (hasAddressedCmo)
-        recomputeAddressedState();
+      recomputeAddressedState();
       cmo->removeAttr(kCmoCacheInvalidSkipLoweringAttrName);
       return;
     }
@@ -603,21 +617,24 @@ static void setTNotifyReleaseAttrs(pto::TNotifyOp op,
 static void setTNotifyPipeDrainAttrs(pto::TNotifyOp op,
                                      const TNotifyReleaseState &state) {
   TNotifyReleaseState emitState;
-  emitState.drainMte2 = state.hasAddressedCmo && state.addressedDrainMte2;
-  emitState.drainMte3 = state.hasAddressedCmo && state.addressedDrainMte3;
+  emitState.drainMte2 =
+      state.hasReleaseCmoMarker() && state.addressedDrainMte2;
+  emitState.drainMte3 =
+      state.hasReleaseCmoMarker() && state.addressedDrainMte3;
   setTNotifyReleaseAttrs(op, emitState);
 }
 
 static void diagnoseTNotifyRelease(pto::TNotifyOp op,
                                    const TNotifyReleaseState &state,
                                    bool &hasFailure) {
-  if (!state.hasAddressedCmo)
+  if (!state.hasReleaseCmoMarker())
     return;
 
   if (state.addressedNeedsGmCacheCmo) {
     op.emitOpError()
         << "requires explicit `pto.cmo.cacheinvalid %addr "
-           "single_cache_line` after matching cacheable GM scalar stores "
+           "single_cache_line` or `pto.cmo.cacheinvalid all "
+           "#pto.address_space<gm>` after matching cacheable GM scalar stores "
            "and before `pto.fence.barrier_all #pto.fence_scope<gm>`";
     hasFailure = true;
     return;
@@ -625,8 +642,8 @@ static void diagnoseTNotifyRelease(pto::TNotifyOp op,
   if (state.addressedNeedsDsbDdr) {
     op.emitOpError()
         << "requires explicit `pto.fence.barrier_all #pto.fence_scope<gm>` "
-           "after the matching `pto.cmo.cacheinvalid %addr "
-           "single_cache_line` and before publishing the signal";
+           "after the matching `pto.cmo.cacheinvalid` release marker and "
+           "before publishing the signal";
     hasFailure = true;
   }
 }
@@ -642,9 +659,9 @@ static void insertDrainsBeforeBarrierAll(pto::FenceBarrierAllOp fence,
         fence.getLoc(), pto::PipeAttr::get(fence.getContext(), pipe));
   };
   const bool drainMte3 =
-      state.hasAddressedCmo && state.addressedDrainMte3;
+      state.hasReleaseCmoMarker() && state.addressedDrainMte3;
   const bool drainFix =
-      state.hasAddressedCmo && state.addressedDrainFix;
+      state.hasReleaseCmoMarker() && state.addressedDrainFix;
   if (drainMte3) {
     insertBarrier(pto::PIPE::PIPE_MTE3);
     state.markPipeDrained(pto::PIPE::PIPE_MTE3);

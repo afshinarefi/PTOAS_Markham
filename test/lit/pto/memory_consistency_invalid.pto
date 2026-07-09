@@ -97,7 +97,7 @@ module {
   }
 }
 
-// CHECK: requires explicit `pto.fence.barrier_all #pto.fence_scope<gm>` after the matching `pto.cmo.cacheinvalid %addr single_cache_line`
-// CHECK: requires explicit `pto.cmo.cacheinvalid %addr single_cache_line` after matching cacheable GM scalar stores
+// CHECK: requires explicit `pto.fence.barrier_all #pto.fence_scope<gm>` after the matching `pto.cmo.cacheinvalid` release marker
+// CHECK: requires explicit `pto.cmo.cacheinvalid %addr single_cache_line` or `pto.cmo.cacheinvalid all #pto.address_space<gm>` after matching cacheable GM scalar stores
 // CHECK: requires explicit `pto.cmo.cacheinvalid all #pto.address_space<gm>` before a cacheable GM load
 // CHECK: dirty GM cache may exist; insert explicit `pto.cmo.cacheinvalid all #pto.address_space<gm>` before the load

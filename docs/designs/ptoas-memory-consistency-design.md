@@ -53,15 +53,19 @@ pto.cmo.cacheinvalid all #pto.address_space<gm>
 pto.cmo.cacheinvalid %payload_ptr single_cache_line : !pto.ptr<i32, gm>
 ```
 
-`all` 表示 whole-cache 粒度，并且一定会 lower 成真实 `dcci`。`single_cache_line`
-表示 `%payload_ptr` 所在 cache line，同时也是 PTOAS 用来识别 TNotify payload 的地址
-marker。当前还没有 range 形式；如果 payload 横跨多条 cache line，PyPTO 或用户需要
-生成多条 single-line CMO，或者使用 whole-cache 形式。
+`all` 表示 whole-cache 粒度，并且一定会 lower 成真实 `dcci`。在 release 侧，
+它也是一个保守 payload marker：PTOAS 会认为用户希望发布到这条 CMO 为止已经 pending 的
+所有 GM payload 访问，并为这些访问补齐必要的 pipe drain。`single_cache_line` 表示
+`%payload_ptr` 所在 cache line，同时也是 PTOAS 用来精准识别 TNotify payload 的地址
+marker。当前还没有 range 形式；如果 payload 横跨多条 cache line，PyPTO 或用户可以
+生成多条 single-line CMO，或者使用 whole-cache 形式做保守处理。
 
-对 non-cacheable 的 MTE2、MTE3 或 FIX payload path，`single_cache_line` 主要用作地址
+对 non-cacheable 的 MTE2、MTE3 或 FIX payload path，`single_cache_line` 主要用作精准地址
 marker。MemoryConsistency pass 会用它和前序 pending payload access 做 alias 匹配，决定
 是否需要插入 `PIPE_MTE2`、`PIPE_MTE3` 或 `PIPE_FIX` drain。若匹配到的路径不经过 scalar
-cache，EmitC lowering 会直接消除这条 `cmo.cacheinvalid`，不生成 `dcci`。
+cache，EmitC lowering 会直接消除这条 `cmo.cacheinvalid`，不生成 `dcci`。`all` 形式不做
+地址匹配，而是保守选择该 op 之前已经 pending 的所有 GM payload access，并保留真实
+whole-cache `dcci`。
 
 ## 3. DCCI 语义边界
 
@@ -116,7 +120,8 @@ VPTO backend 都会先经过这一步。
 
 这个 pass 的职责是：
 
-- 识别 signal publish 前是否存在和 `cmo.cacheinvalid %addr` marker 匹配的 pending GM payload access。
+- 识别 signal publish 前是否存在 `cmo.cacheinvalid %addr` 精准 marker，或
+  `cmo.cacheinvalid all #pto.address_space<gm>` 保守全量 marker。
 - 识别 signal acquire 后是否存在 cacheable GM payload read。
 - 校验用户或 PyPTO 是否已经插入必要的 `fence.barrier_all` 或 `cmo.cacheinvalid`。
 - 在显式 `barrier_all` 前自动补齐 marker 对应的 MTE3 或 FIX pipe drain。
@@ -147,7 +152,9 @@ pto.comm.tnotify ...
 ```
 
 PTOAS 会用 `cmo.cacheinvalid %payload` 的地址和前序 pending payload access 做 alias 匹配。
-如果匹配到 pending MTE3 或 FIX GM write，就在
+也可以使用 `pto.cmo.cacheinvalid all #pto.address_space<gm>`，表示不做精确地址指定，
+保守发布到该 op 为止已经 pending 的全部 GM payload access。如果 marker 选择到 pending MTE3 或
+FIX GM write，就在
 `pto.fence.barrier_all #pto.fence_scope<gm>` 前自动插入对应 pipe 的 drain：
 
 ```mlir
@@ -236,17 +243,18 @@ PyPTO 不需要手动生成 `pto.barrier #pto.pipe<PIPE_MTE3>` 或
 `pto.cmo.cacheinvalid %payload single_cache_line` marker 匹配到的 GM payload access 自动插入。
 这样可以保证最终顺序是对应 pipe barrier 先于 `dsb(DSB_DDR)`，不会出现先 fence、后 drain
 的错误顺序。没有 marker 的 memory access 不会被 PTOAS 当作 TNotify payload；也就是说，
-marker 是 signal 和 payload 的显式关联，不是对所有前序 pending memory op 的兜底扫描。
+marker 是 signal 和 payload 的显式关联。`single_cache_line` 只关联匹配地址的 payload；
+`all` 是显式兜底 marker，会关联该 op 之前已经 pending 的所有 GM payload access。
 
 PyPTO 生成规则：
 
 | 场景 | PyPTO 需要生成 | PTOAS 自动补齐 |
 | --- | --- | --- |
-| `TStore`、`TStoreFP` 或 `TPUT` 后发布 signal | `pto.cmo.cacheinvalid %payload single_cache_line` 作为 payload marker，随后 `pto.fence.barrier_all #pto.fence_scope<gm>` | 若 marker 匹配 pending GM write，则补 `PIPE_MTE3` 或 `PIPE_FIX` drain；non-cacheable marker 不生成 `dcci` |
-| `TLoad` 后发布 signal | `pto.cmo.cacheinvalid %payload single_cache_line` 作为 payload marker；不需要显式 fence | 若 marker 匹配 pending GM read，则补 `PIPE_MTE2` drain；non-cacheable marker 不生成 `dcci` |
+| `TStore`、`TStoreFP` 或 `TPUT` 后发布 signal | `pto.cmo.cacheinvalid %payload single_cache_line` 作为精准 payload marker，或 `pto.cmo.cacheinvalid all #pto.address_space<gm>` 作为保守全量 marker，随后 `pto.fence.barrier_all #pto.fence_scope<gm>` | 若 marker 选择到 pending GM write，则补 `PIPE_MTE3` 或 `PIPE_FIX` drain；non-cacheable single-line marker 不生成 `dcci`，whole-cache marker 生成 whole-cache `dcci` |
+| `TLoad` 后发布 signal | `pto.cmo.cacheinvalid %payload single_cache_line` 作为精准 payload marker，或 `pto.cmo.cacheinvalid all #pto.address_space<gm>` 作为保守全量 marker；不需要显式 fence | 若 marker 选择到 pending GM read，则补 `PIPE_MTE2` drain；non-cacheable single-line marker 不生成 `dcci`，whole-cache marker 生成 whole-cache `dcci` |
 | `TWait` 后读取 cacheable scalar GM payload | payload load 前生成 `pto.cmo.cacheinvalid %addr single_cache_line : !pto.ptr<T, gm>`，或使用 whole-cache 形式 | 无 |
 | `TTest` ready path 后读取 cacheable scalar GM payload | 在 ready path 的 payload load 前生成 single-line 或 whole-cache `pto.cmo.cacheinvalid` | 无 |
-| cacheable scalar GM store 后发布 signal | 必须提供 `pto.cmo.cacheinvalid %payload single_cache_line` 作为 TNotify payload marker，并在 payload store 后、signal 前完成 CMO 和 `pto.fence.barrier_all #pto.fence_scope<gm>`；如果使用 whole-cache CMO，也仍需额外提供 addressed marker | 无 |
+| cacheable scalar GM store 后发布 signal | 在 payload store 后生成 `pto.cmo.cacheinvalid %payload single_cache_line`，或使用 `pto.cmo.cacheinvalid all #pto.address_space<gm>`；随后生成 `pto.fence.barrier_all #pto.fence_scope<gm>` | single-line 只覆盖指定 cache line；whole-cache 覆盖全部 scalar D-cache，并保守选择全部 pending GM payload |
 
 如果某个 TNotify 只是发布 signal，而不表示某块 GM payload 已经准备好，可以不生成 payload
 marker。PTOAS 不会尝试从所有前序 memory op 里推断“可能相关”的 payload。
@@ -340,11 +348,10 @@ pto.TNotifyOp(...)
 
 这对应 cacheable scalar GM store 发布 payload 的场景。`CmoCacheInvalidOp` 和
 `FenceBarrierAllOp` 都是必需的，且顺序必须是 CMO 在 fence 之前。release 侧的
-`pto.cmo.cacheinvalid all #pto.address_space<gm>` 只能表示 whole-cache CMO 边界，不能提供
-TNotify payload 地址；如果使用 whole-cache CMO，PyPTO 还需要生成一个 matching
-`pto.cmo.cacheinvalid %payload single_cache_line` 作为 payload marker。若 whole-cache CMO
-已经覆盖该 cacheable store，这个 addressed marker 会被 MemoryConsistency pass 消费并消除，
-不会额外生成第二条 `dcci`。
+`pto.cmo.cacheinvalid all #pto.address_space<gm>` 同时表示 whole-cache CMO 边界和保守全量
+payload marker。使用 whole-cache 形式时，不需要再额外生成 matching
+`pto.cmo.cacheinvalid %payload single_cache_line`；代价是 PTOAS 会保守选择该 op 之前已经
+pending 的所有 GM payload access，并为这些访问补齐对应 pipe drain。
 
 ## 7. Backend Lowering 状态
 
@@ -355,6 +362,7 @@ EmitC backend 当前支持：
 - `pto.cmo.cacheinvalid all #pto.address_space<gm>` lower 到 `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`。
 - `pto.cmo.cacheinvalid %addr single_cache_line` 在 cacheable scalar release 或 acquire 路径 lower 到 `dcci((__gm__ void*)addr, cache_line_t::SINGLE_CACHE_LINE)`。
 - `pto.cmo.cacheinvalid %addr single_cache_line` 在 non-cacheable TLoad、TStore、TStoreFP 或 comm macro release 路径只作为 payload marker，被 MemoryConsistency pass 消费后消除。
+- `pto.cmo.cacheinvalid all #pto.address_space<gm>` 在 release 路径作为保守全量 marker，选择该 op 之前已经 pending 的所有 GM payload access；它不会被消除。
 - `pto.fence.barrier_all #pto.fence_scope<gm>` lower 到 `dsb(DSB_DDR)`。
 
 ### 7.2 VPTO
