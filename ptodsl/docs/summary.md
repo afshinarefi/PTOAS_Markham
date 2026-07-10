@@ -1,8 +1,8 @@
 # TileLang ST A5 Parallel Summary
 
 - Total: 193
-- Passed: 179
-- Build failed: 9
+- Passed: 182
+- Build failed: 6
 - Run failed: 5
 
 ## Failed Build Testcases
@@ -12,11 +12,8 @@
 | full_tcolexpanddiv | full | tcolexpanddiv | build |
 | full_tcvt | full | tcvt | build |
 | full_tdiv | full | tdiv | build |
-| full_tinsert | full | tinsert | build |
-| full_tinsert_acc2vec | full | tinsert_acc2vec | tilelangdsl fails too |
-| full_tload | full | tload | build |
-| full_tload_mat | full | tload_mat | tilelangdsl fails too |
-| full_tstore_acc2gm | full | tstore_acc2gm | build |
+| full_tload_mat | full | tload_mat | build - tilelangdsl fails too |
+| full_tstore_acc2gm | full | tstore_acc2gm | build - tilelangdsl fails too |
 | smoke_tdiv | smoke | tdiv | build |
 
 
@@ -65,9 +62,12 @@
 | full_tfmod | full | tfmod |
 | full_tfmods | full | tfmods |
 | full_tgemv | full | tgemv |
+| full_tinsert | full | tinsert |
+| full_tinsert_acc2vec | full | tinsert_acc2vec |
 | full_tinsert_vec | full | tinsert_vec |
 | full_tlrelu | full | tlrelu |
-| full_tlog | full | tlog | build |
+| full_tload | full | tload |
+| full_tlog | full | tlog |
 | full_tmatmul | full | tmatmul |
 | full_tmatmul_acc | full | tmatmul_acc |
 | full_tmatmul_bias | full | tmatmul_bias |
@@ -158,7 +158,7 @@
 | smoke_tfmod | smoke | tfmod |
 | smoke_tfmods | smoke | tfmods |
 | smoke_tload | smoke | tload |
-| smoke_tlog | smoke | tlog | build |
+| smoke_tlog | smoke | tlog |
 | smoke_tlrelu | smoke | tlrelu |
 | smoke_tmatmul | smoke | tmatmul |
 | smoke_tmax | smoke | tmax |
