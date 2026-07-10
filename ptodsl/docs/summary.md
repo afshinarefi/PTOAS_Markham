@@ -1,8 +1,8 @@
 # TileLang ST A5 Parallel Summary
 
 - Total: 193
-- Passed: 178
-- Build failed: 10
+- Passed: 179
+- Build failed: 9
 - Run failed: 5
 
 ## Failed Build Testcases
@@ -16,7 +16,6 @@
 | full_tinsert_acc2vec | full | tinsert_acc2vec | tilelangdsl fails too |
 | full_tload | full | tload | build |
 | full_tload_mat | full | tload_mat | tilelangdsl fails too |
-| full_tmov | full | tmov | build |
 | full_tstore_acc2gm | full | tstore_acc2gm | build |
 | smoke_tdiv | smoke | tdiv | build |
 
@@ -76,6 +75,7 @@
 | full_tmaxs | full | tmaxs |
 | full_tmin | full | tmin |
 | full_tmins | full | tmins |
+| full_tmov | full | tmov | build |
 | full_tmov2bias | full | tmov2bias |
 | full_tmov2left | full | tmov2left |
 | full_tmov2right | full | tmov2right |
