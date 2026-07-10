@@ -3673,16 +3673,74 @@ static StringRef buildVsstbPostCallee(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.vsstb.post").getValue();
 }
 
+static Type getVgather2SourceElementType(Type sourceType) {
+  if (auto ptrType = dyn_cast<pto::PtrType>(sourceType))
+    return ptrType.getElementType();
+  if (auto memrefType = dyn_cast<BaseMemRefType>(sourceType))
+    return memrefType.getElementType();
+  return {};
+}
+
 static FailureOr<StringRef> buildVgather2Callee(MLIRContext *context,
+                                                Type sourceType,
                                                 Type resultType) {
-  std::string vec =
-      getElementTypeFragment(getElementTypeFromVectorLike(resultType));
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
+  Type resultElemType = getElementTypeFromVectorLike(resultType);
   auto lanes = getElementCountFromVectorLike(resultType);
-  if (vec.empty() || !lanes)
+  if (!sourceElemType || !resultElemType || !lanes)
     return failure();
+
+  std::string vec;
+  int64_t intrinsicLanes = *lanes;
+  if (pto::getPTOStorageElemBitWidth(sourceElemType) == 8) {
+    vec = getElementTypeFragment(sourceElemType);
+    intrinsicLanes *= 2;
+  } else {
+    vec = getElementTypeFragment(resultElemType);
+  }
+  if (vec.empty())
+    return failure();
+
   return StringAttr::get(context, "llvm.hivm.vgather2.v300.v" +
-                                      std::to_string(*lanes) + vec)
+                                      std::to_string(intrinsicLanes) + vec)
       .getValue();
+}
+
+static std::optional<uint64_t> getFixedVectorBitWidth(Type type) {
+  auto vectorType = dyn_cast<VectorType>(type);
+  if (!vectorType || vectorType.getRank() != 1 || vectorType.isScalable())
+    return std::nullopt;
+  int64_t lanes = vectorType.getDimSize(0);
+  if (lanes <= 0)
+    return std::nullopt;
+  auto elementType = dyn_cast<IntegerType>(vectorType.getElementType());
+  if (!elementType)
+    return std::nullopt;
+  return static_cast<uint64_t>(lanes) * elementType.getWidth();
+}
+
+static FailureOr<Type> getVgather2OffsetsCarrierType(PatternRewriter &rewriter,
+                                                     Type sourceType,
+                                                     Type resultType,
+                                                     Type offsetsType) {
+  Type sourceElemType = getVgather2SourceElementType(sourceType);
+  Type elementType = getElementTypeFromVectorLike(resultType);
+  auto lanes = getElementCountFromVectorLike(resultType);
+  if (!sourceElemType || !elementType || !lanes || *lanes <= 0)
+    return failure();
+
+  Type carrierType = offsetsType;
+  if (pto::getPTOStorageElemBitWidth(elementType) == 16) {
+    if (*lanes % 2 != 0)
+      return failure();
+    carrierType = VectorType::get({*lanes / 2}, rewriter.getI32Type());
+  }
+
+  std::optional<uint64_t> offsetsBits = getFixedVectorBitWidth(offsetsType);
+  std::optional<uint64_t> carrierBits = getFixedVectorBitWidth(carrierType);
+  if (!offsetsBits || !carrierBits || *offsetsBits != *carrierBits)
+    return failure();
+  return carrierType;
 }
 
 static FailureOr<StringRef> buildVgather2BcCallee(MLIRContext *context,
@@ -7288,17 +7346,28 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert vgather2 result type");
 
     FailureOr<StringRef> calleeName =
-        buildVgather2Callee(op.getContext(), op.getResult().getType());
+        buildVgather2Callee(op.getContext(), op.getSource().getType(),
+                            op.getResult().getType());
     if (failed(calleeName))
       return rewriter.notifyMatchFailure(op, "unsupported vgather2 signature");
 
+    Value offsets = adaptor.getOffsets();
+    FailureOr<Type> offsetsCarrierType = getVgather2OffsetsCarrierType(
+        rewriter, op.getSource().getType(), op.getResult().getType(),
+        offsets.getType());
+    if (failed(offsetsCarrierType))
+      return rewriter.notifyMatchFailure(op, "unsupported vgather2 offsets carrier");
+    if (offsets.getType() != *offsetsCarrierType)
+      offsets = rewriter.create<LLVM::BitcastOp>(op.getLoc(), *offsetsCarrierType,
+                                                 offsets);
+
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSource().getType(), adaptor.getOffsets().getType(),
+        TypeRange{adaptor.getSource().getType(), *offsetsCarrierType,
                   adaptor.getMask().getType()},
         TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
         op.getLoc(), *calleeName, TypeRange{resultType},
-        ValueRange{adaptor.getSource(), adaptor.getOffsets(), adaptor.getMask()});
+        ValueRange{adaptor.getSource(), offsets, adaptor.getMask()});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     rewriter.replaceOp(op, call.getResults());
     return success();
