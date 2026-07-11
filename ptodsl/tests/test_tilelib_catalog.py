@@ -857,6 +857,45 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertIn("pto.copy_ubuf_to_ubuf", mlir)
         self.assertIn("pto.vbitsort", mlir)
 
+    def test_tsort32_unaligned_tmp_uses_valid_width(self):
+        specs = {
+            "src": TileSpec(shape=(1, 8192), dtype=ScalarType("f32"), valid_shape=(1, 4164)),
+            "idx": TileSpec(shape=(1, 8192), dtype=ScalarType("ui32"), valid_shape=(1, 4164)),
+            "tmp": TileSpec(shape=(1, 4168), dtype=ScalarType("f32"), valid_shape=(1, 4168)),
+            "dst": TileSpec(shape=(1, 32768), dtype=ScalarType("f32"), valid_shape=(1, 8328)),
+        }
+        selected = select("pto.tsort32", "a5", specs)
+        self.assertEqual(selected.name, "template_tsort32_with_tmp")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.copy_ubuf_to_ubuf", mlir)
+        self.assertIn("pto.vbitsort", mlir)
+        self.assertIn("%c130", mlir)
+
+    def test_trandom_uses_valid_width_for_repeats(self):
+        specs = {
+            name: ScalarSpec(dtype=ScalarType("i32"), value=1)
+            for name in (
+                "key0",
+                "key1",
+                "counter0",
+                "counter1",
+                "counter2",
+                "counter3",
+            )
+        }
+        specs["dst"] = TileSpec(
+            shape=(2, 1024),
+            dtype=ScalarType("ui32"),
+            valid_shape=(2, 257),
+        )
+        selected = select("pto.trandom", "a5", specs)
+        self.assertEqual(selected.name, "template_trandom")
+        mlir = selected.specialize(context_attrs={"rounds": "10"}, **specs).mlir_text()
+        self.assertIn("pto.tile_valid_cols %arg6", mlir)
+        self.assertIn("arith.floordivsi %3, %c256", mlir)
+        self.assertIn("arith.select", mlir)
+        self.assertIn("pto.vaddc", mlir)
+
     def test_colarg_additional_dtype_versions_render(self):
         for op in ("pto.tcolargmax", "pto.tcolargmin"):
             for dtype in ("f16", "ui16", "i8", "ui8"):

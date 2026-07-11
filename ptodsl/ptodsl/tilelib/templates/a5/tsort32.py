@@ -18,6 +18,15 @@ MAX_UB_TMP = 32 * 255
 REPEAT_MAX = 255
 
 
+def _static_valid_dim(tile, index):
+    static_valid_shape = getattr(tile, "_template_static_valid_shape", None)
+    if static_valid_shape is None:
+        static_valid_shape = getattr(tile, "static_valid_shape", None)
+    if static_valid_shape is not None and static_valid_shape[index] is not None:
+        return static_valid_shape[index]
+    return tile.valid_shape[index]
+
+
 def _aligned(src_valid_shape, **_):
     return len(src_valid_shape) == 2 and src_valid_shape[1] % BLOCK_SIZE == 0
 
@@ -62,8 +71,8 @@ def _pad_min(dtype):
 )
 def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
     dtype = dst.dtype
-    valid_rows = dst.valid_shape[0]
-    valid_cols = src.shape[1]
+    valid_rows = _static_valid_dim(dst, 0)
+    valid_cols = _static_valid_dim(src, 1)
 
     dst_ptr = dst.as_ptr()
     src_ptr = src.as_ptr()
@@ -73,7 +82,7 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
     dst_stride = ((dst.shape[1] * elem_bytes + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // elem_bytes
     src_stride = ((src.shape[1] * elem_bytes + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // elem_bytes
     idx_stride = ((idx.shape[1] * 4 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // 4
-    if idx.shape[0] == 1:
+    if _static_valid_dim(idx, 0) == 1:
         idx_stride = 0
 
     type_coef = HALF_DST_STRIDE_COEF
@@ -126,8 +135,8 @@ def template_tsort32(src: pto.Tile, idx: pto.Tile, dst: pto.Tile):
 )
 def template_tsort32_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: pto.Tile):
     dtype = dst.dtype
-    valid_rows = dst.valid_shape[0]
-    valid_cols = src.valid_shape[1]
+    valid_rows = _static_valid_dim(dst, 0)
+    valid_cols = _static_valid_dim(src, 1)
 
     dst_ptr = dst.as_ptr()
     src_ptr = src.as_ptr()
@@ -138,7 +147,7 @@ def template_tsort32_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: 
     dst_stride = ((dst.shape[1] * elem_bytes + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // elem_bytes
     src_stride = ((src.shape[1] * elem_bytes + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // elem_bytes
     idx_stride = ((idx.shape[1] * 4 + BLOCK_SIZE - 1) // BLOCK_SIZE * BLOCK_SIZE) // 4
-    if idx.shape[0] == 1:
+    if _static_valid_dim(idx, 0) == 1:
         idx_stride = 0
 
     type_coef = HALF_DST_STRIDE_COEF
@@ -148,7 +157,7 @@ def template_tsort32_with_tmp(src: pto.Tile, idx: pto.Tile, tmp: pto.Tile, dst: 
     repeat_num_per_row = (valid_cols + BLOCK_SIZE - 1) // BLOCK_SIZE
     src_tail_per_row = valid_cols % BLOCK_SIZE
     pad_value = _pad_min(dtype)
-    src_shape_bytes_per_row = src.shape[1] * elem_bytes
+    src_shape_bytes_per_row = valid_cols * elem_bytes
 
     if src_shape_bytes_per_row <= MAX_UB_TMP:
         len_burst = (src_shape_bytes_per_row + BLOCK_SIZE - 1) // BLOCK_SIZE

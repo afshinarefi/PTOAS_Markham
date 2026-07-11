@@ -8,6 +8,7 @@
 """PTODSL TileLib template for ``pto.trandom``."""
 
 from ptodsl import pto
+from ptodsl import scalar
 import ptodsl.tilelib as tilelib
 
 
@@ -60,7 +61,7 @@ def template_trandom(
     dtype = dst.dtype
     valid_rows, valid_cols = dst.valid_shape
     lanes = pto.elements_per_vreg(dtype)
-    repeats = (dst.shape[1] + TRANDOM_ONCE_REPEAT * lanes - 1) // (
+    repeats = (valid_cols + TRANDOM_ONCE_REPEAT * lanes - 1) // (
         TRANDOM_ONCE_REPEAT * lanes
     )
     rounds = int(pto.get_op_attr("rounds", "10"))
@@ -108,7 +109,15 @@ def template_trandom(
             pto.vsts(tmp2, dst[row, (TRANDOM_ONCE_REPEAT * repeat + 2) * lanes:], mask2)
             pto.vsts(tmp3, dst[row, (TRANDOM_ONCE_REPEAT * repeat + 3) * lanes:], mask3)
 
-            ctr0, carry = pto.vaddc(ctr0, pto.vbr(pto.ui32(lanes)), full_mask)
+            tail_counter_add = (valid_cols - 1) % lanes + 1
+            counter_add = scalar.select(
+                repeat == repeats - 1,
+                scalar.index_cast(pto.i32, tail_counter_add),
+                pto.const(lanes, dtype=pto.i32),
+            )
+            counter_add = pto.vbr(counter_add)
+            counter_add = pto.vbitcast(counter_add, pto.ui32)
+            ctr0, carry = pto.vaddc(ctr0, counter_add, full_mask)
             ctr1, carry = pto.vaddcs(ctr1, zeros, carry, full_mask)
             ctr2, carry = pto.vaddcs(ctr2, zeros, carry, full_mask)
             ctr3, _ = pto.vaddcs(ctr3, zeros, carry, full_mask)

@@ -71,6 +71,7 @@ class _TemplateTile(TileValue):
         # Force the dynamic valid-shape ops to match the tilelang render.
         self.static_valid_shape = None
         self._valid_shape._cache.clear()
+        self._template_static_valid_shape = tuple(spec.valid_shape or spec.shape)
         self._template_config = _TemplateTileConfig(
             b_layout=spec.b_layout,
             s_layout=spec.s_layout,
