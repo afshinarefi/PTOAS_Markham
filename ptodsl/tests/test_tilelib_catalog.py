@@ -265,7 +265,7 @@ OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | CUBE_OPS
 OPS_WITHOUT_VECTOR_STORE = {"pto.tcmp", "pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | CUBE_OPS
-OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tsort32"}
+OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | CUBE_OPS
 OPS_WITHOUT_LOOP = {"pto.tmrgsort"}
@@ -522,6 +522,13 @@ class TileLibCatalogTest(unittest.TestCase):
                             valid_shape = (8, 1)
                         if (op, operand) in VIEW_OPERANDS:
                             specs[operand] = _view_spec_for(op, operand, dtype_name)
+                            continue
+                        if (op, operand) in SPECIAL_VECTOR_OPERANDS:
+                            _, vector_shape = SPECIAL_VECTOR_OPERANDS[(op, operand)]
+                            specs[operand] = VectorSpec(
+                                shape=vector_shape,
+                                dtype=ScalarType(dtype_name),
+                            )
                             continue
                         specs[operand] = _tile_spec_for(op, operand, dtype_name)
                         if valid_shape != specs[operand].valid_shape:
@@ -825,7 +832,7 @@ class TileLibCatalogTest(unittest.TestCase):
     def test_tsort32_unaligned_tmp_version_renders(self):
         specs = {
             "src": TileSpec(shape=(8, 64), dtype=ScalarType("f32"), valid_shape=(8, 63)),
-            "idx": TileSpec(shape=(8, 64), dtype=ScalarType("i32"), valid_shape=(8, 63)),
+            "idx": TileSpec(shape=(8, 64), dtype=ScalarType("ui32"), valid_shape=(8, 63)),
             "tmp": TileSpec(shape=(1, 64), dtype=ScalarType("f32"), valid_shape=(1, 64)),
             "dst": TileSpec(shape=(8, 64), dtype=ScalarType("f32"), valid_shape=(8, 63)),
         }
@@ -1216,8 +1223,8 @@ class TileLibCatalogTest(unittest.TestCase):
 
     def test_tpart_extreme_allows_both_sources_partial(self):
         for op, expected_op, expected_pad in (
-            ("pto.tpartmax", "pto.vmax", "0xFF800000"),
-            ("pto.tpartmin", "pto.vmin", "0x7F800000"),
+            ("pto.tpartmax", "pto.vmax", "-3.40282347E+38"),
+            ("pto.tpartmin", "pto.vmin", "3.40282347E+38"),
         ):
             with self.subTest(op=op):
                 specs = {
