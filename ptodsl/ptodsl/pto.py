@@ -26,6 +26,9 @@ from ._diagnostics import unsupported_public_surface_error
 from ._types import (           # noqa: F401
     float32, float16, bf16,
     f8e4m3, f8e5m2, hif8, f4e1m2x2, f4e2m1x2,
+    f16x2, bf16x2, f32x2,
+    f8e4m3x2, f8e5m2x2, hif8x2,
+    i8x2, i16x2, i32x2,
     int1, int8, int16, int32, int64,
     si8, si16, si32, si64,
     ui8, ui16, ui32, ui64,
@@ -137,7 +140,7 @@ from ._ops import (             # noqa: F401
     fmin, fmax, fma, convert,
     syncthreads, threadfence, threadfence_block, keep, resume,
     pipe_barrier,
-    get_buf, rls_buf,
+    get_buf, get_buf_dyn, rls_buf, rls_buf_dyn,
     set_cross_flag, wait_cross_flag, set_intra_flag, wait_intra_flag,
     set_flag, wait_flag,
     reserve_buffer, import_reserved_buffer,

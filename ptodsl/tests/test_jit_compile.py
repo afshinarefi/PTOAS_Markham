@@ -314,6 +314,32 @@ def process_row_ptr_kernel_module(
 
 
 @pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
+def dynamic_buf_kernel_module(
+    src_gm: pto.ptr(pto.f32, "gm"),
+    dst_gm: pto.ptr(pto.f32, "gm"),
+    row: pto.i32,
+):
+    with pto.simd():
+        c0_i64 = pto.const(0, dtype=pto.i64)
+        row_offset = row * 16
+        src_row = pto.addptr(src_gm, row_offset)
+        dst_row = pto.addptr(dst_gm, row_offset)
+        ub_ptr = pto.castptr(c0_i64, pto.ptr(pto.f32, "ub"))
+
+        # Compute dynamic buf-id from the row index: row & 1
+        buf_id = row & 1
+        pto.get_buf_dyn(pto.Pipe.MTE2, buf_id, 0)
+        pto.mte_gm_ub(src_row, ub_ptr, 0, 64, nburst=(1, 64, 64))
+        pto.rls_buf_dyn(pto.Pipe.MTE2, buf_id, 0)
+
+        buf_id2 = row & 1
+        pto.get_buf_dyn(pto.Pipe.MTE3, buf_id2, 0)
+        pto.mte_ub_gm(ub_ptr, dst_row, 64, nburst=(1, 64, 64))
+        pto.rls_buf_dyn(pto.Pipe.MTE3, buf_id2, 0)
+        pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.jit(target="a5", entry=False, backend="vpto", mode="explicit", insert_sync=False)
 def ast_rewrite_kernel_module_probe(
     src_ptr: pto.ptr(pto.f32, "ub"),
     dst_ptr: pto.ptr(pto.f32, "ub"),
@@ -377,6 +403,26 @@ def emitc_entry_calls_vpto_kernel_module_probe(
         pto.tile.adds(a_tile, 1.0, o_tile)
         pto.tile.store(o_tile, o_part)
         process_row_ptr_kernel_module(A_ptr, O_ptr, row)
+
+
+@pto.jit(target="a5", backend="emitc")
+def emitc_entry_calls_dynamic_buf_kernel_module_probe(
+    A_ptr: pto.ptr(pto.f32, "gm"),
+    O_ptr: pto.ptr(pto.f32, "gm"),
+    rows: pto.i32,
+):
+    a_view = pto.make_tensor_view(A_ptr, shape=[rows, 16], strides=[16, 1])
+    o_view = pto.make_tensor_view(O_ptr, shape=[rows, 16], strides=[16, 1])
+    a_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+    o_tile = pto.alloc_tile(shape=[1, 16], dtype=pto.f32)
+
+    with pto.for_(0, rows, step=1) as row:
+        a_part = pto.partition_view(a_view, offsets=[row, 0], sizes=[1, 16])
+        o_part = pto.partition_view(o_view, offsets=[row, 0], sizes=[1, 16])
+        pto.tile.load(a_part, a_tile)
+        pto.tile.adds(a_tile, 1.0, o_tile)
+        pto.tile.store(o_tile, o_part)
+        dynamic_buf_kernel_module(A_ptr, O_ptr, row)
 
 
 @pto.simd
@@ -1679,6 +1725,28 @@ def scalar_contiguous_vector_probe():
 
 
 @pto.simt
+def scalar_contiguous_vector_arith_simt_body(data_ptr):
+    tid = pto.get_tid_x()
+    base = tid * 4
+    x4 = scalar.load(data_ptr, base, contiguous=4)
+    y4 = scalar.load(data_ptr, 32 + base, contiguous=4)
+    sum4 = x4 + y4
+    diff4 = x4 - y4
+    prod4 = x4 * y4
+    scalar.store(sum4, data_ptr, 64 + base)
+    scalar.store(diff4, data_ptr, 96 + base)
+    scalar.store(prod4, data_ptr, 128 + base)
+
+
+@pto.jit(target="a5", mode="explicit")
+def scalar_contiguous_vector_arith_probe():
+    scalar_contiguous_vector_arith_simt_body[8, 1, 1](
+        pto.castptr(pto.const(0, dtype=pto.ui64), pto.ptr(pto.f32, "ub"))
+    )
+    pto.pipe_barrier(pto.Pipe.ALL)
+
+
+@pto.simt
 def scalar_contiguous_local_alloc_buffer_helper():
     data = pto.alloc_buffer((16,), pto.f32)
     x4 = scalar.load(data, 0, contiguous=4)
@@ -2405,6 +2473,18 @@ def public_sync_surface_probe():
     pto.wait_intra_flag(pto.Pipe.V, dynamic_event)
 
 
+@pto.jit(target="a5")
+def public_dynamic_buf_sync_surface_probe():
+    const_buf_id = pto.const(3)
+    pto.get_buf_dyn(pto.Pipe.V, const_buf_id)
+    pto.rls_buf_dyn(pto.Pipe.MTE2, const_buf_id, 2)
+
+    with pto.for_(0, 4, step=1) as iter:
+        buf_id = iter & 1
+        pto.get_buf_dyn(pto.Pipe.MTE2, buf_id, 0)
+        pto.rls_buf_dyn(pto.Pipe.MTE2, buf_id, 0)
+
+
 @pto.jit(target="a5", ast_rewrite=False)
 def explicit_runtime_index_bitwise_event_probe():
     with pto.for_(0, 4, step=1) as i:
@@ -2827,6 +2907,18 @@ def auto_mode_explicit_surface_violation_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256))
 
 
+@pto.jit(target="a5")
+def dynamic_buf_invalid_type_probe():
+    bad = pto.const(1.0, dtype=pto.f32)
+    pto.get_buf_dyn(pto.Pipe.V, bad)
+
+
+@pto.jit(target="a5")
+def dynamic_rls_buf_invalid_type_probe():
+    bad = pto.const(0.0, dtype=pto.f32)
+    pto.rls_buf_dyn(pto.Pipe.MTE2, bad)
+
+
 class _FakeTensor:
     def __init__(self, shape):
         self.shape = tuple(shape)
@@ -2918,6 +3010,8 @@ def main() -> None:
         "pipe_barrier",
         "get_buf",
         "rls_buf",
+        "get_buf_dyn",
+        "rls_buf_dyn",
         "set_cross_flag",
         "wait_cross_flag",
         "set_intra_flag",
@@ -3067,6 +3161,7 @@ def main() -> None:
     integer_loop_bound_probe.verify()
     scalar_pointer_offset_probe.verify()
     scalar_contiguous_vector_probe.verify()
+    scalar_contiguous_vector_arith_probe.verify()
     addptr_surface_probe.verify()
     simt_pointer_offset_probe.verify()
     scalar_store_element_coercion_probe.verify()
@@ -3762,6 +3857,35 @@ def main() -> None:
     expect(
         "pto.mte_gm_ub" in mixed_backend_text and "pto.mte_ub_gm" in mixed_backend_text,
         "mixed-backend ptr/scalar kernel modules should be able to keep explicit VPTO data-movement ops in the callee child",
+    )
+    dynamic_buf_emitc_text = emitc_entry_calls_dynamic_buf_kernel_module_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        dynamic_buf_emitc_text,
+        "emitc entry calling dynamic buf kernel-module specialization",
+    )
+    expect(
+        'module attributes {pto.backend = "emitc", pto.target_arch = "a5"}' in dynamic_buf_emitc_text,
+        "dynamic-buf emitc entry should encode the EmitC backend",
+    )
+    expect(
+        "pto.get_buf_dyn" in dynamic_buf_emitc_text,
+        "dynamic-buf kernel module IR should contain pto.get_buf_dyn ops",
+    )
+    expect(
+        "pto.rls_buf_dyn" in dynamic_buf_emitc_text,
+        "dynamic-buf kernel module IR should contain pto.rls_buf_dyn ops",
+    )
+    expect(
+        dynamic_buf_emitc_text.count("pto.get_buf_dyn") == 2,
+        "mixed-backend dynamic buf callee should keep both MTE2 and MTE3 get_buf_dyn ops",
+    )
+    expect(
+        dynamic_buf_emitc_text.count("pto.rls_buf_dyn") == 2,
+        "mixed-backend dynamic buf callee should keep both MTE2 and MTE3 rls_buf_dyn ops",
+    )
+    expect(
+        "func.call @dynamic_buf_kernel_module__ptodsl_" in dynamic_buf_emitc_text,
+        "emitc entry should call into the dynamic buf kernel module",
     )
     decorated_mixed_backend_text = emitc_entry_calls_vpto_kernel_module_via_decorated_simd_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
@@ -5080,6 +5204,29 @@ def main() -> None:
         "scalar.store(scalar, ..., contiguous=N) is not supported",
     )
 
+    vec_arith_text = scalar_contiguous_vector_arith_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vec_arith_text, "scalar contiguous vector arithmetic specialization")
+    expect(
+        "pto.simt_launch" in vec_arith_text,
+        "VecValue arithmetic probe should lower through a SIMT launch",
+    )
+    expect("arith.addf" in vec_arith_text, "VecValue addition should lower to arith.addf")
+    expect("arith.subf" in vec_arith_text, "VecValue subtraction should lower to arith.subf")
+    expect("arith.mulf" in vec_arith_text, "VecValue multiplication should lower to arith.mulf")
+    expect("vector<4xf32>" in vec_arith_text, "vector arithmetic should keep vector<4xf32> type")
+    expect(
+        vec_arith_text.count("arith.addf") == 1,
+        "VecValue __add__ should emit exactly one arith.addf",
+    )
+    expect(
+        vec_arith_text.count("arith.subf") == 1,
+        "VecValue __sub__ should emit exactly one arith.subf",
+    )
+    expect(
+        vec_arith_text.count("arith.mulf") == 1,
+        "VecValue __mul__ should emit exactly one arith.mulf",
+    )
+
     addptr_surface_text = addptr_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(addptr_surface_text, "addptr surface specialization")
     expect(
@@ -5179,6 +5326,8 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(mask_surface_text, "public mask surface specialization")
     sync_surface_text = public_sync_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(sync_surface_text, "public sync surface specialization")
+    dynamic_buf_sync_text = public_dynamic_buf_sync_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(dynamic_buf_sync_text, "dynamic buf sync surface specialization")
     explicit_runtime_index_bitwise_event_text = explicit_runtime_index_bitwise_event_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
         explicit_runtime_index_bitwise_event_text,
@@ -5224,6 +5373,32 @@ def main() -> None:
     expect("start(" not in public_surface_text, "mte_l1_l0a/l0b start_row/start_col should lower as operands")
     expect('pto.get_buf "PIPE_V", 0, 0' in sync_surface_text, 'get_buf(Pipe.V, 0) should lower to pto.get_buf with PIPE_V')
     expect('pto.rls_buf "PIPE_MTE2", 1, 2' in sync_surface_text, 'rls_buf(Pipe.MTE2, 1, 2) should lower to pto.rls_buf with PIPE_MTE2')
+    expect("pto.get_buf_dyn" in dynamic_buf_sync_text, "get_buf_dyn should lower to pto.get_buf_dyn")
+    expect("pto.rls_buf_dyn" in dynamic_buf_sync_text, "rls_buf_dyn should lower to pto.rls_buf_dyn")
+    expect(
+        'pto.get_buf_dyn "PIPE_V"' in dynamic_buf_sync_text,
+        'get_buf_dyn(Pipe.V, const_buf_id) should lower to pto.get_buf_dyn with PIPE_V',
+    )
+    expect(
+        'pto.rls_buf_dyn "PIPE_MTE2"' in dynamic_buf_sync_text,
+        'rls_buf_dyn(Pipe.MTE2, const_buf_id, 2) should lower to pto.rls_buf_dyn with PIPE_MTE2',
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_V"') == 1,
+        "constant SSA buf-id get_buf_dyn should preserve PIPE_V",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_MTE2"') == 1,
+        "loop get_buf_dyn should preserve PIPE_MTE2",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.rls_buf_dyn "PIPE_MTE2"') == 2,
+        "constant and loop rls_buf_dyn calls should preserve PIPE_MTE2",
+    )
+    expect(
+        "arith.andi" in dynamic_buf_sync_text,
+        "iter & 1 in pto.for_ should lower to arith.andi for dynamic buf_id computation",
+    )
     expect("pto.set_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]" in sync_surface_text, "set_flag(..., event_id=0) should lower static event ids to pto.set_flag")
     expect("pto.wait_flag[<PIPE_MTE2>, <PIPE_V>, <EVENT_ID0>]" in sync_surface_text, "wait_flag(..., event_id=0) should lower static event ids to pto.wait_flag")
     expect("pto.set_flag_dyn[<PIPE_V>, <PIPE_MTE3>, %c3]" in sync_surface_text, "set_flag(..., event_id=dynamic_event) should lower runtime event ids to pto.set_flag_dyn")
@@ -5364,6 +5539,16 @@ def main() -> None:
     expect(mask_bitcast_text.count("pto.pbitcast") == 2, "pbitcast(...) should lower to pto.pbitcast for each authored mask reinterpretation")
     expect("!pto.mask<b16>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b16) should materialize the requested result mask type")
     expect("!pto.mask<b32>" in mask_bitcast_text, "pbitcast(mask, pto.mask_b32) should materialize the requested result mask type")
+    expect_raises(
+        TypeError,
+        lambda: dynamic_buf_invalid_type_probe.compile(),
+        "get_buf_dyn",
+    )
+    expect_raises(
+        TypeError,
+        lambda: dynamic_rls_buf_invalid_type_probe.compile(),
+        "rls_buf_dyn",
+    )
     expect_raises(
         ValueError,
         lambda: vmulscvt_surface_invalid_attr_probe.compile(),

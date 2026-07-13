@@ -135,7 +135,7 @@ echo "[ptoas_env] LLVM_BUILD_DIR=${LLVM_BUILD_DIR}"
 echo "[ptoas_env] PTO_INSTALL_DIR=${PTO_INSTALL_DIR}"
 echo "[ptoas_env] PTO_ISA_PATH=${PTO_ISA_PATH}"
 echo "[ptoas_env] ASCEND_HOME_PATH=${ASCEND_HOME_PATH}"
-echo "[ptoas_env] PATH/PYTHONPATH/LD_LIBRARY_PATH updated"
+echo "[ptoas_env] PATH/LD_LIBRARY_PATH updated"
 
 _ptoas_env_skip_smoke="${PTOAS_ENV_SKIP_SMOKE_TEST:-0}"
 if [[ -z "${PTOAS_ENV_SKIP_SMOKE_TEST:-}" &&

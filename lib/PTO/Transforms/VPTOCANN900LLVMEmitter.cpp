@@ -2685,6 +2685,14 @@ static FailureOr<StringRef> buildL1CacheLoadCallee(MLIRContext *context,
   } else if (pto::isPTOFloat8Type(resultType) ||
              pto::isPTOHiFloat8Type(resultType)) {
     elem = "s8";
+  } else if (pto::isPTOPackedLdgStgVectorType(resultType)) {
+    unsigned totalBits = pto::getPTOPackedLdgStgTotalBits(resultType);
+    if (totalBits == 16)
+      elem = "s16";
+    else if (totalBits == 32)
+      elem = "s32";
+    else if (totalBits == 64)
+      elem = "s64";
   }
   if (elem.empty())
     return failure();
@@ -2717,6 +2725,14 @@ static FailureOr<StringRef> buildL1CacheStoreCallee(MLIRContext *context,
   } else if (pto::isPTOFloat8Type(valueType) ||
              pto::isPTOHiFloat8Type(valueType)) {
     elem = "b8";
+  } else if (pto::isPTOPackedLdgStgVectorType(valueType)) {
+    unsigned totalBits = pto::getPTOPackedLdgStgTotalBits(valueType);
+    if (totalBits == 16)
+      elem = "b16";
+    else if (totalBits == 32)
+      elem = "b32";
+    else if (totalBits == 64)
+      elem = "b64";
   }
   if (elem.empty())
     return failure();
@@ -4164,6 +4180,13 @@ StringRef buildSyncCallee<pto::GetBufOp>(MLIRContext *context) {
 template <>
 StringRef buildSyncCallee<pto::RlsBufOp>(MLIRContext *context) {
   return StringAttr::get(context, "llvm.hivm.RLS.BUFI.mode").getValue();
+}
+
+static StringRef buildBufDynSyncCallee(MLIRContext *context, bool isGetBuf) {
+  return StringAttr::get(context,
+                         isGetBuf ? "llvm.hivm.GET.BUF.mode"
+                                  : "llvm.hivm.RLS.BUF.mode")
+      .getValue();
 }
 
 template <typename QueryOp>
@@ -8902,6 +8925,67 @@ private:
   LoweringState &state;
 };
 
+template <typename BufDynSyncOp>
+class LowerBufDynSyncOpPattern final
+    : public OpConversionPattern<BufDynSyncOp> {
+public:
+  explicit LowerBufDynSyncOpPattern(TypeConverter &typeConverter,
+                                    MLIRContext *context, LoweringState &state)
+      : OpConversionPattern<BufDynSyncOp>(typeConverter, context),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(BufDynSyncOp op, typename BufDynSyncOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    PIPE pipe = PIPE::PIPE_UNASSIGNED;
+    if (auto pipeAttr = dyn_cast<PipeAttr>(op.getOpTypeAttr())) {
+      pipe = pipeAttr.getPipe();
+    } else {
+      auto opTypeOr = parseSyncOpTypeLikeAttr(op.getOpTypeAttr());
+      if (failed(opTypeOr))
+        return rewriter.notifyMatchFailure(
+            op, "buffer sync expects pipe/sync_op_type/pipe_event_type attr");
+      pipe = mapSyncOpTypeToPipe(*opTypeOr);
+    }
+    if (!isConcreteSyncPipe(pipe))
+      return rewriter.notifyMatchFailure(
+          op, "buffer sync op_type cannot map to concrete pipe");
+
+    auto pipeImm = parsePipeImmediate(stringifyPIPE(pipe));
+    if (!pipeImm)
+      return rewriter.notifyMatchFailure(op, "unsupported buffer sync pipe");
+
+    Value pipeValue = getI64Constant(rewriter, op.getLoc(), *pipeImm);
+    Value bufIdDyn = adaptor.getBufId();
+    if (!bufIdDyn)
+      return rewriter.notifyMatchFailure(
+          op, "expected dynamic buf-id operand");
+    Value bufIdValue = castIntegerLikeTo(op, bufIdDyn, rewriter.getI64Type());
+    if (!bufIdValue)
+      return rewriter.notifyMatchFailure(
+          op, "failed to cast dynamic buf-id to i64");
+
+    bool isGetBuf =
+        std::is_same_v<BufDynSyncOp, pto::GetBufDynOp>;
+    StringRef calleeName =
+        buildBufDynSyncCallee(op.getContext(), isGetBuf);
+    Value modeValue =
+        getI64Constant(rewriter, op.getLoc(), op.getModeAttr().getInt());
+    auto funcType = rewriter.getFunctionType(
+        TypeRange{rewriter.getI64Type(), rewriter.getI64Type(),
+                  rewriter.getI64Type()},
+        TypeRange{});
+    rewriter.create<func::CallOp>(op.getLoc(), calleeName, TypeRange{},
+                                  ValueRange{pipeValue, bufIdValue, modeValue});
+    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  LoweringState &state;
+};
+
 template <typename QueryOp>
 class LowerRuntimeQueryOpPattern final : public OpConversionPattern<QueryOp> {
 public:
@@ -9827,6 +9911,15 @@ static Type getLdgCallResultType(Type valueType, Type convertedValueType,
     return rewriter.getI64Type();
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType))
     return rewriter.getI32Type();
+  if (pto::isPTOPackedLdgStgVectorType(valueType)) {
+    unsigned totalBits = pto::getPTOPackedLdgStgTotalBits(valueType);
+    if (totalBits == 16)
+      return rewriter.getI32Type();
+    if (totalBits == 32)
+      return rewriter.getI32Type();
+    if (totalBits == 64)
+      return rewriter.getI64Type();
+  }
   return convertedValueType;
 }
 
@@ -9853,6 +9946,16 @@ static Value convertLdgCallResult(Location loc, Type valueType,
     Value payload =
         rewriter.create<arith::TruncIOp>(loc, rewriter.getI8Type(), callResult);
     return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType, payload);
+  }
+  if (pto::isPTOPackedLdgStgVectorType(valueType)) {
+    unsigned totalBits = pto::getPTOPackedLdgStgTotalBits(valueType);
+    if (totalBits == 16) {
+      Value trunc = rewriter.create<arith::TruncIOp>(
+          loc, rewriter.getI16Type(), callResult);
+      return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType, trunc);
+    }
+    return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType,
+                                            callResult);
   }
   return callResult;
 }
@@ -9984,6 +10087,18 @@ static Value convertStgValue(Location loc, Type valueType, Value value,
     return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI32Type(), value);
   if (valueType.isF64())
     return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI64Type(), value);
+  if (pto::isPTOPackedLdgStgVectorType(valueType)) {
+    unsigned totalBits = pto::getPTOPackedLdgStgTotalBits(valueType);
+    if (totalBits == 16)
+      return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getF16Type(),
+                                              value);
+    if (totalBits == 32)
+      return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI32Type(),
+                                              value);
+    if (totalBits == 64)
+      return rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI64Type(),
+                                              value);
+  }
   return value;
 }
 
@@ -10258,6 +10373,8 @@ static void populateVPTOOpLoweringPatterns(VPTOTypeConverter &typeConverter,
                LowerDcciOpPattern,
                LowerBufSyncOpPattern<pto::GetBufOp>,
                LowerBufSyncOpPattern<pto::RlsBufOp>,
+               LowerBufDynSyncOpPattern<pto::GetBufDynOp>,
+               LowerBufDynSyncOpPattern<pto::RlsBufDynOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockIdxOp>,
                LowerRuntimeQueryOpPattern<pto::GetSubBlockIdxOp>,
                LowerRuntimeQueryOpPattern<pto::GetBlockNumOp>,
@@ -10319,7 +10436,8 @@ static void configureVPTOOpLoweringTarget(ConversionTarget &target,
                       pto::SyncWaitOp, pto::BarrierOp, pto::MemBarOp,
                       pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp,
                       pto::DsbOp, pto::DcciOp,
-                      pto::GetBufOp, pto::RlsBufOp>();
+                      pto::GetBufOp, pto::RlsBufOp,
+                      pto::GetBufDynOp, pto::RlsBufDynOp>();
   target.addIllegalOp<pto::GetBlockIdxOp, pto::GetSubBlockIdxOp,
                       pto::GetBlockNumOp, pto::GetSubBlockNumOp,
                       pto::GetCtrlOp, pto::GetVms4SrOp, pto::GetTidXOp,
