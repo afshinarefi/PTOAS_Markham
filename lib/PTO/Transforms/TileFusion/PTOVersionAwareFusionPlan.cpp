@@ -212,19 +212,6 @@ static bool hasHardBoundaryToGroup(
   return false;
 }
 
-static SmallVector<const pto::FusionComputeNode *, 8>
-buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
-  SmallVector<const pto::FusionComputeNode *, 8> ordered(members.begin(),
-                                                         members.end());
-  llvm::stable_sort(ordered, [](const pto::FusionComputeNode *lhs,
-                                const pto::FusionComputeNode *rhs) {
-    if (lhs->blockOrder != rhs->blockOrder)
-      return lhs->blockOrder < rhs->blockOrder;
-    return lhs->id < rhs->id;
-  });
-  return ordered;
-}
-
 static SmallVector<PlannedFusionMember, 8>
 buildStableInGroupMemberOrder(ArrayRef<PlannedFusionMember> members) {
   SmallVector<PlannedFusionMember, 8> ordered(members.begin(), members.end());
@@ -352,26 +339,6 @@ createSeedStates(const pto::FusionComputeNode &seed) {
     states.push_back(std::move(state));
   }
   return states;
-}
-
-static PlannedFusionMember
-makePlannedFusionMemberWithDefaultVersion(const pto::FusionComputeNode &node) {
-  TileOpImplVersion version = getDefaultImplVersion();
-  FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
-      getLegalImplVersions(node);
-  if (succeeded(versions) && !versions->empty())
-    version = versions->front();
-  return PlannedFusionMember{&node, std::move(version)};
-}
-
-static SmallVector<PlannedFusionMember, 8>
-makePlannedFusionMembersWithDefaultVersions(
-    ArrayRef<const pto::FusionComputeNode *> nodes) {
-  SmallVector<PlannedFusionMember, 8> members;
-  members.reserve(nodes.size());
-  for (const pto::FusionComputeNode *node : nodes)
-    members.push_back(makePlannedFusionMemberWithDefaultVersion(*node));
-  return members;
 }
 
 struct GroupFootprint {
@@ -627,119 +594,6 @@ public:
         0, static_cast<int64_t>(footprint.vfParameterCount) - 12);
     decision.accept = decision.cost.total() > 0;
     return decision;
-  }
-};
-
-class StrategyEngine {
-public:
-  virtual ~StrategyEngine() = default;
-
-  virtual SmallVector<PlannedFusionGroup, 8>
-  planBlock(const PlanningContext &ctx, const CostModel &costModel) const = 0;
-};
-
-class ConservativeGreedyStrategyEngine final : public StrategyEngine {
-public:
-  SmallVector<PlannedFusionGroup, 8>
-  planBlock(const PlanningContext &ctx,
-            const CostModel &costModel) const override {
-    SmallVector<PlannedFusionGroup, 8> groups;
-    SmallVector<const pto::FusionComputeNode *, 8> chain;
-
-    auto flushChain = [&]() {
-      if (chain.size() < 2) {
-        chain.clear();
-        return;
-      }
-
-      PlannedFusionGroup group;
-      group.members = makePlannedFusionMembersWithDefaultVersions(chain);
-      groups.push_back(std::move(group));
-      chain.clear();
-    };
-
-    for (const pto::FusionComputeNode &node : ctx.blockAnalysis.computeNodes) {
-      PlanningDecision seedDecision = costModel.evaluateSeed(ctx, node);
-      if (!seedDecision.accept) {
-        flushChain();
-        continue;
-      }
-
-      if (chain.empty()) {
-        chain.push_back(&node);
-        continue;
-      }
-
-      PlanningDecision appendDecision =
-          costModel.evaluateAppend(ctx, chain, node);
-      if (!appendDecision.accept) {
-        flushChain();
-        chain.push_back(&node);
-        continue;
-      }
-
-      chain.push_back(&node);
-    }
-
-    flushChain();
-    return groups;
-  }
-};
-
-class ConservativeDAGGreedyStrategyEngine final : public StrategyEngine {
-public:
-  SmallVector<PlannedFusionGroup, 8>
-  planBlock(const PlanningContext &ctx,
-            const CostModel &costModel) const override {
-    SmallVector<PlannedFusionGroup, 8> groups;
-    DenseSet<unsigned> assignedNodes;
-
-    for (const pto::FusionComputeNode &seed : ctx.blockAnalysis.computeNodes) {
-      if (assignedNodes.contains(seed.id))
-        continue;
-
-      PlanningDecision seedDecision = costModel.evaluateSeed(ctx, seed);
-      if (!seedDecision.accept)
-        continue;
-
-      SmallVector<const pto::FusionComputeNode *, 8> groupMembers;
-      DenseSet<unsigned> groupNodeIds;
-      groupMembers.push_back(&seed);
-      groupNodeIds.insert(seed.id);
-
-      bool changed = true;
-      while (changed) {
-        changed = false;
-        for (const pto::FusionComputeNode &candidate :
-             ctx.blockAnalysis.computeNodes) {
-          if (assignedNodes.contains(candidate.id) ||
-              groupNodeIds.contains(candidate.id))
-            continue;
-
-          PlanningDecision appendDecision =
-              costModel.evaluateAppend(ctx, groupMembers, candidate);
-          if (!appendDecision.accept)
-            continue;
-
-          groupMembers.push_back(&candidate);
-          groupNodeIds.insert(candidate.id);
-          changed = true;
-        }
-      }
-
-      if (groupMembers.size() < 2)
-        continue;
-
-      PlannedFusionGroup group;
-      SmallVector<const pto::FusionComputeNode *, 8> stableNodes =
-          buildStableInGroupOrder(groupMembers);
-      group.members = makePlannedFusionMembersWithDefaultVersions(stableNodes);
-      groups.push_back(group);
-      for (const PlannedFusionMember &member : group.members)
-        assignedNodes.insert(member.node->id);
-    }
-
-    return groups;
   }
 };
 
