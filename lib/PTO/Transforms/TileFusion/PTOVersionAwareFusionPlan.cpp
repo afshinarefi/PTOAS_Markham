@@ -821,13 +821,16 @@ struct VersionAwareFusionPlanPass
     MLIRContext *ctx = &getContext();
     int64_t nextGroupId = 0;
     ConservativeDAGGreedyCostModel costModel;
-    ConservativeDAGGreedyStrategyEngine strategyEngine;
 
     for (const pto::FusionBlockAnalysis &blockAnalysis : analysis.blocks) {
       PlanningContext planningCtx{blockAnalysis};
-      SmallVector<PlannedFusionGroup, 8> groups =
-          strategyEngine.planBlock(planningCtx, costModel);
-      assignStableGroupMetadata(groups, ctx, nextGroupId);
+      FailureOr<SmallVector<PlannedFusionGroup, 8>> groups =
+          planBlockExactVersionAware(planningCtx, costModel);
+      if (failed(groups)) {
+        signalPassFailure();
+        return;
+      }
+      assignStableGroupMetadata(*groups, ctx, nextGroupId);
     }
 
     // The fusion metadata we annotate (group_id/order) is a planning *output*;
