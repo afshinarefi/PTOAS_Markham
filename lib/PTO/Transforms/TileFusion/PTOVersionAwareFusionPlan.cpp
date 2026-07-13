@@ -20,9 +20,11 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <string>
 
 namespace mlir {
@@ -210,24 +212,6 @@ static bool hasHardBoundaryToGroup(
   return false;
 }
 
-static bool dependsOnPreviousNode(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &previous,
-    const pto::FusionComputeNode &current) {
-  for (unsigned edgeId : current.incomingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
-      continue;
-    if (blockAnalysis.edges[edgeId].producerNode == previous.id)
-      return true;
-  }
-
-  for (Value output : previous.semantics.tileOutputs)
-    if (llvm::is_contained(current.semantics.tileInputs, output))
-      return true;
-
-  return false;
-}
-
 static SmallVector<const pto::FusionComputeNode *, 8>
 buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
   SmallVector<const pto::FusionComputeNode *, 8> ordered(members.begin(),
@@ -390,24 +374,6 @@ makePlannedFusionMembersWithDefaultVersions(
   return members;
 }
 
-static unsigned
-countEdgesFromGroup(const pto::FusionBlockAnalysis &blockAnalysis,
-                    ArrayRef<const pto::FusionComputeNode *> group,
-                    const pto::FusionComputeNode &candidate) {
-  DenseSet<unsigned> producerIds;
-  for (const pto::FusionComputeNode *member : group)
-    producerIds.insert(member->id);
-
-  unsigned count = 0;
-  for (unsigned edgeId : candidate.incomingEdges) {
-    if (edgeId >= blockAnalysis.edges.size())
-      continue;
-    if (producerIds.contains(blockAnalysis.edges[edgeId].producerNode))
-      ++count;
-  }
-  return count;
-}
-
 struct GroupFootprint {
   unsigned liveTileCount = 0;
   unsigned vfParameterCount = 0;
@@ -515,65 +481,67 @@ tryAppendVersionedCandidate(const PlanningContext &ctx,
   return std::optional<GroupState>{std::move(nextState)};
 }
 
-class ConservativeGreedyCostModel final : public CostModel {
-public:
-  PlanningDecision
-  evaluateSeed(const PlanningContext &ctx,
-               const pto::FusionComputeNode &candidate) const override {
-    PlanningDecision decision;
-    if (!isSupportedPlanningNode(candidate))
-      return decision;
+[[maybe_unused]] static std::string getStateSignature(const GroupState &state) {
+  SmallVector<PlannedFusionMember, 8> orderedMembers =
+      buildStableInGroupMemberOrder(state.members);
 
-    if (!isProvenIterationDomain(ctx.blockAnalysis, candidate)) {
-      decision.cost.rejectedForDynamicShape = true;
-      return decision;
+  std::string signature;
+  llvm::raw_string_ostream os(signature);
+  for (const PlannedFusionMember &member : orderedMembers)
+    os << member.node->id << ':' << member.version.id << ';';
+  return os.str();
+}
+
+[[maybe_unused]] static FailureOr<SmallVector<GroupState, 16>>
+enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
+                                 const CostModel &costModel,
+                                 const pto::FusionComputeNode &seed,
+                                 const DenseSet<unsigned> &assignedNodes) {
+  FailureOr<SmallVector<GroupState, 4>> seedStates = createSeedStates(seed);
+  if (failed(seedStates))
+    return failure();
+
+  SmallVector<GroupState, 16> validStates;
+  SmallVector<GroupState, 16> frontier(seedStates->begin(), seedStates->end());
+  std::set<std::string> seenStates;
+  for (const GroupState &state : frontier)
+    seenStates.insert(getStateSignature(state));
+
+  while (!frontier.empty()) {
+    GroupState state = std::move(frontier.pop_back_val());
+    for (const pto::FusionComputeNode &candidate :
+         ctx.blockAnalysis.computeNodes) {
+      if (assignedNodes.contains(candidate.id) || state.contains(candidate))
+        continue;
+
+      FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
+          getLegalImplVersions(candidate);
+      if (failed(versions))
+        return failure();
+
+      for (const TileOpImplVersion &version : *versions) {
+        FailureOr<std::optional<GroupState>> maybeNextState =
+            tryAppendVersionedCandidate(ctx, costModel, state, candidate,
+                                        version);
+        if (failed(maybeNextState))
+          return failure();
+        if (!*maybeNextState)
+          continue;
+
+        GroupState nextState = std::move(**maybeNextState);
+        std::string signature = getStateSignature(nextState);
+        if (!seenStates.insert(signature).second)
+          continue;
+
+        if (nextState.members.size() >= 2)
+          validStates.push_back(nextState);
+        frontier.push_back(std::move(nextState));
+      }
     }
-
-    decision.accept = true;
-    return decision;
   }
 
-  PlanningDecision
-  evaluateAppend(const PlanningContext &ctx,
-                 ArrayRef<const pto::FusionComputeNode *> currentGroup,
-                 const pto::FusionComputeNode &candidate) const override {
-    PlanningDecision seedDecision = evaluateSeed(ctx, candidate);
-    if (!seedDecision.accept)
-      return seedDecision;
-
-    PlanningDecision decision;
-    if (currentGroup.empty()) {
-      decision.accept = true;
-      return decision;
-    }
-
-    const pto::FusionComputeNode &previous = *currentGroup.back();
-    const bool sameDomainClass =
-        previous.iterationDomainClass == candidate.iterationDomainClass;
-    const bool contiguousInBlock =
-        candidate.blockOrder == previous.blockOrder + 1;
-    const bool directlyDependent =
-        dependsOnPreviousNode(ctx.blockAnalysis, previous, candidate);
-    if (!sameDomainClass || !contiguousInBlock || !directlyDependent)
-      return decision;
-
-    SmallVector<const pto::FusionComputeNode *, 8> proposedGroup(
-        currentGroup.begin(), currentGroup.end());
-    proposedGroup.push_back(&candidate);
-    GroupFootprint footprint = computeGroupFootprint(proposedGroup);
-
-    decision.cost.dependencyBenefit =
-        4 * static_cast<int64_t>(
-                countEdgesFromGroup(ctx.blockAnalysis, currentGroup, candidate));
-    decision.cost.loopMergeBenefit = 2;
-    decision.cost.liveTilePenalty =
-        std::max<int64_t>(0, static_cast<int64_t>(footprint.liveTileCount) - 4);
-    decision.cost.vfParameterPenalty = std::max<int64_t>(
-        0, static_cast<int64_t>(footprint.vfParameterCount) - 6);
-    decision.accept = decision.cost.total() > 0;
-    return decision;
-  }
-};
+  return validStates;
+}
 
 class ConservativeDAGGreedyCostModel final : public CostModel {
 public:
