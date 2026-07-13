@@ -543,6 +543,33 @@ enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
   return validStates;
 }
 
+[[maybe_unused]] static FailureOr<std::optional<GroupState>>
+findBestVersionedGroupForSeed(const PlanningContext &ctx,
+                              const CostModel &costModel,
+                              const pto::FusionComputeNode &seed,
+                              const DenseSet<unsigned> &assignedNodes) {
+  FailureOr<SmallVector<GroupState, 16>> states =
+      enumerateVersionedStatesFromSeed(ctx, costModel, seed, assignedNodes);
+  if (failed(states))
+    return failure();
+
+  std::optional<GroupState> bestState;
+  PlanningCost bestCost;
+  for (GroupState &state : *states) {
+    PlanningCost finalCost = computeFinalGroupCost(state);
+    if (bestState &&
+        !isBetterCandidateGroup(state.members, finalCost, bestState->members,
+                                bestCost))
+      continue;
+
+    state.cost = finalCost;
+    bestCost = finalCost;
+    bestState = std::move(state);
+  }
+
+  return bestState;
+}
+
 class ConservativeDAGGreedyCostModel final : public CostModel {
 public:
   PlanningDecision
