@@ -149,7 +149,22 @@ def PTOStoreOp : PTO_Op<"store", [
 def PTOLdgOp : PTO_Op<"ldg", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
-  let summary = "Load one scalar element from GM with cache controls.";
+  let summary = "Load one element from GM with cache controls.";
+  let description = [{
+    Load a scalar or packed vector value from GM (Global Memory).
+
+    Supported value types:
+    - Scalar: i8/i16/i32/i64, f16/bf16/f32/f64, fp8/hif8
+    - Packed: vector<2xf16>, vector<2xbf16>, vector<2xf32>,
+      vector<2xf8E4M3FN>, vector<2xf8E5M2>,
+      vector<2xi8>, vector<2xi16>, vector<2xi32>,
+      and !pto.hif8x2
+
+    The offset operand is an element-level ``index`` (not byte offset).
+    For ``!pto.ptr<vector<2xf32>, gm>``, offset 1 advances by 8 bytes
+    (2 × sizeof(f32)).  The effective address for ``vector<2xf32>`` must
+    satisfy 8-byte alignment.
+  }];
 
   let arguments = (ins
     PTO_BufferType:$ptr,
@@ -171,7 +186,13 @@ def PTOLdgOp : PTO_Op<"ldg", [
 def PTOStgOp : PTO_Op<"stg", [
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
-  let summary = "Store one scalar element to GM with cache controls.";
+  let summary = "Store one element to GM with cache controls.";
+  let description = [{
+    Store a scalar or packed vector value to GM (Global Memory).
+
+    Supported value types and offset/alignment semantics are the same as
+    ``pto.ldg``.  See ``pto.ldg`` for details.
+  }];
 
   let arguments = (ins
     PTO_BufferType:$ptr,
