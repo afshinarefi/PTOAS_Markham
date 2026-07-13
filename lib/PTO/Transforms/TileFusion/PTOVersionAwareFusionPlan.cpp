@@ -743,6 +743,40 @@ public:
   }
 };
 
+[[maybe_unused]] static FailureOr<SmallVector<PlannedFusionGroup, 8>>
+planBlockExactVersionAware(const PlanningContext &ctx,
+                           const CostModel &costModel) {
+  SmallVector<PlannedFusionGroup, 8> groups;
+  DenseSet<unsigned> assignedNodes;
+
+  for (const pto::FusionComputeNode &seed : ctx.blockAnalysis.computeNodes) {
+    if (assignedNodes.contains(seed.id))
+      continue;
+
+    PlanningDecision seedDecision = costModel.evaluateSeed(ctx, seed);
+    if (!seedDecision.accept)
+      continue;
+
+    FailureOr<std::optional<GroupState>> maybeBestState =
+        findBestVersionedGroupForSeed(ctx, costModel, seed, assignedNodes);
+    if (failed(maybeBestState))
+      return failure();
+    if (!*maybeBestState)
+      continue;
+
+    GroupState bestState = std::move(**maybeBestState);
+    PlannedFusionGroup group;
+    group.members = buildStableInGroupMemberOrder(bestState.members);
+    group.cost = bestState.cost;
+    groups.push_back(std::move(group));
+
+    for (const PlannedFusionMember &member : groups.back().members)
+      assignedNodes.insert(member.node->id);
+  }
+
+  return groups;
+}
+
 static void clearPlanningAttrs(func::FuncOp func) {
   func.walk([](Operation *op) {
     op->removeAttr(kFusionGroupIdAttr);
