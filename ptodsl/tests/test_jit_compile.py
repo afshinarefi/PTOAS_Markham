@@ -5338,8 +5338,16 @@ def main() -> None:
         'rls_buf_dyn(Pipe.MTE2, const_buf_id, 2) should lower to pto.rls_buf_dyn with PIPE_MTE2',
     )
     expect(
-        dynamic_buf_sync_text.count('"PIPE_MTE2"') >= 4,
-        "dynamic buf-id in pto.for_ should preserve PIPE_MTE2 pipe for each get/rls pair",
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_V"') == 1,
+        "constant SSA buf-id get_buf_dyn should preserve PIPE_V",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.get_buf_dyn "PIPE_MTE2"') == 1,
+        "loop get_buf_dyn should preserve PIPE_MTE2",
+    )
+    expect(
+        dynamic_buf_sync_text.count('pto.rls_buf_dyn "PIPE_MTE2"') == 2,
+        "constant and loop rls_buf_dyn calls should preserve PIPE_MTE2",
     )
     expect(
         "arith.andi" in dynamic_buf_sync_text,
