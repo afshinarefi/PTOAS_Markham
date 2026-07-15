@@ -74,21 +74,42 @@ parseTemplateCandidateAttr(DictionaryAttr attr) {
 
 FailureOr<SmallVector<TemplateCandidateMetadata, 4>>
 getTemplateCandidateAttrs(Operation *operation) {
-  auto candidates = operation->getAttrOfType<ArrayAttr>(kTemplateCandidatesAttr);
-  if (!candidates)
+  Attribute candidateAttr = operation->getAttr(kTemplateCandidatesAttr);
+  if (!candidateAttr)
     return SmallVector<TemplateCandidateMetadata, 4>{};
+
+  auto candidates = dyn_cast<ArrayAttr>(candidateAttr);
+  if (!candidates || candidates.empty()) {
+    operation->emitError()
+        << "expected '" << kTemplateCandidatesAttr
+        << "' to be a non-empty array of template candidate dictionaries";
+    return failure();
+  }
 
   SmallVector<TemplateCandidateMetadata, 4> parsedCandidates;
   parsedCandidates.reserve(candidates.size());
   for (Attribute attr : candidates) {
     auto dict = dyn_cast<DictionaryAttr>(attr);
-    if (!dict)
+    if (!dict) {
+      operation->emitError()
+          << "expected every entry in '" << kTemplateCandidatesAttr
+          << "' to be a template candidate dictionary";
       return failure();
+    }
 
     FailureOr<TemplateCandidateMetadata> candidate =
         parseTemplateCandidateAttr(dict);
-    if (failed(candidate))
+    if (failed(candidate)) {
+      operation->emitError()
+          << "expected every template candidate in '"
+          << kTemplateCandidatesAttr << "' to define integer '"
+          << kTemplateCandidateIdAttr << "', string '"
+          << kTemplateCandidateNameAttr << "', integer '"
+          << kTemplateCandidateLoopDepthAttr << "', integer '"
+          << kTemplateCandidatePostUpdateAttr << "', and integer '"
+          << kTemplateCandidateTailAttr << "' fields";
       return failure();
+    }
 
     parsedCandidates.push_back(std::move(*candidate));
   }
