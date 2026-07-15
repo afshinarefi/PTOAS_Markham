@@ -262,11 +262,10 @@ def PrintPreFusionAnalysis
 }
 
 def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
-  let summary = "Build conservative version-aware tile-fusion planning groups from block-local analysis";
+  let summary = "Build conservative tile-fusion planning groups from block-local analysis";
   let description = [{
     Consumes PreFusionAnalysis results, forms conservative block-local fusion
-    groups for currently supported tile-native compute ops, compares alternate
-    dataflow-connected groups and TileOp implementation versions, and annotates
+    groups for currently supported tile-native compute ops, and annotates
     accepted group members with:
       - pto.fusion.group_id
       - pto.fusion.order
