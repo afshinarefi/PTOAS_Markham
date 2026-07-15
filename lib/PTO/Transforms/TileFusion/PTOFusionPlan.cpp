@@ -714,8 +714,6 @@ findBestVersionedGroupForSeed(const PlanningContext &ctx,
   std::optional<unsigned> bestStateIndex;
   for (auto [index, state] : llvm::enumerate(*states)) {
     state.cost = computeFinalGroupCost(ctx, state);
-    if (state.cost.total() <= 0)
-      continue;
     if (bestStateIndex &&
         !isBetterCandidateGroup(state.members, state.cost,
                                 (*states)[*bestStateIndex].members,
