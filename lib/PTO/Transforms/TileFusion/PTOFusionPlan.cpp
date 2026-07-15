@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -51,6 +52,7 @@ using TileOpImplVersion = pto::TemplateCandidateMetadata;
 
 struct PlannedFusionGroup {
   SmallVector<const pto::FusionComputeNode *, 8> members;
+  DenseMap<unsigned, SmallVector<TileOpImplVersion, 4>> retainedVersions;
 };
 
 struct PlanningContext {
@@ -100,23 +102,15 @@ struct GroupState {
     return nodes;
   }
 
-  void append(PlannedFusionMember member, const PlanningCost &appendCost = {}) {
+  void append(PlannedFusionMember member) {
     nodeIds.insert(member.node->id);
-    cost.dependencyBenefit += appendCost.dependencyBenefit;
-    cost.loopMergeBenefit += appendCost.loopMergeBenefit;
-    cost.versionCompatibilityBenefit +=
-        appendCost.versionCompatibilityBenefit;
-    cost.liveTilePenalty += appendCost.liveTilePenalty;
-    cost.vfParameterPenalty += appendCost.vfParameterPenalty;
-    cost.versionPenalty += appendCost.versionPenalty;
-    cost.rejectedForDynamicShape |= appendCost.rejectedForDynamicShape;
     members.push_back(std::move(member));
   }
 };
 
-// Version metadata is not emitted by FusionPlan yet. It is still part of the
-// search state so candidate groups can be compared using version traits before
-// the final group_id/order annotations are written for downstream passes.
+// FusionPlan uses exact versions in its search states, then narrows each chosen
+// group member's candidates to the versions appearing in equally scored best
+// states. A downstream pass still makes the final choice from that list.
 static PlanningCost
 computeVersionTraitCost(ArrayRef<PlannedFusionMember> members) {
   static constexpr int64_t kAllOneDimensionalBenefit = 3;
@@ -160,10 +154,6 @@ static PlanningCost combineCosts(const PlanningCost &lhs,
   cost.rejectedForDynamicShape =
       lhs.rejectedForDynamicShape || rhs.rejectedForDynamicShape;
   return cost;
-}
-
-static PlanningCost computeFinalGroupCost(const GroupState &state) {
-  return combineCosts(state.cost, computeVersionTraitCost(state.members));
 }
 
 static bool isCurrentlyPlannableOp(StringRef opName) {
@@ -295,9 +285,46 @@ static bool isBetterCandidateGroup(ArrayRef<PlannedFusionMember> lhsMembers,
   return false;
 }
 
-static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
-                                      MLIRContext *ctx,
-                                      int64_t &nextGroupId) {
+static LogicalResult
+shrinkTemplateCandidates(const PlannedFusionGroup &group,
+                         const pto::FusionComputeNode &node) {
+  auto retainedIt = group.retainedVersions.find(node.id);
+  if (retainedIt == group.retainedVersions.end() ||
+      !node.op->hasAttr(pto::kTemplateCandidatesAttr))
+    return success();
+
+  DenseSet<int64_t> retainedIds;
+  for (const TileOpImplVersion &version : retainedIt->second)
+    retainedIds.insert(version.id);
+
+  auto candidates =
+      node.op->getAttrOfType<ArrayAttr>(pto::kTemplateCandidatesAttr);
+  if (!candidates)
+    return failure();
+
+  SmallVector<Attribute, 4> retainedCandidates;
+  for (Attribute candidateAttr : candidates) {
+    auto candidate = dyn_cast<DictionaryAttr>(candidateAttr);
+    if (!candidate)
+      return failure();
+    auto id = candidate.getAs<IntegerAttr>(pto::kTemplateCandidateIdAttr);
+    if (!id)
+      return failure();
+    if (retainedIds.contains(id.getInt()))
+      retainedCandidates.push_back(candidateAttr);
+  }
+
+  if (retainedCandidates.empty())
+    return failure();
+
+  node.op->setAttr(pto::kTemplateCandidatesAttr,
+                   ArrayAttr::get(node.op->getContext(), retainedCandidates));
+  return success();
+}
+
+static LogicalResult assignStableGroupMetadata(
+    ArrayRef<PlannedFusionGroup> groups, MLIRContext *ctx,
+    int64_t &nextGroupId) {
   SmallVector<const PlannedFusionGroup *, 8> orderedGroups;
   orderedGroups.reserve(groups.size());
   for (const PlannedFusionGroup &group : groups)
@@ -317,6 +344,8 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
     SmallVector<const pto::FusionComputeNode *, 8> stableOrder =
         buildStableInGroupOrder(group->members);
     for (auto [order, node] : llvm::enumerate(stableOrder)) {
+      if (failed(shrinkTemplateCandidates(*group, *node)))
+        return failure();
       node->op->setAttr(kFusionGroupIdAttr,
                         IntegerAttr::get(IntegerType::get(ctx, 64), groupId));
       node->op->setAttr(
@@ -325,6 +354,7 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
                            static_cast<int64_t>(order)));
     }
   }
+  return success();
 }
 
 static bool isSupportedPlanningNode(const pto::FusionComputeNode &node) {
@@ -462,6 +492,36 @@ computeGroupFootprint(ArrayRef<const pto::FusionComputeNode *> members) {
   return footprint;
 }
 
+static PlanningCost computeFinalGroupCost(const PlanningContext &ctx,
+                                          const GroupState &state) {
+  SmallVector<const pto::FusionComputeNode *, 8> members = state.getNodes();
+
+  unsigned connectionCount = 0;
+  for (unsigned lhsIndex = 0; lhsIndex < members.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < members.size();
+         ++rhsIndex) {
+      if (nodesHaveDirectDataFlowConnection(ctx.blockAnalysis,
+                                            *members[lhsIndex],
+                                            *members[rhsIndex]))
+        ++connectionCount;
+    }
+  }
+
+  PlanningCost baseCost;
+  baseCost.dependencyBenefit = 4 * static_cast<int64_t>(connectionCount);
+  if (members.size() > 1)
+    baseCost.loopMergeBenefit =
+        4 * static_cast<int64_t>(members.size() - 1);
+
+  GroupFootprint footprint = computeGroupFootprint(members);
+  baseCost.liveTilePenalty = std::max<int64_t>(
+      0, static_cast<int64_t>(footprint.liveTileCount) - 10);
+  baseCost.vfParameterPenalty = std::max<int64_t>(
+      0, static_cast<int64_t>(footprint.vfParameterCount) - 12);
+
+  return combineCosts(baseCost, computeVersionTraitCost(state.members));
+}
+
 class CostModel {
 public:
   virtual ~CostModel() = default;
@@ -553,8 +613,7 @@ tryAppendVersionedCandidate(const PlanningContext &ctx,
     return std::optional<GroupState>{};
 
   GroupState nextState = state;
-  nextState.append(PlannedFusionMember{&candidate, version},
-                   appendDecision.cost);
+  nextState.append(PlannedFusionMember{&candidate, version});
   return std::optional<GroupState>{std::move(nextState)};
 }
 
@@ -624,7 +683,21 @@ enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
   return validStates;
 }
 
-static FailureOr<std::optional<GroupState>>
+struct BestVersionedGroup {
+  GroupState representative;
+  SmallVector<GroupState, 8> equallyScoredStates;
+};
+
+static bool haveSameMemberNodes(const GroupState &lhs, const GroupState &rhs) {
+  if (lhs.members.size() != rhs.members.size())
+    return false;
+  for (const PlannedFusionMember &member : lhs.members)
+    if (!rhs.nodeIds.contains(member.node->id))
+      return false;
+  return true;
+}
+
+static FailureOr<std::optional<BestVersionedGroup>>
 findBestVersionedGroupForSeed(const PlanningContext &ctx,
                               const CostModel &costModel,
                               const pto::FusionComputeNode &seed,
@@ -634,21 +707,31 @@ findBestVersionedGroupForSeed(const PlanningContext &ctx,
   if (failed(states))
     return failure();
 
-  std::optional<GroupState> bestState;
-  PlanningCost bestCost;
-  for (GroupState &state : *states) {
-    PlanningCost finalCost = computeFinalGroupCost(state);
-    if (bestState &&
-        !isBetterCandidateGroup(state.members, finalCost, bestState->members,
-                                bestCost))
+  std::optional<unsigned> bestStateIndex;
+  for (auto [index, state] : llvm::enumerate(*states)) {
+    state.cost = computeFinalGroupCost(ctx, state);
+    if (state.cost.total() <= 0)
       continue;
-
-    state.cost = finalCost;
-    bestCost = finalCost;
-    bestState = std::move(state);
+    if (bestStateIndex &&
+        !isBetterCandidateGroup(state.members, state.cost,
+                                (*states)[*bestStateIndex].members,
+                                (*states)[*bestStateIndex].cost))
+      continue;
+    bestStateIndex = index;
   }
 
-  return bestState;
+  if (!bestStateIndex)
+    return std::optional<BestVersionedGroup>{};
+
+  const GroupState &bestState = (*states)[*bestStateIndex];
+  BestVersionedGroup bestGroup;
+  bestGroup.representative = bestState;
+  for (const GroupState &state : *states) {
+    if (state.cost.total() == bestState.cost.total() &&
+        haveSameMemberNodes(state, bestState))
+      bestGroup.equallyScoredStates.push_back(state);
+  }
+  return std::optional<BestVersionedGroup>{std::move(bestGroup)};
 }
 
 class ConservativeDAGGreedyCostModel final : public CostModel {
@@ -835,18 +918,39 @@ planBlockVersionAware(const PlanningContext &ctx, const CostModel &costModel) {
     if (!seedDecision.accept)
       continue;
 
-    FailureOr<std::optional<GroupState>> maybeBestState =
+    FailureOr<std::optional<BestVersionedGroup>> maybeBestGroup =
         findBestVersionedGroupForSeed(ctx, costModel, seed, assignedNodes);
-    if (failed(maybeBestState))
+    if (failed(maybeBestGroup))
       return failure();
-    if (!*maybeBestState)
+    if (!*maybeBestGroup)
       continue;
 
-    GroupState bestState = std::move(**maybeBestState);
+    BestVersionedGroup bestGroup = std::move(**maybeBestGroup);
     PlannedFusionGroup group;
     for (const PlannedFusionMember &member :
-         buildStableInGroupMemberOrder(bestState.members))
+         buildStableInGroupMemberOrder(bestGroup.representative.members)) {
       group.members.push_back(member.node);
+
+      DenseSet<int64_t> retainedIds;
+      for (const GroupState &state : bestGroup.equallyScoredStates) {
+        for (const PlannedFusionMember &candidateMember : state.members) {
+          if (candidateMember.node->id == member.node->id)
+            retainedIds.insert(candidateMember.version.id);
+        }
+      }
+
+      FailureOr<SmallVector<TileOpImplVersion, 4>> legalVersions =
+          getLegalImplVersions(*member.node);
+      if (failed(legalVersions))
+        return failure();
+      SmallVector<TileOpImplVersion, 4> &retainedVersions =
+          group.retainedVersions[member.node->id];
+      for (const TileOpImplVersion &version : *legalVersions)
+        if (retainedIds.contains(version.id))
+          retainedVersions.push_back(version);
+      if (retainedVersions.empty())
+        return failure();
+    }
     groups.push_back(std::move(group));
 
     for (const pto::FusionComputeNode *member : groups.back().members)
@@ -906,7 +1010,10 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
         signalPassFailure();
         return;
       }
-      assignStableGroupMetadata(*groups, ctx, nextGroupId);
+      if (failed(assignStableGroupMetadata(*groups, ctx, nextGroupId))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     // The fusion metadata we annotate (group_id/order) is a planning *output*;

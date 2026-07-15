@@ -19,8 +19,11 @@ The planner should:
 1. Read legal implementation versions for every plannable tile op.
 2. Enumerate valid versioned groups from each seed.
 3. Score every valid group with a cost model.
-4. Pick the best group for that seed.
-5. Insert the selected group into the final group list.
+4. Pick the best node group for that seed.
+5. Shrink each selected member's `candidates` list to the versions that
+   participate in an equally best-scoring assignment for that node group.
+6. Insert the selected group into the final group list. A downstream pass still
+   makes the final implementation-version choice from the narrowed lists.
 
 Implementation note: version-aware work now lives in the existing
 `PTOFusionPlan.cpp` pass. The public fusion-planning entry point remains
@@ -89,14 +92,14 @@ Current DAG greedy result:
 
 ## Target Planner Model
 
-The group must become version-aware:
+The search state must become version-aware:
 
 ```text
 PlannedFusionGroup
   members:
-    A : candidate version 0
-    B : candidate version 2
-    C : candidate version 1
+    A : retained candidate versions [0, 1]
+    B : retained candidate versions [2]
+    C : retained candidate versions [1, 3]
   cost:
     dependencyBenefit
     loopMergeBenefit
@@ -104,8 +107,9 @@ PlannedFusionGroup
     vfParameterPenalty
 ```
 
-This lets the planner distinguish groups with the same nodes but different
-implementations:
+During search, each state still contains one exact version per node. This lets
+the planner distinguish groups with the same nodes but different
+implementations, while retaining every tied best version for later selection:
 
 ```text
 Group candidate 1:
@@ -194,8 +198,8 @@ struct PlannedFusionMember {
 };
 
 struct PlannedFusionGroup {
-  SmallVector<PlannedFusionMember, 8> members;
-  PlanningCost cost;
+  SmallVector<const FusionComputeNode *, 8> members;
+  DenseMap<unsigned, SmallVector<TileOpImplVersion, 4>> retainedVersions;
 };
 ```
 
@@ -265,7 +269,9 @@ while frontier is not empty:
       if next.members.size >= 2:
         add next to validGroups
 
-best = chooseBest(validGroups)
+best = chooseBestNodeGroup(validGroups)
+equallyBest = all states with the best node set and best total cost
+retainedVersions = union versions per node across equallyBest
 ```
 
 The loop belongs inside the current first seed loop in `planBlockVersionAware`:
@@ -282,8 +288,10 @@ for seed in block.computeNodes:
 
   new:
     enumerate many versioned group states from this seed
-    choose the best state by cost
-    emit only that selected state
+    choose the best node group by cost
+    retain every version participating in an equally scored state for that
+      node group
+    emit the selected node group and narrowed candidate lists
 ```
 
 Concrete skeleton:
@@ -540,7 +548,8 @@ For each seed:
 ```text
 allGroups = enumerateGroupsForSeed(seed)
 best = min/max by cost model objective
-emit best
+equallyBest = states with the same node set and total cost as best
+emit best node group and the union of its equallyBest versions
 mark best node ids assigned
 ```
 
@@ -782,13 +791,17 @@ SmallVector<GroupState>
 
 containing every valid group with size >= 2.
 
-### Step 9: Choose the best group
+### Step 9: Choose the best node group and retain ties
 
 Add:
 
 ```text
 chooseBestGroup(ArrayRef<GroupState>)
 ```
+
+After selecting the winning node group, collect all states with that same node
+set and total score. For each member, retain the candidate versions appearing
+in any of those equally scored states. Versions with a lower score are removed.
 
 Initial tie-breakers:
 
@@ -808,14 +821,17 @@ pto.fusion.group_id
 pto.fusion.order
 ```
 
-Version choice needs its own metadata only when a later pass must consume it.
-Potential attr:
+FusionPlan narrows the existing `candidates` array but does not choose one final
+version. Candidate order remains stable, so later passes can apply their own
+selection policy to the surviving candidates. A separate version attribute is
+needed only if a later pass must record one final choice. Potential attr:
 
 ```text
 pto.fusion.impl_version = candidate id
 ```
 
-Do not add this until a downstream pass needs it.
+Do not add this until a downstream pass makes and needs to record that final
+choice.
 
 ### Step 11: Tests
 
@@ -823,7 +839,8 @@ Add focused tests:
 
 ```text
 1. Missing candidates uses default version and preserves existing grouping.
-2. Multiple candidates produce deterministic selected version.
+2. Equally scored candidates are retained deterministically while lower-scored
+   candidates are removed.
 3. 1D-compatible chain prefers 1D versions.
 4. Mixed incompatible versions are rejected or penalized.
 5. Non-terminal group can beat a larger terminal group.
@@ -834,7 +851,7 @@ Add focused tests:
 ## Open Questions
 
 1. Should missing `candidates` mean default version or no fusion?
-2. Which pass consumes the selected version?
+2. Which downstream pass makes the final choice among retained versions?
 3. Should version id be written as an IR attr immediately?
 4. Is the objective maximum benefit or minimum estimated runtime?
 5. Which version constraints are hard legality and which are soft cost terms?
@@ -858,8 +875,9 @@ FusionPlan
   for each seed:
     enumerate versioned group states
     score every valid state
-    choose best state
-    emit group_id/order
+    choose best node group
+    retain all equally best candidate versions
+    emit group_id/order and narrowed candidates
         |
         v
 OpScheduling

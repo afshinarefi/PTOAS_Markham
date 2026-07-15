@@ -269,6 +269,11 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
     accepted group members with:
       - pto.fusion.group_id
       - pto.fusion.order
+
+    When template candidate metadata is present, the pass evaluates versioned
+    group states and narrows each accepted member's `candidates` list to the
+    versions participating in equally best-scoring states for the selected node
+    group. It leaves the final version choice to downstream passes.
   }];
   let constructor = "mlir::pto::createFusionPlanPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
