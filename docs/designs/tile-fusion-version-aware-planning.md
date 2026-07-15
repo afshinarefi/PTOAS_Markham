@@ -22,13 +22,9 @@ The planner should:
 4. Pick the best group for that seed.
 5. Insert the selected group into the final group list.
 
-Implementation note: the existing `PTOFusionPlan.cpp` pass stays as the
-node-only baseline. Version-aware work should live in the separate
-`PTOVersionAwareFusionPlan.cpp` pass registered as:
-
-```text
-pto-version-aware-fusion-plan
-```
+Implementation note: version-aware work now lives in the existing
+`PTOFusionPlan.cpp` pass. The public fusion-planning entry point remains
+`pto-fusion-plan`.
 
 This design intentionally preserves the current block-local greedy assignment:
 after a selected group is emitted, its compute nodes are marked assigned and
@@ -36,11 +32,11 @@ cannot participate in later seed groups.
 
 ## Current Planner
 
-The active planner uses:
+The previous node-only planner used:
 
 ```text
-ConservativeDAGGreedyCostModel
-ConservativeDAGGreedyStrategyEngine
+ConservativeDAGCostModel
+planBlockVersionAware
 ```
 
 The current group shape is logically:
@@ -272,8 +268,7 @@ while frontier is not empty:
 best = chooseBest(validGroups)
 ```
 
-The loop belongs inside the current first seed loop in
-`ConservativeDAGGreedyStrategyEngine::planBlock`:
+The loop belongs inside the current first seed loop in `planBlockVersionAware`:
 
 ```text
 for seed in block.computeNodes:

@@ -406,8 +406,8 @@ domain classes、做出融合决策的 pass。`PTOFusionRegionGen` 只消费 `Fu
 
 **核心逻辑与约束。**
 - **当前策略**：
-  - `ConservativeDAGGreedyStrategyEngine`
-  - `ConservativeDAGGreedyCostModel`
+  - `planBlockVersionAware`
+  - `ConservativeDAGCostModel`
 - **可规划 op 子集**（比 §5.1 中可分析的 compute family 更窄）：
   - `tadd/tsub/tmul/tdiv/tmax/tmin`
   - `tadds/tsubs/tmuls/tdivs/tmaxs/tmins`
@@ -649,7 +649,7 @@ domain classes、做出融合决策的 pass。`PTOFusionRegionGen` 只消费 `Fu
 ## 6. 关键算法
 
 - **预分析驱动的 block-local DFG 建模**：在 `tile_buf` 世界内提取 compute/local-boundary/hard-boundary 分类、value liveness 和 write escape class，作为所有后续决策的统一依据。
-- **保守 DAG 贪心规划**：当前默认策略是 `ConservativeDAGGreedyStrategyEngine + ConservativeDAGGreedyCostModel`，非开放式插件系统。
+- **保守 DAG 版本感知规划**：当前默认策略是 `planBlockVersionAware + ConservativeDAGCostModel`，枚举 block-local dataflow 候选组和 TileOp 版本候选，非开放式插件系统。
 - **Span 压缩调度**：通过 barrier 分类与双向移动规则，将离散 group 压成连续 span，同时维持 SSA 和 boundary 合法性。
 - **Post-lowering stage matcher**：`PTOLowLevelLoopFusion` 在 `scf.for + memref/pto.v*` VPTO 层匹配同头循环和可重排 prelude，执行保守的相邻 stage 融合。
 - **Frontier-aware cleanup**：`PTOFusionPredicateElision` 和 `PTOFusionLoadStoreElision` 都依赖 fusion-region frontier，避免把仍需对外可见的值错误消除。

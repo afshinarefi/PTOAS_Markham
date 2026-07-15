@@ -262,10 +262,11 @@ def PrintPreFusionAnalysis
 }
 
 def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
-  let summary = "Build conservative tile-fusion planning groups from block-local analysis";
+  let summary = "Build conservative version-aware tile-fusion planning groups from block-local analysis";
   let description = [{
     Consumes PreFusionAnalysis results, forms conservative block-local fusion
-    groups for currently supported tile-native compute ops, and annotates
+    groups for currently supported tile-native compute ops, compares alternate
+    dataflow-connected groups and TileOp implementation versions, and annotates
     accepted group members with:
       - pto.fusion.group_id
       - pto.fusion.order
@@ -281,29 +282,6 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
            "FusionRegionGen consumes only the shared pre-fusion dataflow graph "
            "(cached by the analysis manager) and never consults iteration-domain "
            "classes, so it does not need the option.">
-  ];
-}
-
-def VersionAwareFusionPlan
-    : Pass<"pto-version-aware-fusion-plan", "func::FuncOp"> {
-  let summary = "Build version-aware tile-fusion planning groups from block-local analysis";
-  let description = [{
-    Consumes PreFusionAnalysis results, forms conservative block-local fusion
-    groups for currently supported tile-native compute ops, reads TileOp
-    implementation candidates from the candidates attribute, and annotates
-    accepted group members with:
-      - pto.fusion.group_id
-      - pto.fusion.order
-  }];
-  let constructor = "mlir::pto::createVersionAwareFusionPlanPass()";
-  let dependentDialects = ["mlir::pto::PTODialect"];
-  let options = [
-    Option<"enableShapeInference", "enable-shape-inference",
-           "bool", /*default=*/"false",
-           "Enable shape inference (ShapeConstraintSolver) for tile fusion. "
-           "When disabled (default), fall back to static/direct-bound "
-           "iteration-domain inference.  VersionAwareFusionPlan consumes this "
-           "option for the same iteration-domain inference step as FusionPlan.">
   ];
 }
 
