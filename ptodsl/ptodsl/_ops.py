@@ -4200,8 +4200,7 @@ def mte_store(
     *,
     nburst,
     loops=None,
-    l2cache="nmfv",
-    l2_cache_ctl=None,
+    l2_cache="nmfv",
 ):
     """Ptr-based UB->GM DMA wrapper aligned with the underlying ``pto.dma_store`` surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
@@ -4224,11 +4223,7 @@ def mte_store(
         loop_src_strides,
         loop_dst_strides,
         l2_cache_ctl=_coerce_i64(
-            _normalize_mte_store_l2_cache_control(
-                l2cache,
-                l2_cache_ctl=l2_cache_ctl,
-                context="mte_store(...) l2cache",
-            ),
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_store(...) l2_cache"),
             context="mte_store l2 cache control",
         ),
     )
@@ -4327,8 +4322,7 @@ def mte_ub_gm(
     *,
     nburst,
     loops=None,
-    l2cache="nmfv",
-    l2_cache_ctl=None,
+    l2_cache="nmfv",
 ):
     """``pto.mte_ub_gm`` – grouped UB-to-GM DMA surface."""
     n_burst, nburst_src_stride, nburst_dst_stride = _normalize_dma_group(
@@ -4351,11 +4345,7 @@ def mte_ub_gm(
         loop_src_strides,
         loop_dst_strides,
         l2_cache_ctl=_coerce_i64(
-            _normalize_mte_store_l2_cache_control(
-                l2cache,
-                l2_cache_ctl=l2_cache_ctl,
-                context="mte_ub_gm(...) l2cache",
-            ),
+            _normalize_mte_store_l2_cache(l2_cache, context="mte_ub_gm(...) l2_cache"),
             context="mte_ub_gm l2 cache control",
         ),
     )
@@ -5065,15 +5055,11 @@ def _st_l2_cache_attr(value, *, context: str):
     return _simt_enum_attr("st_l2cache", value, supported=_ST_L2_CACHE_TOKENS, context=context)
 
 
-def _normalize_mte_store_l2_cache_control(l2cache, *, l2_cache_ctl, context: str):
-    token = _normalize_token(l2cache, context=context)
+def _normalize_mte_store_l2_cache(l2_cache, *, context: str):
+    token = _normalize_token(l2_cache, context=context)
     if token not in _ST_L2_CACHE_CONTROL_VALUES:
         expected = ", ".join(sorted(_ST_L2_CACHE_CONTROL_VALUES))
-        raise ValueError(f"{context} does not support {l2cache!r}; expected one of {expected}")
-    if l2_cache_ctl is not None:
-        if token != "nmfv":
-            raise TypeError(f"{context} cannot be combined with l2_cache_ctl")
-        return l2_cache_ctl
+        raise ValueError(f"{context} does not support {l2_cache!r}; expected one of {expected}")
     return _ST_L2_CACHE_CONTROL_VALUES[token]
 
 

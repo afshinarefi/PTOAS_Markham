@@ -388,7 +388,7 @@ pto.mte_gm_ub(
 )
 ```
 
-#### `pto.mte_ub_gm(ub_src, gm_dst, len_burst, *, nburst, loops=None, l2cache="nmfv", l2_cache_ctl=None) -> None`  [Advanced Tier]
+#### `pto.mte_ub_gm(ub_src, gm_dst, len_burst, *, nburst, loops=None, l2_cache="nmfv") -> None`  [Advanced Tier]
 
 **Description**: Grouped UB→GM DMA transfer.
 
@@ -400,12 +400,7 @@ pto.mte_gm_ub(
 | `len_burst` | `pto.i64` | Bytes transferred per burst row |
 | `nburst` | `tuple[i64, i64, i64]` | Required burst triple `(count, src_stride, dst_stride)` |
 | `loops` | `tuple[tuple[i64, i64, i64], ...] \| None` | Optional outer loop triples from inner to outer |
-| `l2cache` | `str` | Store-side L2 cache policy. Defaults to `"nmfv"` |
-| `l2_cache_ctl` | `pto.i64` | Compatibility interface for a raw control value; cannot be combined with `l2cache` |
-
-`l2cache` accepts `nmfv`, `nmlv`, `nmprs`, `nmred`, `naci`, `napw`, `napi`,
-`nared`, `wbhfv`, `wbhlv`, `wbhprs`, `wbhred`, `wtsfv`, `wtslv`, `wtsprs`,
-and `wtsred`, mapped to raw values `0` through `15`.
+| `l2_cache` | `str` | Store-side L2 cache policy token. Defaults to `"nmfv"` (raw control `0`); supported tokens are `"nmfv"`, `"nmlv"`, `"nmprs"`, `"nmred"`, `"naci"`, `"napw"`, `"napi"`, `"nared"`, `"wbhfv"`, `"wbhlv"`, `"wbhprs"`, `"wbhred"`, `"wtsfv"`, `"wtslv"`, `"wtsprs"`, and `"wtsred"` |
 
 **Example**:
 ```python
@@ -414,7 +409,7 @@ pto.mte_ub_gm(
     gm_ptr,
     128,
     nburst=(32, 128, 128),
-    l2cache="nmfv",
+    l2_cache="nmfv",
 )
 ```
 

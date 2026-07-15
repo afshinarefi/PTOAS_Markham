@@ -4251,31 +4251,26 @@ class _SemanticAnalyzer:
         dst = self._require_pointer_expr(args[1], "pto.mte_ub_gm destination", memory_space="gm")
         self._require_matching_pointer_element_dtypes(src, dst, "pto.mte_ub_gm")
         self._require_i64_like_expr(args[2], "pto.mte_ub_gm len_burst")
-        allowed_keywords = {"nburst", "loops", "l2cache", "l2_cache_ctl"}
+        allowed_keywords = {"nburst", "loops", "l2_cache"}
         unsupported = sorted(set(keywords) - allowed_keywords)
         if unsupported:
             raise TypeError(
-                "pto.mte_ub_gm only accepts keyword(s) nburst, loops, l2cache, l2_cache_ctl in TileLang DSL v1; "
+                "pto.mte_ub_gm only accepts keyword(s) nburst, loops, l2_cache in TileLang DSL v1; "
                 f"got unsupported keyword(s): {', '.join(unsupported)}"
             )
-        if "l2cache" in keywords and "l2_cache_ctl" in keywords:
-            raise TypeError("pto.mte_ub_gm accepts either l2cache or l2_cache_ctl, not both")
-        if "l2cache" in keywords:
-            l2cache = self._require_string_expr(keywords["l2cache"], "pto.mte_ub_gm l2cache").strip().lower()
-            if l2cache not in _MTE_STORE_L2_CACHE_CONTROL_VALUES:
+        if "l2_cache" in keywords:
+            l2_cache = self._require_string_expr(keywords["l2_cache"], "pto.mte_ub_gm l2_cache").strip().lower()
+            if l2_cache not in _MTE_STORE_L2_CACHE_CONTROL_VALUES:
                 expected = ", ".join(sorted(_MTE_STORE_L2_CACHE_CONTROL_VALUES))
                 raise ValueError(
-                    f"pto.mte_ub_gm l2cache does not support {l2cache!r}; expected one of {expected}"
+                    f"pto.mte_ub_gm l2_cache does not support {l2_cache!r}; expected one of {expected}"
                 )
             l2_cache_ctl = SemanticLiteralExpr(
-                value=_MTE_STORE_L2_CACHE_CONTROL_VALUES[l2cache],
+                value=_MTE_STORE_L2_CACHE_CONTROL_VALUES[l2_cache],
                 type=SemanticScalarType(dtype=ScalarType("i64")),
             )
         else:
-            l2_cache_ctl = keywords.get(
-                "l2_cache_ctl",
-                SemanticLiteralExpr(value=0, type=SemanticScalarType(dtype=ScalarType("i64"))),
-            )
+            l2_cache_ctl = SemanticLiteralExpr(value=0, type=SemanticScalarType(dtype=ScalarType("i64")))
         self._require_i64_like_expr(l2_cache_ctl, "pto.mte_ub_gm l2_cache_ctl")
         nburst_expr = self._require_grouped_mte_nburst(keywords, "pto.mte_ub_gm")
         loops_expr = self._normalize_cube_loop_groups(keywords.get("loops"), "pto.mte_ub_gm loops")
