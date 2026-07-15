@@ -111,6 +111,10 @@ struct GroupState {
 // FusionPlan uses exact versions in its search states, then narrows each chosen
 // group member's candidates to the versions appearing in equally scored best
 // states. A downstream pass still makes the final choice from that list.
+
+// IMPORTANT: Keep this initial version-trait model intentionally small: it is sufficient
+// to exercise version-aware planning in this change and can be extended as more
+// version metadata and compatibility rules become available.
 static PlanningCost
 computeVersionTraitCost(ArrayRef<PlannedFusionMember> members) {
   static constexpr int64_t kAllOneDimensionalBenefit = 3;
