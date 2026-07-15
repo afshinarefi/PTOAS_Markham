@@ -652,7 +652,7 @@ enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
   // selected implementation version for each node, so the same node set can be
   // scored multiple ways when TileOp template candidates differ.
   while (!frontier.empty()) {
-    GroupState state = std::move(frontier.pop_back_val());
+    GroupState state = frontier.pop_back_val();
     for (const pto::FusionComputeNode &candidate :
          ctx.blockAnalysis.computeNodes) {
       if (assignedNodes.contains(candidate.id) || state.contains(candidate))
