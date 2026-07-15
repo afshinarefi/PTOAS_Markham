@@ -1,0 +1,50 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Guards version-aware FusionPlan scoring. The sixth op is dataflow-connected
+// and individually appendable, but its tail/postupdate 2D implementation makes
+// the five-op all-1D group the better scored fusion group.
+//
+// RUN: ptoas --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-plan -o /dev/null 2>&1 | FileCheck %s
+
+module {
+  func.func @fusion_plan_version_score_skips_bad_extension(
+      %arg0: !pto.tile_buf<vec, 32x32xf32>,
+      %arg1: !pto.tile_buf<vec, 32x32xf32>,
+      %arg2: !pto.tile_buf<vec, 32x32xf32>,
+      %arg3: !pto.tile_buf<vec, 32x32xf32>,
+      %arg4: !pto.tile_buf<vec, 32x32xf32>,
+      %arg5: !pto.tile_buf<vec, 32x32xf32>,
+      %arg6: !pto.tile_buf<vec, 32x32xf32>) {
+    %tmp0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp2 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp3 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp4 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %tmp5 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%arg0, %arg1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 0 : i64, loop_depth = 1 : i64, name = "1d", postupdate = 0 : i64, tail = 0 : i64}]}
+    pto.tadd ins(%tmp0, %arg2 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 0 : i64, loop_depth = 1 : i64, name = "1d", postupdate = 0 : i64, tail = 0 : i64}]}
+    pto.tadd ins(%tmp1, %arg3 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp2 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 0 : i64, loop_depth = 1 : i64, name = "1d", postupdate = 0 : i64, tail = 0 : i64}]}
+    pto.tadd ins(%tmp2, %arg4 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp3 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 0 : i64, loop_depth = 1 : i64, name = "1d", postupdate = 0 : i64, tail = 0 : i64}]}
+    pto.tadd ins(%tmp3, %arg5 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp4 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 0 : i64, loop_depth = 1 : i64, name = "1d", postupdate = 0 : i64, tail = 0 : i64}]}
+    pto.tadd ins(%tmp4, %arg6 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp5 : !pto.tile_buf<vec, 32x32xf32>) {candidates = [{id = 1 : i64, loop_depth = 2 : i64, name = "2d_tail_post", postupdate = 1 : i64, tail = 1 : i64}]}
+    return
+  }
+}
+
+// CHECK: // -----// IR Dump After FusionPlan (pto-fusion-plan) //----- //
+// CHECK-LABEL: func.func @fusion_plan_version_score_skips_bad_extension(
+// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}pto.fusion.order = 0 : i64
+// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}pto.fusion.order = 1 : i64
+// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}pto.fusion.order = 2 : i64
+// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}pto.fusion.order = 3 : i64
+// CHECK: pto.tadd{{.*}}pto.fusion.group_id = 0 : i64{{.*}}pto.fusion.order = 4 : i64
+// CHECK: pto.tadd ins(%{{.*}}, %arg6
+// CHECK-NOT: pto.fusion.group_id
+// CHECK: return
