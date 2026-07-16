@@ -311,7 +311,8 @@ shrinkTemplateCandidates(const PlannedFusionGroup &group,
     auto candidate = dyn_cast<DictionaryAttr>(candidateAttr);
     if (!candidate)
       return failure();
-    auto id = candidate.getAs<IntegerAttr>(pto::kTemplateCandidateIdAttr);
+    auto id = dyn_cast_or_null<IntegerAttr>(
+        candidate.get(pto::kTemplateCandidateIdAttr));
     if (!id)
       return failure();
     if (retainedIds.contains(id.getInt()))
