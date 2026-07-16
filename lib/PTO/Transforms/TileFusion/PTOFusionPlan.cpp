@@ -49,6 +49,8 @@ static constexpr llvm::StringLiteral kFusionGroupIdAttr =
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 
 using TileOpImplVersion = pto::TemplateCandidateMetadata;
+using LegalImplVersionCache =
+    DenseMap<unsigned, SmallVector<TileOpImplVersion, 4>>;
 
 struct PlannedFusionGroup {
   SmallVector<const pto::FusionComputeNode *, 8> members;
@@ -409,16 +411,27 @@ getLegalImplVersions(const pto::FusionComputeNode &node) {
   return versions;
 }
 
-static FailureOr<SmallVector<GroupState, 4>>
-createSeedStates(const pto::FusionComputeNode &seed) {
-  FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
-      getLegalImplVersions(seed);
-  if (failed(versions))
-    return failure();
+static FailureOr<LegalImplVersionCache>
+cacheLegalImplVersions(const PlanningContext &ctx) {
+  LegalImplVersionCache cachedVersions;
+  cachedVersions.reserve(ctx.blockAnalysis.computeNodes.size());
+  for (const pto::FusionComputeNode &node :
+       ctx.blockAnalysis.computeNodes) {
+    FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
+        getLegalImplVersions(node);
+    if (failed(versions))
+      return failure();
+    cachedVersions.try_emplace(node.id, std::move(*versions));
+  }
+  return cachedVersions;
+}
 
+static SmallVector<GroupState, 4>
+createSeedStates(const pto::FusionComputeNode &seed,
+                 ArrayRef<TileOpImplVersion> versions) {
   SmallVector<GroupState, 4> states;
-  states.reserve(versions->size());
-  for (const TileOpImplVersion &version : *versions) {
+  states.reserve(versions.size());
+  for (const TileOpImplVersion &version : versions) {
     GroupState state;
     state.append(PlannedFusionMember{&seed, version});
     states.push_back(std::move(state));
@@ -637,13 +650,16 @@ static FailureOr<SmallVector<GroupState, 16>>
 enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
                                  const CostModel &costModel,
                                  const pto::FusionComputeNode &seed,
-                                 const DenseSet<unsigned> &assignedNodes) {
-  FailureOr<SmallVector<GroupState, 4>> seedStates = createSeedStates(seed);
-  if (failed(seedStates))
+                                 const DenseSet<unsigned> &assignedNodes,
+                                 const LegalImplVersionCache &cachedVersions) {
+  auto seedVersions = cachedVersions.find(seed.id);
+  if (seedVersions == cachedVersions.end())
     return failure();
 
+  SmallVector<GroupState, 4> seedStates =
+      createSeedStates(seed, seedVersions->second);
   SmallVector<GroupState, 16> validStates;
-  SmallVector<GroupState, 16> frontier(seedStates->begin(), seedStates->end());
+  SmallVector<GroupState, 16> frontier(seedStates.begin(), seedStates.end());
   std::set<std::string> seenStates;
   for (const GroupState &state : frontier)
     seenStates.insert(getStateSignature(state));
@@ -659,12 +675,11 @@ enumerateVersionedStatesFromSeed(const PlanningContext &ctx,
       if (assignedNodes.contains(candidate.id) || state.contains(candidate))
         continue;
 
-      FailureOr<SmallVector<TileOpImplVersion, 4>> versions =
-          getLegalImplVersions(candidate);
-      if (failed(versions))
+      auto candidateVersions = cachedVersions.find(candidate.id);
+      if (candidateVersions == cachedVersions.end())
         return failure();
 
-      for (const TileOpImplVersion &version : *versions) {
+      for (const TileOpImplVersion &version : candidateVersions->second) {
         FailureOr<std::optional<GroupState>> maybeNextState =
             tryAppendVersionedCandidate(ctx, costModel, state, candidate,
                                         version);
@@ -706,9 +721,11 @@ static FailureOr<std::optional<BestVersionedGroup>>
 findBestVersionedGroupForSeed(const PlanningContext &ctx,
                               const CostModel &costModel,
                               const pto::FusionComputeNode &seed,
-                              const DenseSet<unsigned> &assignedNodes) {
+                              const DenseSet<unsigned> &assignedNodes,
+                              const LegalImplVersionCache &cachedVersions) {
   FailureOr<SmallVector<GroupState, 16>> states =
-      enumerateVersionedStatesFromSeed(ctx, costModel, seed, assignedNodes);
+      enumerateVersionedStatesFromSeed(ctx, costModel, seed, assignedNodes,
+                                       cachedVersions);
   if (failed(states))
     return failure();
 
@@ -910,6 +927,11 @@ public:
 
 static FailureOr<SmallVector<PlannedFusionGroup, 8>>
 planBlockVersionAware(const PlanningContext &ctx, const CostModel &costModel) {
+  FailureOr<LegalImplVersionCache> cachedVersions =
+      cacheLegalImplVersions(ctx);
+  if (failed(cachedVersions))
+    return failure();
+
   SmallVector<PlannedFusionGroup, 8> groups;
   DenseSet<unsigned> assignedNodes;
 
@@ -922,7 +944,8 @@ planBlockVersionAware(const PlanningContext &ctx, const CostModel &costModel) {
       continue;
 
     FailureOr<std::optional<BestVersionedGroup>> maybeBestGroup =
-        findBestVersionedGroupForSeed(ctx, costModel, seed, assignedNodes);
+        findBestVersionedGroupForSeed(ctx, costModel, seed, assignedNodes,
+                                      *cachedVersions);
     if (failed(maybeBestGroup))
       return failure();
     if (!*maybeBestGroup)
@@ -942,13 +965,12 @@ planBlockVersionAware(const PlanningContext &ctx, const CostModel &costModel) {
         }
       }
 
-      FailureOr<SmallVector<TileOpImplVersion, 4>> legalVersions =
-          getLegalImplVersions(*member.node);
-      if (failed(legalVersions))
+      auto legalVersions = cachedVersions->find(member.node->id);
+      if (legalVersions == cachedVersions->end())
         return failure();
       SmallVector<TileOpImplVersion, 4> &retainedVersions =
           group.retainedVersions[member.node->id];
-      for (const TileOpImplVersion &version : *legalVersions)
+      for (const TileOpImplVersion &version : legalVersions->second)
         if (retainedIds.contains(version.id))
           retainedVersions.push_back(version);
       if (retainedVersions.empty())
