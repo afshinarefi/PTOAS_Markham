@@ -366,7 +366,7 @@ private:
   void processForOp(scf::ForOp forOp, OpBuilder &builder) {
     SmallVector<PostUpdateRewrite> rewrites;
 
-    for (Operation &op : llvm::make_early_inc_range(*forOp.getBody())) {
+    for (Operation &op : *forOp.getBody()) {
       if (!isPostUpdateCandidate(&op))
         continue;
       if (isAlreadyPostUpdate(&op))
