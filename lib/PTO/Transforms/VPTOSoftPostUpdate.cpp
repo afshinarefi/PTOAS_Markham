@@ -29,62 +29,48 @@ using namespace mlir;
 
 namespace {
 
-// Candidate op info collected during traversal.
-struct PostUpdateCandidate {
-  Operation *op;
-  Value base;
-  Value offset;
-  scf::ForOp forOp; // null if not inside scf.for
+// Per-op-type descriptor: how to extract address operands and check post-update.
+// base/strideOperand indices are operand positions; updatedBaseResultIdx is the
+// result index for updated_base (or -1 if no such result exists).
+struct PostUpdateOpInfo {
+  int baseOperandIdx;
+  int strideOperandIdx;
+  int64_t weight;              // 1 for standard, 32 for block-stride
+  unsigned minResultsForPost;  // numResults > this means already post-update
 };
 
-// Return the set of operation names eligible for post-update conversion.
-static const DenseSet<StringRef> &getPostUpdateSet() {
-  static const DenseSet<StringRef> set = {
-      "pto.vlds",
-      "pto.vsts",
-      "pto.vsstb",
-  };
-  return set;
+using PostUpdateTable = llvm::StringMap<PostUpdateOpInfo>;
+
+static const PostUpdateTable &getPostUpdateTable() {
+  static const PostUpdateTable table = [] {
+    PostUpdateTable t;
+    //                       base  strideOp  weight  minResultsForPost
+    t["pto.vlds"]         = { 0,    1,        1,      1 };
+    t["pto.vsts"]         = { 1,    2,        1,      0 };
+    t["pto.vsstb"]        = { 1,    3,        32,     0 };
+    return t;
+  }();
+  return table;
 }
 
-// Check if an operation is a post-update candidate.
-static bool isPostUpdateCandidate(Operation *op) {
-  return getPostUpdateSet().contains(op->getName().getStringRef());
+static const PostUpdateOpInfo *getPostUpdateInfo(Operation *op) {
+  auto it = getPostUpdateTable().find(op->getName().getStringRef());
+  if (it == getPostUpdateTable().end())
+    return nullptr;
+  return &it->second;
 }
 
-// Extract base and offset operands from a candidate op.
-// Returns false if the op structure is not recognized.
-static bool extractBaseAndOffset(Operation *op, Value &base, Value &offset) {
-  if (auto vlds = dyn_cast<pto::VldsOp>(op)) {
-    base = vlds.getSource();
-    offset = vlds.getOffset();
-    return true;
-  }
-  if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
-    base = vsts.getDestination();
-    offset = vsts.getOffset();
-    return true;
-  }
-  if (auto vsstb = dyn_cast<pto::VsstbOp>(op)) {
-    base = vsstb.getDestination();
-    // vsstb uses block_stride/repeat_stride, not a single offset.
-    // For delta analysis, treat the base as the varying part.
-    // offset is not directly applicable; set to null.
-    offset = Value();
-    return true;
-  }
-  return false;
+// Extract base and stride operand from a candidate op using table info.
+static void extractBaseAndStrideOperand(Operation *op,
+                                        const PostUpdateOpInfo &info,
+                                        Value &base, Value &strideOperand) {
+  base = op->getOperand(info.baseOperandIdx);
+  strideOperand = op->getOperand(info.strideOperandIdx);
 }
 
-// Check if a value has an updated_base result (already post-update).
-static bool isAlreadyPostUpdate(Operation *op) {
-  if (auto vlds = dyn_cast<pto::VldsOp>(op))
-    return static_cast<bool>(vlds.getUpdatedBase());
-  if (auto vsts = dyn_cast<pto::VstsOp>(op))
-    return static_cast<bool>(vsts.getUpdatedBase());
-  if (auto vsstb = dyn_cast<pto::VsstbOp>(op))
-    return static_cast<bool>(vsstb.getUpdatedBase());
-  return false;
+// Check if op already has an updated_base result.
+static bool isAlreadyPostUpdate(Operation *op, const PostUpdateOpInfo &info) {
+  return op->getNumResults() > info.minResultsForPost;
 }
 
 // Check if op is directly inside the scf.for body (not nested in scf.if etc).
@@ -237,35 +223,41 @@ static Value materializeAtLoopEntry(Value v, scf::ForOp forOp,
   return cloned->getResult(0);
 }
 
-// Compute the initial pointer for a post-update rewrite: base + offset_at_iter0.
-// For post-update, the op loads/stores from the pointer directly (offset is
-// repurposed as the stride), so the initial pointer must equal the first
-// iteration's effective address.
-static Value computeInitialPtr(Value base, Value offset, scf::ForOp forOp,
+// Compute the initial pointer: base + weight * strideOperand_at_iter0.
+// weight=1 for vlds/vsts (offset in elements), weight=32 for vsstb/vsldb.
+static Value computeInitialPtr(Value base, Value strideOperand,
+                               int64_t weight, scf::ForOp forOp,
                                OpBuilder &builder) {
-  if (!offset)
+  if (!strideOperand)
     return base;
 
-  Value offsetAtEntry = materializeAtLoopEntry(offset, forOp, builder);
-  if (!offsetAtEntry)
+  Value soAtEntry = materializeAtLoopEntry(strideOperand, forOp, builder);
+  if (!soAtEntry)
     return nullptr;
 
-  // If initial offset is known to be zero, just use base.
-  if (auto constVal = getConstantIntValue(offsetAtEntry);
+  if (auto constVal = getConstantIntValue(soAtEntry);
       constVal && *constVal == 0)
     return base;
 
   builder.setInsertionPoint(forOp);
-  return builder.create<pto::AddPtrOp>(forOp.getLoc(), base, offsetAtEntry);
+  Value scaledOffset = soAtEntry;
+  if (weight != 1) {
+    Value soIndex = builder.create<arith::IndexCastUIOp>(
+        forOp.getLoc(), builder.getIndexType(), soAtEntry);
+    Value weightVal =
+        builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
+    scaledOffset =
+        builder.create<arith::MulIOp>(forOp.getLoc(), soIndex, weightVal);
+  }
+  return builder.create<pto::AddPtrOp>(forOp.getLoc(), base, scaledOffset);
 }
 
 // Information about a post-update transformation to apply.
 struct PostUpdateRewrite {
   Operation *op;
   Value base;
-  Value offset;
-  Value stride;  // loop-invariant stride value
-  Value initPtr; // base + offset_at_iter0
+  Value stride;  // loop-invariant stride value (stride_new for block-stride ops)
+  Value initPtr; // base + weight * strideOperand_at_iter0
 };
 
 // A unique key for grouping rewrites that can share an iter_arg.
@@ -279,7 +271,8 @@ static IterArgGroupKey getGroupKey(const PostUpdateRewrite &rw) {
 // Apply post-update rewrites to a single scf.for.
 // Returns the new ForOp if any rewrites were applied, null otherwise.
 static scf::ForOp applyPostUpdateRewrites(
-    scf::ForOp forOp, ArrayRef<PostUpdateRewrite> rewrites, OpBuilder &builder) {
+    scf::ForOp forOp, ArrayRef<PostUpdateRewrite> rewrites,
+    OpBuilder &builder) {
   if (rewrites.empty())
     return nullptr;
 
@@ -345,36 +338,39 @@ static scf::ForOp applyPostUpdateRewrites(
     Operation *clonedOp = it->second;
     unsigned gIdx = rwGroupIdx[rwIdx];
     Value ptr = newBody->getArgument(origIterArgCount + 1 + gIdx);
-    Value stride = mapping.lookupOrDefault(rw.stride);
+    Value strideNew = mapping.lookupOrDefault(rw.stride);
 
     builder.setInsertionPoint(clonedOp);
 
-    if (auto vlds = dyn_cast<pto::VldsOp>(clonedOp)) {
-      auto newVlds = builder.create<pto::VldsOp>(
-          vlds.getLoc(),
-          /*result=*/vlds.getResult().getType(),
-          /*updated_base=*/ptr.getType(),
-          /*source=*/ptr,
-          /*offset=*/stride,
-          /*dist=*/vlds.getDistAttr());
-      vlds.getResult().replaceAllUsesWith(newVlds.getResult());
-      groupYieldPtrs[gIdx] = newVlds.getUpdatedBase();
-      clonedOp->erase();
-    } else if (auto vsts = dyn_cast<pto::VstsOp>(clonedOp)) {
-      Value value = vsts.getValue();
-      Value mask = vsts.getMask();
-      auto newVsts = builder.create<pto::VstsOp>(
-          vsts.getLoc(),
-          /*updated_base=*/ptr.getType(),
-          /*value=*/value,
-          /*destination=*/ptr,
-          /*offset=*/stride,
-          /*dist=*/vsts.getDistAttr(),
-          /*mask=*/mask);
-      groupYieldPtrs[gIdx] = newVsts.getUpdatedBase();
-      clonedOp->erase();
+    const PostUpdateOpInfo *info = getPostUpdateInfo(clonedOp);
+    if (!info)
+      continue;
+
+    // Build the post-update op generically: replace base and strideOperand,
+    // keep all other operands, append updated_base to result types.
+    OperationState state(clonedOp->getLoc(), clonedOp->getName());
+    for (auto [i, operand] : llvm::enumerate(clonedOp->getOperands())) {
+      if (static_cast<int>(i) == info->baseOperandIdx)
+        state.addOperands(ptr);
+      else if (static_cast<int>(i) == info->strideOperandIdx)
+        state.addOperands(strideNew);
+      else
+        state.addOperands(operand);
     }
-    // TODO: handle vsstb
+    for (Type t : clonedOp->getResultTypes())
+      state.addTypes(t);
+    state.addTypes(ptr.getType()); // updated_base (appended last)
+    state.addAttributes(clonedOp->getAttrs());
+
+    Operation *newOp = builder.create(state);
+
+    // Replace old results with new (original results at same indices).
+    for (unsigned r = 0; r < clonedOp->getNumResults(); ++r)
+      clonedOp->getResult(r).replaceAllUsesWith(newOp->getResult(r));
+
+    // updated_base is the last result.
+    groupYieldPtrs[gIdx] = newOp->getResult(newOp->getNumResults() - 1);
+    clonedOp->erase();
   }
 
   // Build yield: original yields + one pointer per group.
@@ -431,62 +427,99 @@ private:
     SmallVector<PostUpdateRewrite> rewrites;
 
     for (Operation &op : *forOp.getBody()) {
-      if (!isPostUpdateCandidate(&op))
+      const PostUpdateOpInfo *info = getPostUpdateInfo(&op);
+      if (!info)
         continue;
-      if (isAlreadyPostUpdate(&op))
+      if (isAlreadyPostUpdate(&op, *info))
         continue;
       if (!isDirectlyInForBody(&op, forOp))
         continue;
 
-      Value base, offset;
-      if (!extractBaseAndOffset(&op, base, offset))
-        continue;
-
-      // Skip vsstb for now (needs special stride handling).
-      if (isa<pto::VsstbOp>(&op))
-        continue;
+      Value base, strideOperand;
+      extractBaseAndStrideOperand(&op, *info, base, strideOperand);
 
       // Delta analysis.
       Value deltaBase = computeDelta(base, forOp, builder);
-      Value deltaOffset = offset ? computeDelta(offset, forOp, builder)
-                                 : nullptr;
+      Value deltaOffset = computeDelta(strideOperand, forOp, builder);
 
       if (!deltaBase && !deltaOffset)
         continue;
 
-      // Compute stride = delta(base) + delta(offset).
+      // Compute stride = delta(base) + weight * delta(strideOperand).
+      // For vlds/vsts (weight=1): stride = delta(base) + delta(offset).
+      // For vsstb (weight=32): stride = delta(dest) + 32*delta(rs).
+      int64_t weight = info->weight;
+
+      // Scale deltaOffset by weight if needed.
+      Value weightedDeltaOffset = deltaOffset;
+      if (deltaOffset && weight != 1) {
+        if (auto co = getConstantIntValue(deltaOffset); co && *co != 0) {
+          builder.setInsertionPoint(forOp);
+          weightedDeltaOffset = builder.create<arith::ConstantIndexOp>(
+              forOp.getLoc(), *co * weight);
+        } else if (auto co = getConstantIntValue(deltaOffset); co && *co == 0) {
+          // 0 * weight = 0, keep as is.
+        } else {
+          builder.setInsertionPoint(forOp);
+          Value weightVal =
+              builder.create<arith::ConstantIndexOp>(forOp.getLoc(), weight);
+          weightedDeltaOffset =
+              builder.create<arith::MulIOp>(forOp.getLoc(), deltaOffset, weightVal);
+        }
+      }
+
       Value stride;
-      if (deltaBase && deltaOffset) {
+      if (deltaBase && weightedDeltaOffset) {
         auto cb = getConstantIntValue(deltaBase);
-        auto co = getConstantIntValue(deltaOffset);
+        auto co = getConstantIntValue(weightedDeltaOffset);
         if (cb && *cb == 0)
-          stride = deltaOffset;
+          stride = weightedDeltaOffset;
         else if (co && *co == 0)
           stride = deltaBase;
         else {
           builder.setInsertionPoint(forOp);
           stride = builder.create<arith::AddIOp>(forOp.getLoc(),
-                                                  deltaBase, deltaOffset);
+                                                  deltaBase, weightedDeltaOffset);
         }
       } else if (deltaBase) {
         stride = deltaBase;
       } else {
-        stride = deltaOffset;
+        stride = weightedDeltaOffset;
       }
 
       if (!stride)
         continue;
 
-      // Stride must be loop-invariant.
-      if (!forOp.isDefinedOutsideOfLoop(stride))
+      // Skip zero stride.
+      if (auto constTotal = getConstantIntValue(stride);
+          constTotal && *constTotal == 0)
         continue;
 
-      // Compute initial pointer: base + offset_at_iter0.
-      Value initPtr = computeInitialPtr(base, offset, forOp, builder);
+      // stride_new = stride / weight.
+      // weight=1: stride_new = stride (always valid).
+      // weight>1: stride must be a constant divisible by weight.
+      Value strideNew;
+      if (weight != 1) {
+        auto constTotal = getConstantIntValue(stride);
+        if (!constTotal || *constTotal % weight != 0)
+          continue;
+        builder.setInsertionPoint(forOp);
+        strideNew = builder.create<arith::ConstantIntOp>(
+            forOp.getLoc(), *constTotal / weight, 16);
+      } else {
+        strideNew = stride;
+      }
+
+      // Stride must be loop-invariant.
+      if (!forOp.isDefinedOutsideOfLoop(strideNew))
+        continue;
+
+      Value initPtr =
+          computeInitialPtr(base, strideOperand, weight, forOp, builder);
       if (!initPtr)
         continue;
 
-      rewrites.push_back({&op, base, offset, stride, initPtr});
+      rewrites.push_back({&op, base, strideNew, initPtr});
     }
 
     if (!rewrites.empty())
