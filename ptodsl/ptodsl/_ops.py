@@ -170,6 +170,28 @@ def _require_explicit_mode(surface: str):
         raise explicit_mode_required_with_context_error(surface, current_module_spec)
 
 
+def _current_target_arch():
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        return None
+    if session is None:
+        return None
+    current_module_spec = getattr(session, "current_function_module_spec", session.module_spec)
+    return getattr(current_module_spec, "target_arch", None)
+
+
+def _require_target_arch(surface: str, allowed: set[str]):
+    target = _current_target_arch()
+    if target is None:
+        return
+    normalized = str(target).lower()
+    if normalized not in allowed:
+        expected = ", ".join(f"target='{name}'" for name in sorted(allowed))
+        raise ValueError(f"{surface} is only supported for {expected}; got target={target!r}")
+
+
 def _require_simt_subkernel(surface: str):
     try:
         from ._tracing.active import current_session
@@ -2962,6 +2984,16 @@ def _coerce_tile_scalar_operand(tile, scalar, *, context: str):
 def tadd(src0, src1, dst):
     """``pto.tadd ins(src0, src1) outs(dst)``."""
     _pto.tadd(
+        unwrap_surface_value(src0),
+        unwrap_surface_value(src1),
+        unwrap_surface_value(dst),
+    )
+
+
+def taddrelu(src0, src1, dst):
+    """``pto.taddrelu ins(src0, src1) outs(dst)``."""
+    _require_target_arch("pto.tile.addrelu", {"a2", "a3"})
+    _pto.taddrelu(
         unwrap_surface_value(src0),
         unwrap_surface_value(src1),
         unwrap_surface_value(dst),
@@ -6011,7 +6043,7 @@ __all__ = [
     "tload", "tstore", "tmov", "tinsert",
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
-    "tadd", "tsub", "tmul", "tdiv", "tmax", "tmin",
+    "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
     "tadds", "tsubs", "tmuls", "tdivs", "tmaxs", "tmins",
     "texp", "tlog", "tsqrt", "trsqrt", "trecip", "tabs", "tneg",
     "trelu", "tlrelu",
