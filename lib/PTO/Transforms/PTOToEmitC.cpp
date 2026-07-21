@@ -517,7 +517,6 @@ static std::string sanitizeIdentifier(std::string s) {
 // Mangle a scalar-storable field type into a C++-identifier-safe token. The
 // encoding is injective, so distinct struct types never collide on a name:
 //   - scalar:        the MLIR type spelling (f16, bf16, i8, si32, ui32, ...)
-//   - local_array:   arr<d0>_<d1>_..._<elem>
 //   - nested struct: S_<f0>_<f1>_..._E  (S/E delimiters disambiguate nesting)
 //
 // Scalars are mangled from the MLIR spelling rather than from
@@ -528,12 +527,6 @@ static std::string sanitizeIdentifier(std::string s) {
 // pure identifier characters, so this mangling is collision-free by
 // construction.
 static std::string mangleStructFieldType(Type t) {
-  if (auto arr = dyn_cast<pto::LocalArrayType>(t)) {
-    std::string s = "arr";
-    for (int64_t d : arr.getShape())
-      s += std::to_string(d) + "_";
-    return s + mangleStructFieldType(arr.getElementType());
-  }
   if (auto st = dyn_cast<pto::StructType>(t)) {
     std::string s = "S";
     for (Type f : st.getFieldTypes())
@@ -557,17 +550,9 @@ static std::string getStructTypeName(pto::StructType st) {
   return s;
 }
 
-// Render a single struct field declaration `<cppType> <name><dims>;`. Array
-// fields put their dimensions after the name (C declarator syntax).
+// Render a single struct field declaration `<cppType> <name>;`.
 static std::string renderStructFieldDecl(Type fieldTy,
                                          const std::string &name) {
-  if (auto arr = dyn_cast<pto::LocalArrayType>(fieldTy)) {
-    std::string dims;
-    for (int64_t d : arr.getShape())
-      dims += "[" + std::to_string(d) + "]";
-    return getEmitCScalarTypeToken(arr.getElementType()) + " " + name + dims +
-           ";";
-  }
   if (auto st = dyn_cast<pto::StructType>(fieldTy))
     return getStructTypeName(st) + " " + name + ";";
   return getEmitCScalarTypeToken(fieldTy) + " " + name + ";";
@@ -987,8 +972,12 @@ public:
     // !pto.struct<...> -> !emitc.opaque<"PtoStruct_...">. The matching C++
     // `struct PtoStruct_... { ... };` definition is emitted at file scope by
     // the pass (see runOnOperation), keyed on the same content-derived name.
+    // A struct stays an lvalue: emitc.member requires an lvalue operand, so
+    // carrying the value form would force a copy out of the variable on every
+    // declare and leave field writes updating the copy instead of the struct.
     addConversion([Ctx](pto::StructType type) -> Type {
-      return emitc::OpaqueType::get(Ctx, getStructTypeName(type));
+      return emitc::LValueType::get(
+          emitc::OpaqueType::get(Ctx, getStructTypeName(type)));
     });
 
     addConversion([Ctx](pto::AsyncSessionType type) -> Type {
@@ -8064,19 +8053,32 @@ struct PTODeclareStructToEmitC
     if (!structTy)
       return rewriter.notifyMatchFailure(op, "failed to map !pto.struct type");
 
-    auto var = rewriter
-                   .create<emitc::VariableOp>(
-                       op.getLoc(), structTy,
-                       emitc::OpaqueAttr::get(rewriter.getContext(), ""))
-                   .getResult();
-    rewriter.replaceOp(op, var);
+    // structTy is already an !emitc.lvalue, so this is the variable itself and
+    // needs no load: field access has to name the variable, not a copy.
+    rewriter.replaceOpWithNewOp<emitc::VariableOp>(
+        op, getEmitCVariableResultType(structTy),
+        emitc::OpaqueAttr::get(rewriter.getContext(), ""));
     return success();
   }
 };
 
+// The EmitC *value* type of a struct field, i.e. never an lvalue. A nested
+// struct converts to an lvalue (see the type converter), which has to be peeled
+// here so the member result below wraps it exactly once.
+static Type getStructFieldValueType(const TypeConverter *tc, Type fieldPtoTy) {
+  Type converted = tc->convertType(fieldPtoTy);
+  if (auto lvalueTy = dyn_cast_or_null<emitc::LValueType>(converted))
+    return lvalueTy.getValueType();
+  return converted;
+}
+
 // Build the `s.fA.fB...` member-access chain for a constant struct path and
-// return the final emitc value (a deferred lvalue expression). `rootPtoTy` is
-// the PTO struct type, walked in parallel to look up field types per step.
+// return the final lvalue. `rootPtoTy` is the PTO struct type, walked in
+// parallel to look up field types per step.
+//
+// Every step is an `emitc.member`, which requires an lvalue operand and yields
+// an lvalue result, so the chain stays in lvalue form throughout — that is what
+// makes a write land in the struct rather than in a copy of it.
 static FailureOr<Value> buildStructMemberChain(
     ConversionPatternRewriter &rewriter, Location loc, const TypeConverter *tc,
     Value root, mlir::pto::StructType rootPtoTy, llvm::ArrayRef<int64_t> path) {
@@ -8085,12 +8087,12 @@ static FailureOr<Value> buildStructMemberChain(
   for (int64_t idx : path) {
     auto st = cast<mlir::pto::StructType>(curPtoTy);
     Type fieldPtoTy = st.getFieldType(static_cast<unsigned>(idx));
-    Type fieldTy = tc->convertType(fieldPtoTy);
+    Type fieldTy = getStructFieldValueType(tc, fieldPtoTy);
     if (!fieldTy)
       return failure();
     cur = rewriter
               .create<emitc::MemberOp>(
-                  loc, fieldTy,
+                  loc, emitc::LValueType::get(fieldTy),
                   rewriter.getStringAttr("f" + std::to_string(idx)), cur)
               .getResult();
     curPtoTy = fieldPtoTy;
@@ -8098,11 +8100,11 @@ static FailureOr<Value> buildStructMemberChain(
   return cur;
 }
 
-// pto.struct_get %s[i, j, ...] -> `s.fi.fj...`, snapshotting a scalar result so
-// the SSA value survives later mutation of the struct (mirrors
-// pto.local_array_get). An aggregate result (nested array / struct) passes
-// through as the member lvalue, so a nested array field can then be indexed by
-// pto.local_array_get / pto.local_array_set.
+// pto.struct_get %s[i, j, ...] -> `s.fi.fj...`. The verifier guarantees the path
+// ends on a scalar, so the member lvalue is read with emitc.load. That load is
+// materialized into its own C++ variable, which is what gives the SSA result
+// value semantics: it keeps its value even if a later pto.struct_set writes the
+// same field (mirrors pto.local_array_get).
 struct PTOStructGetToEmitC
     : public OpConversionPattern<mlir::pto::StructGetOp> {
   using OpConversionPattern<mlir::pto::StructGetOp>::OpConversionPattern;
@@ -8119,18 +8121,7 @@ struct PTOStructGetToEmitC
     if (failed(member))
       return rewriter.notifyMatchFailure(op, "failed to map struct field type");
 
-    if (op.getValue().getType().isIntOrFloat()) {
-      auto snapshot =
-          rewriter
-              .create<emitc::VariableOp>(
-                  op.getLoc(), resultTy,
-                  emitc::OpaqueAttr::get(rewriter.getContext(), ""))
-              .getResult();
-      rewriter.create<emitc::AssignOp>(op.getLoc(), snapshot, *member);
-      rewriter.replaceOp(op, snapshot);
-    } else {
-      rewriter.replaceOp(op, *member);
-    }
+    rewriter.replaceOpWithNewOp<emitc::LoadOp>(op, resultTy, *member);
     return success();
   }
 };

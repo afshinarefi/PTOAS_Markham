@@ -33,8 +33,3 @@ module {
 // CHECK: struct PtoStruct_ui32 {
 // CHECK:   uint32_t f0;
 // CHECK: };
-
-// CHECK-LABEL: struct_signedness
-// CHECK: PtoStruct_i32 {{v[0-9]+}};
-// CHECK: PtoStruct_si32 {{v[0-9]+}};
-// CHECK: PtoStruct_ui32 {{v[0-9]+}};

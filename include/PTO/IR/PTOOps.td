@@ -2661,16 +2661,14 @@ def LocalArraySetOp : PTO_Op<"local_array_set"> {
 // host C++ compiler at codegen time, never by PTO memory planning or
 // `pto.pointer_cast`. Field positions are constant (struct semantics), so
 // `get` / `set` carry a constant `path` of field indices that may descend
-// through nested structs. Dynamic indexing of a nested `!pto.local_array` field
-// is left to `pto.local_array_get` / `pto.local_array_set` after obtaining the
-// array field with `pto.struct_get` — exactly the LLVM split between constant
-// struct GEPs and dynamic array indexing.
+// through nested structs. The path always ends at a scalar; a nested struct is
+// traversed by a longer path, never handed back as a value.
 
 def DeclareStructOp : PTO_Op<"declare_struct"> {
   let summary = "Declare a stack-local heterogeneous aggregate";
   let description = [{
     Lowers to a plain C++ stack variable like `PtoStruct_X s;`. Field types are
-    restricted to scalars (integer / float), nested `!pto.local_array`, or
+    restricted to scalars (integers of width 8/16/32/64, f16/bf16/f32/f64) or a
     nested `!pto.struct`.
 
     This op does not participate in PTO memory planning. The resulting struct's
@@ -2689,13 +2687,12 @@ def StructGetOp : PTO_Op<"struct_get"> {
   let description = [{
     Reads the field reached by following the constant `path` of field indices
     from the struct, descending through nested structs. Lowers to `s.fA.fB...`
-    member access. A scalar result is snapshotted into a fresh variable so the
-    SSA value keeps its value if the struct is mutated later (mirrors
-    `pto.local_array_get`); an aggregate result (nested array / struct) is the
-    member-access lvalue itself, so a nested array field can be fed to
-    `pto.local_array_get` / `pto.local_array_set`.
+    member access, read into a fresh variable so the SSA value keeps its value
+    if the struct is mutated later (mirrors `pto.local_array_get`).
 
-    The result type must equal the type of the field at the end of `path`.
+    The path must end at a scalar field, and the result type must equal that
+    field's type. A path stopping on a nested `!pto.struct` is rejected —
+    extend it to reach a scalar inside.
   }];
 
   let arguments = (ins
@@ -2717,10 +2714,11 @@ def StructSetOp : PTO_Op<"struct_set"> {
   let description = [{
     Writes `value` into the field reached by following the constant `path` of
     field indices, descending through nested structs. Lowers to
-    `s.fA.fB... = value;`. The value type must equal the type of the field at
-    the end of `path`. The terminal field must be copy-assignable in C++, so a
-    `!pto.local_array` terminal is rejected — obtain the array with
-    `pto.struct_get` and write elements with `pto.local_array_set` instead.
+    `s.fA.fB... = value;`.
+
+    The path must end at a scalar field, and the value type must equal that
+    field's type. A path stopping on a nested `!pto.struct` is rejected —
+    extend it to reach a scalar inside.
   }];
 
   let arguments = (ins

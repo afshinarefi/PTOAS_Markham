@@ -2674,10 +2674,25 @@ static LogicalResult walkStructPath(Operation *op, mlir::pto::StructType root,
   return success();
 }
 
+// Both accessors bottom out at a scalar. A path ending on a nested !pto.struct
+// is rejected: the member chain lowers to `emitc.member`, which yields an
+// lvalue, and handing a whole aggregate back as an SSA value would mean copying
+// it out of the struct — so reaching into a nested struct is spelled as a longer
+// path instead.
+static LogicalResult verifyStructLeafIsScalar(Operation *op, Type fieldTy) {
+  if (!fieldTy.isIntOrFloat())
+    return op->emitOpError()
+           << "struct path must end at a scalar field, but ends at " << fieldTy
+           << "; extend the path to reach a scalar inside it";
+  return success();
+}
+
 LogicalResult mlir::pto::StructGetOp::verify() {
   Type fieldTy;
   if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
                             fieldTy)))
+    return failure();
+  if (failed(verifyStructLeafIsScalar(getOperation(), fieldTy)))
     return failure();
   if (getValue().getType() != fieldTy)
     return emitOpError() << "result type " << getValue().getType()
@@ -2691,16 +2706,12 @@ LogicalResult mlir::pto::StructSetOp::verify() {
   if (failed(walkStructPath(getOperation(), getS().getType(), getPath(),
                             fieldTy)))
     return failure();
+  if (failed(verifyStructLeafIsScalar(getOperation(), fieldTy)))
+    return failure();
   if (getValue().getType() != fieldTy)
     return emitOpError() << "value type " << getValue().getType()
                          << " does not match field type " << fieldTy
                          << " at the given path";
-  // A C array cannot be copy-assigned, so writing a whole local_array field is
-  // not expressible. Steer the user to the get-then-element-set idiom instead.
-  if (isa<mlir::pto::LocalArrayType>(fieldTy))
-    return emitOpError()
-           << "cannot assign a !pto.local_array field directly; obtain it with "
-              "pto.struct_get, then write elements with pto.local_array_set";
   return success();
 }
 
@@ -13334,14 +13345,13 @@ static bool isStructScalar(Type t) {
   return false;
 }
 
+// A field is either such a scalar or a nested !pto.struct. !pto.local_array is
+// deliberately NOT allowed: a field is reached with `emitc.member`, whose result
+// must be an `!emitc.lvalue`, and `!emitc.lvalue` cannot wrap `!emitc.array`
+// (the type an array field lowers to). There is no way to spell the access, so
+// the restriction is enforced here rather than failing later in the backend.
 static bool isStructStorable(Type t) {
-  if (isStructScalar(t))
-    return true;
-  // A nested array is rendered as `<elem> fN[d0][d1];`, so its element type has
-  // to be exactly nameable too.
-  if (auto arr = llvm::dyn_cast<LocalArrayType>(t))
-    return isStructScalar(arr.getElementType());
-  return llvm::isa<StructType>(t);
+  return isStructScalar(t) || llvm::isa<StructType>(t);
 }
 
 Type StructType::parse(AsmParser &parser) {
@@ -13381,8 +13391,9 @@ LogicalResult StructType::verify(
       return emitError()
              << "'!pto.struct' field " << i << " type " << f
              << " is not scalar-storable; only i8/i16/i32/i64 (signed, "
-                "unsigned or signless), f16/bf16/f32/f64, a !pto.local_array "
-                "of those, or a nested !pto.struct are allowed (tile_buf / "
+                "unsigned or signless), f16/bf16/f32/f64, or a nested "
+                "!pto.struct are allowed (!pto.local_array cannot be a field "
+                "because emitc.member cannot yield an array lvalue; tile_buf / "
                 "tensor_view belong to the vec/cube world)";
   }
   return success();

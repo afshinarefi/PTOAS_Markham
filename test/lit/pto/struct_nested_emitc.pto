@@ -8,24 +8,21 @@
 
 // RUN: ptoas %s 2>&1 | FileCheck %s
 
-// Nested aggregate: a struct whose first field is a nested struct and whose
-// second field is a local_array.
-//   - struct_set with a 2-level path writes through the nested struct.
-//   - struct_get of the array field yields the array lvalue, which is then
-//     indexed dynamically with local_array_set / local_array_get.
+// Nested aggregate: a struct whose first field is itself a struct. A field
+// inside the nested struct is reached with a 2-level path, which lowers to a
+// chained `s.f0.f0` member access rather than to a copy of the inner struct.
 
 module {
-  func.func @struct_nested(%vf : f32, %i : index) {
-    %s = pto.declare_struct
-      -> !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
+  func.func @struct_nested(%vf : f32, %vi : i16) {
+    %s = pto.declare_struct -> !pto.struct<!pto.struct<f32, i8>, i16>
     pto.struct_set %s[0, 0], %vf
-      : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>, f32
-    %arr = pto.struct_get %s[1]
-      : !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
-      -> !pto.local_array<4xf32>
-    pto.local_array_set %arr[%i], %vf : !pto.local_array<4xf32>, f32
-    %g = pto.local_array_get %arr[%i] : !pto.local_array<4xf32> -> f32
-    pto.local_array_set %arr[%i], %g : !pto.local_array<4xf32>, f32
+      : !pto.struct<!pto.struct<f32, i8>, i16>, f32
+    pto.struct_set %s[1], %vi
+      : !pto.struct<!pto.struct<f32, i8>, i16>, i16
+    %g = pto.struct_get %s[0, 0]
+      : !pto.struct<!pto.struct<f32, i8>, i16> -> f32
+    pto.struct_set %s[0, 0], %g
+      : !pto.struct<!pto.struct<f32, i8>, i16>, f32
     return
   }
 }
@@ -35,15 +32,14 @@ module {
 // CHECK:   float f0;
 // CHECK:   int8_t f1;
 // CHECK: };
-// CHECK: struct PtoStruct_S_f32_i8_E_arr4_f32 {
+// CHECK: struct PtoStruct_S_f32_i8_E_i16 {
 // CHECK:   PtoStruct_f32_i8 f0;
-// CHECK:   float f1[4];
+// CHECK:   int16_t f1;
 // CHECK: };
 
 // CHECK-LABEL: struct_nested
-// CHECK: PtoStruct_S_f32_i8_E_arr4_f32 [[S:v[0-9]+]];
+// CHECK: PtoStruct_S_f32_i8_E_i16 [[S:v[0-9]+]];
 // CHECK: [[S]].f0.f0 = {{v[0-9]+}};
-// CHECK: [[S]].f1[{{v[0-9]+}}] = {{v[0-9]+}};
-// CHECK: float [[G:v[0-9]+]];
-// CHECK: [[G]] = [[S]].f1[{{v[0-9]+}}];
-// CHECK: [[S]].f1[{{v[0-9]+}}] = [[G]];
+// CHECK: [[S]].f1 = {{v[0-9]+}};
+// CHECK: float [[G:v[0-9]+]] = [[S]].f0.f0;
+// CHECK: [[S]].f0.f0 = [[G]];

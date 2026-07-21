@@ -274,19 +274,25 @@ positionally numbered `f0, f1, ...`, matching an LLVM literal struct.
 
 | Parameter | Type | Constraints |
 |-----------|------|-------------|
-| `fieldTypes` (`T0..Tn-1`) | `i8`/`i16`/`i32`/`i64` (signed, unsigned or signless), `f16`/`bf16`/`f32`/`f64`, a `!pto.local_array` of those, or a nested `!pto.struct` | At least one field; recursively scalar-storable |
+| `fieldTypes` (`T0..Tn-1`) | `i8`/`i16`/`i32`/`i64` (signed, unsigned or signless), `f16`/`bf16`/`f32`/`f64`, or a nested `!pto.struct` | At least one field; recursively scalar-storable |
 
 **Constraints (enforced by the type verifier):**
 
 - At least one field
 - Each field is *scalar-storable*: an integer of width 8/16/32/64, one of
-  `f16`/`bf16`/`f32`/`f64`, a nested `!pto.local_array` whose element type is
-  one of those, or a nested `!pto.struct`
+  `f16`/`bf16`/`f32`/`f64`, or a nested `!pto.struct`
 
 A scalar field must map onto a C++ scalar the backend can name exactly. Integer
 widths with no C++ spelling (`i1`, `i24`, ...) and the packed low-precision
 vec/cube formats (`f8`/`f4` variants) are therefore **rejected**: emitting them
 would silently widen or narrow the field in the generated C++.
+
+**`!pto.local_array` is not a valid field type.** A field is reached with
+`emitc.member`, whose result must be an `!emitc.lvalue`, and `!emitc.lvalue`
+cannot wrap the `!emitc.array` that an array field lowers to. There is no way to
+spell the access, so the type verifier rejects it rather than letting the
+backend fail later. Use a nested `!pto.struct` of scalars, or keep the array as
+a separate `!pto.declare_local_array` value alongside the struct.
 
 **Disjoint from tile-buf world.** Vec/cube types (`tile_buf`, `tensor_view`,
 partition view) and other handle types are **rejected** as fields. This keeps
@@ -295,9 +301,9 @@ the scalar struct world separate from the fractal/layout world, exactly like
 
 **Syntax:**
 ```mlir
-!pto.struct<f16, i8>                                 // { half f0; int8_t f1; };
-!pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
-  // { PtoStruct_f32_i8 f0; float f1[4]; };
+!pto.struct<f16, i8>                          // { half f0; int8_t f1; };
+!pto.struct<!pto.struct<f32, i8>, i16>
+  // { PtoStruct_f32_i8 f0; int16_t f1; };
 ```
 
 **Generated type name.** The C++ name is derived from the MLIR type spelling of
@@ -313,10 +319,12 @@ collide on one name — mangling from the C++ token instead would give `i32` and
 
 Field positions in `get` / `set` are a constant `path` of indices that may
 descend through nested structs (like LLVM `extractvalue` / `insertvalue`).
-**Dynamic** indexing of a nested `!pto.local_array` field is *not* part of the
-path: obtain the array with `pto.struct_get`, then index it with
-`pto.local_array_get` / `pto.local_array_set` — the same split LLVM makes
-between constant struct GEPs and dynamic array indexing.
+
+The path must **end at a scalar**. A path that stops on a nested `!pto.struct`
+is rejected: the member chain lowers to `emitc.member`, which yields an lvalue,
+and returning a whole aggregate as an SSA value would copy it out of the parent
+struct — so a field inside a nested struct is reached with a longer path
+(`%s[0, 1]`) rather than by first getting the inner struct.
 
 ---
 
