@@ -274,13 +274,19 @@ positionally numbered `f0, f1, ...`, matching an LLVM literal struct.
 
 | Parameter | Type | Constraints |
 |-----------|------|-------------|
-| `fieldTypes` (`T0..Tn-1`) | scalar `int`/`float`, `!pto.local_array`, or nested `!pto.struct` | At least one field; recursively scalar-storable |
+| `fieldTypes` (`T0..Tn-1`) | `i8`/`i16`/`i32`/`i64` (signed, unsigned or signless), `f16`/`bf16`/`f32`/`f64`, a `!pto.local_array` of those, or a nested `!pto.struct` | At least one field; recursively scalar-storable |
 
 **Constraints (enforced by the type verifier):**
 
 - At least one field
-- Each field is *scalar-storable*: a scalar integer/float, a nested
-  `!pto.local_array`, or a nested `!pto.struct`
+- Each field is *scalar-storable*: an integer of width 8/16/32/64, one of
+  `f16`/`bf16`/`f32`/`f64`, a nested `!pto.local_array` whose element type is
+  one of those, or a nested `!pto.struct`
+
+A scalar field must map onto a C++ scalar the backend can name exactly. Integer
+widths with no C++ spelling (`i1`, `i24`, ...) and the packed low-precision
+vec/cube formats (`f8`/`f4` variants) are therefore **rejected**: emitting them
+would silently widen or narrow the field in the generated C++.
 
 **Disjoint from tile-buf world.** Vec/cube types (`tile_buf`, `tensor_view`,
 partition view) and other handle types are **rejected** as fields. This keeps
@@ -291,8 +297,14 @@ the scalar struct world separate from the fractal/layout world, exactly like
 ```mlir
 !pto.struct<f16, i8>                                 // { half f0; int8_t f1; };
 !pto.struct<!pto.struct<f32, i8>, !pto.local_array<4xf32>>
-  // { PtoStruct_float_int8_t f0; float f1[4]; };
+  // { PtoStruct_f32_i8 f0; float f1[4]; };
 ```
+
+**Generated type name.** The C++ name is derived from the MLIR type spelling of
+the fields (`!pto.struct<f16, i8>` → `PtoStruct_f16_i8`), not from their C++
+spellings. That mapping is injective, so two distinct `!pto.struct` types never
+collide on one name — mangling from the C++ token instead would give `i32` and
+`si32` (both `int32_t`) the same name and emit a duplicate `struct` definition.
 
 **Associated ops** (see Section 4 — mirrors the `local_array` triad):
 - `pto.declare_struct` — declare
@@ -10471,7 +10483,7 @@ Section 2.7 for type-level constraints.
 **Basic Example:**
 
 ```mlir
-%s = pto.declare_struct -> !pto.struct<f16, i8>   // PtoStruct_half_int8_t s;
+%s = pto.declare_struct -> !pto.struct<f16, i8>   // PtoStruct_f16_i8 s;
 ```
 
 ---

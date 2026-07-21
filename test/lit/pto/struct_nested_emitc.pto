@@ -31,17 +31,17 @@ module {
 }
 
 // Nested struct is defined before the struct that embeds it.
-// CHECK: struct PtoStruct_float_int8_t {
+// CHECK: struct PtoStruct_f32_i8 {
 // CHECK:   float f0;
 // CHECK:   int8_t f1;
 // CHECK: };
-// CHECK: struct PtoStruct_S_float_int8_t_E_arr4_float {
-// CHECK:   PtoStruct_float_int8_t f0;
+// CHECK: struct PtoStruct_S_f32_i8_E_arr4_f32 {
+// CHECK:   PtoStruct_f32_i8 f0;
 // CHECK:   float f1[4];
 // CHECK: };
 
 // CHECK-LABEL: struct_nested
-// CHECK: PtoStruct_S_float_int8_t_E_arr4_float [[S:v[0-9]+]];
+// CHECK: PtoStruct_S_f32_i8_E_arr4_f32 [[S:v[0-9]+]];
 // CHECK: [[S]].f0.f0 = {{v[0-9]+}};
 // CHECK: [[S]].f1[{{v[0-9]+}}] = {{v[0-9]+}};
 // CHECK: float [[G:v[0-9]+]];

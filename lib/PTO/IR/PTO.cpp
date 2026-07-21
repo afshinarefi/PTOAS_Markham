@@ -13318,8 +13318,30 @@ LogicalResult LocalArrayType::verify(
 // excludes the vec/cube types (tile_buf / tensor_view / partition view) and any
 // other handle type, keeping the scalar struct world disjoint from the
 // fractal/layout world.
+
+// A struct field's scalar type must map onto a C++ scalar that the backend can
+// name exactly: integers of width 8/16/32/64 and f16/bf16/f32/f64. Widths the
+// backend has no spelling for (i1, i24, ...) and the packed low-precision
+// vec/cube formats (f8/f4 variants) would otherwise be emitted as `float`,
+// silently changing the field's width and semantics, so reject them here.
+static bool isStructScalar(Type t) {
+  if (llvm::isa<Float16Type, BFloat16Type, Float32Type, Float64Type>(t))
+    return true;
+  if (auto intTy = llvm::dyn_cast<IntegerType>(t)) {
+    unsigned w = intTy.getWidth();
+    return w == 8 || w == 16 || w == 32 || w == 64;
+  }
+  return false;
+}
+
 static bool isStructStorable(Type t) {
-  return t.isIntOrFloat() || llvm::isa<LocalArrayType, StructType>(t);
+  if (isStructScalar(t))
+    return true;
+  // A nested array is rendered as `<elem> fN[d0][d1];`, so its element type has
+  // to be exactly nameable too.
+  if (auto arr = llvm::dyn_cast<LocalArrayType>(t))
+    return isStructScalar(arr.getElementType());
+  return llvm::isa<StructType>(t);
 }
 
 Type StructType::parse(AsmParser &parser) {
@@ -13358,9 +13380,10 @@ LogicalResult StructType::verify(
     if (!isStructStorable(f))
       return emitError()
              << "'!pto.struct' field " << i << " type " << f
-             << " is not scalar-storable; only scalar integer/float, "
-                "!pto.local_array, or nested !pto.struct are allowed "
-                "(tile_buf / tensor_view belong to the vec/cube world)";
+             << " is not scalar-storable; only i8/i16/i32/i64 (signed, "
+                "unsigned or signless), f16/bf16/f32/f64, a !pto.local_array "
+                "of those, or a nested !pto.struct are allowed (tile_buf / "
+                "tensor_view belong to the vec/cube world)";
   }
   return success();
 }
@@ -18368,7 +18391,7 @@ static ParseResult parseStructPath(OpAsmParser &parser,
     return failure();
   if (failed(parser.parseOptionalRSquare())) {
     do {
-      int64_t idx;
+      int64_t idx = 0;
       if (parser.parseInteger(idx))
         return failure();
       indices.push_back(idx);

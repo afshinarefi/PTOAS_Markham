@@ -516,9 +516,17 @@ static std::string sanitizeIdentifier(std::string s) {
 
 // Mangle a scalar-storable field type into a C++-identifier-safe token. The
 // encoding is injective, so distinct struct types never collide on a name:
-//   - scalar:        the emitC scalar token (half, int32_t, ...)
+//   - scalar:        the MLIR type spelling (f16, bf16, i8, si32, ui32, ...)
 //   - local_array:   arr<d0>_<d1>_..._<elem>
 //   - nested struct: S_<f0>_<f1>_..._E  (S/E delimiters disambiguate nesting)
+//
+// Scalars are mangled from the MLIR spelling rather than from
+// getEmitCScalarTypeToken(): that token is many-to-one (i32 and si32 both give
+// "int32_t"), which would emit two `struct` definitions under one name and
+// break the generated C++ with a redefinition. MLIR type printing is injective,
+// and the struct verifier restricts fields to types whose spellings are already
+// pure identifier characters, so this mangling is collision-free by
+// construction.
 static std::string mangleStructFieldType(Type t) {
   if (auto arr = dyn_cast<pto::LocalArrayType>(t)) {
     std::string s = "arr";
@@ -532,13 +540,16 @@ static std::string mangleStructFieldType(Type t) {
       s += "_" + mangleStructFieldType(f);
     return s + "_E";
   }
-  return sanitizeIdentifier(getEmitCScalarTypeToken(t));
+  std::string spelling;
+  llvm::raw_string_ostream os(spelling);
+  t.print(os);
+  return sanitizeIdentifier(os.str());
 }
 
 // Stable, content-derived C++ type name for a !pto.struct, e.g.
-// !pto.struct<f16, i8> -> "PtoStruct_half_int8_t". A pure function of the type,
-// so the type converter and the file-scope definition emitter agree without
-// any shared state.
+// !pto.struct<f16, i8> -> "PtoStruct_f16_i8". A pure function of the type, so
+// the type converter and the file-scope definition emitter agree without any
+// shared state.
 static std::string getStructTypeName(pto::StructType st) {
   std::string s = "PtoStruct";
   for (Type f : st.getFieldTypes())

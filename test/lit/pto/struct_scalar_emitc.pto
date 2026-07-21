@@ -24,13 +24,13 @@ module {
 }
 
 // The struct definition is emitted at file scope.
-// CHECK: struct PtoStruct_half_int8_t {
+// CHECK: struct PtoStruct_f16_i8 {
 // CHECK:   half f0;
 // CHECK:   int8_t f1;
 // CHECK: };
 
 // CHECK-LABEL: struct_scalar
-// CHECK: PtoStruct_half_int8_t [[S:v[0-9]+]];
+// CHECK: PtoStruct_f16_i8 [[S:v[0-9]+]];
 // CHECK: [[S]].f0 = {{v[0-9]+}};
 // CHECK: [[S]].f1 = {{v[0-9]+}};
 // CHECK: half [[R:v[0-9]+]];
