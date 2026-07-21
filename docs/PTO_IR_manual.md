@@ -340,10 +340,25 @@ func.func @make() -> !pto.struct<f32, i8> {
 } else { ... }
 ```
 
+**A function may not return a `!pto.struct` either**, even one that just passes
+an argument back:
+
+```mlir
+// Rejected: laundering. %r is no longer a pto.declare_struct result, so the
+// per-op check above cannot see that `return %r` publishes the caller's local.
+func.func private @passthrough(%s : !pto.struct<f32, i8>) -> !pto.struct<f32, i8> {
+  return %s : !pto.struct<f32, i8>
+}
+```
+
+A function result is the only place provenance can be laundered, so banning it
+leaves exactly two ways to obtain a struct value — declare it, or receive it as
+an argument. Provenance is then always local and always visible to the verifier.
+
 This costs nothing in expressiveness: `pto.struct_set` mutates in place, so a
 struct never needs to be returned or yielded. Declare it in the outer scope and
-pass it down as a function argument instead — the callee writes through the
-pointer and the caller sees the result.
+pass it **down** as a function argument — the callee writes through the pointer
+and the caller sees the result.
 
 **Generated type name.** The C++ name is derived from the MLIR type spelling of
 the fields (`!pto.struct<f16, i8>` → `PtoStruct_f16_i8`), not from their C++
@@ -10531,9 +10546,13 @@ Section 2.7 for type-level constraints.
 
 - The result must not be passed to a terminator (`func.return`, `scf.yield`,
   ...). The value is a pointer to stack storage owned by the declaring scope, so
-  letting it out would expose the address of storage that is about to die. See
-  [Section 2.7](#27-ptostructt0-t1--tn-1); mutation is in place, so declare the
-  struct in the outer scope and pass it down instead.
+  letting it out would expose the address of storage that is about to die.
+- Relatedly, no function may **return** a `!pto.struct` (checked module-wide),
+  which is what stops a pass-through helper from laundering that address past
+  the per-op check.
+
+  See [Section 2.7](#27-ptostructt0-t1--tn-1); mutation is in place, so declare
+  the struct in the outer scope and pass it down instead.
 
 **Basic Example:**
 

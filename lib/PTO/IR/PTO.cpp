@@ -2890,6 +2890,45 @@ LogicalResult mlir::pto::validatePTOEntryFunctions(ModuleOp module) {
   return success();
 }
 
+// A !pto.struct is a pointer to stack storage, so a function that returns one
+// launders provenance: the value handed back is no longer a pto.declare_struct
+// result, which is all DeclareStructOp::verify() can see. A helper as small as
+//
+//   func.func @passthrough(%s : !pto.struct<...>) -> !pto.struct<...> {
+//     return %s : !pto.struct<...>
+//   }
+//
+// is enough to route a caller's own local straight back out of its frame, past
+// the direct-use check, and into `return passthrough(&local);`.
+//
+// Banning the struct result type closes that off at the only place laundering
+// can happen. Together with the declare-op check (its result may not reach a
+// terminator) it leaves exactly two ways to obtain a struct value: declare it,
+// or receive it as an argument. Provenance is then always local and always
+// visible. Passing structs *down* into helpers is unaffected, and nothing is
+// lost: pto.struct_set mutates in place, so results are never needed.
+LogicalResult mlir::pto::validateStructNeverReturned(ModuleOp module) {
+  if (!module)
+    return success();
+
+  for (auto func : module.getOps<func::FuncOp>()) {
+    for (auto [i, resultTy] :
+         llvm::enumerate(func.getFunctionType().getResults())) {
+      if (!llvm::isa<StructType>(resultTy))
+        continue;
+      return func.emitOpError()
+             << "result " << i << " has type " << resultTy
+             << ", but a stack-local struct must not be returned: the value is "
+                "a pointer into the callee's frame, and returning it (even "
+                "when it merely passes an argument back through) lets a caller "
+                "leak the address of its own local past the escape check; pass "
+                "the struct down as an argument instead (pto.struct_set "
+                "mutates in place, so a result is never needed)";
+    }
+  }
+  return success();
+}
+
 void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
   (void)module;
 }

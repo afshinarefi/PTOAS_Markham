@@ -14593,6 +14593,8 @@ struct EmitPTOManualPass
 
     if (failed(pto::validatePTOEntryFunctions(mop)))
       return signalPassFailure();
+    if (failed(pto::validateStructNeverReturned(mop)))
+      return signalPassFailure();
     pto::annotatePTOEntryFunctions(mop);
 
     // A3 requires explicit FFTS base setup for inter-core sync ops.
