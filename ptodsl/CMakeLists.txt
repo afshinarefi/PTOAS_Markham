@@ -14,23 +14,31 @@ set(PTODSL_PACKAGE_SRC_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/ptodsl")
 set(PTOAS_PY_PACKAGE_SRC_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/ptoas")
+set(TILEOPS_PACKAGE_SRC_DIR
+    "${CMAKE_SOURCE_DIR}/lib/TileOps")
 set(PTODSL_BUILD_ROOT "${CMAKE_BINARY_DIR}/python")
 set(PTODSL_BUILD_PACKAGE_DIR
     "${PTODSL_BUILD_ROOT}/ptodsl")
 set(PTOAS_PY_BUILD_PACKAGE_DIR
     "${PTODSL_BUILD_ROOT}/ptoas")
+set(TILEOPS_BUILD_PACKAGE_DIR
+    "${PTODSL_BUILD_ROOT}/TileOps")
 
 add_custom_target(PTODSLPackage ALL
   COMMAND ${CMAKE_COMMAND} -E make_directory "${PTODSL_BUILD_ROOT}"
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${PTODSL_BUILD_PACKAGE_DIR}"
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${PTOAS_PY_BUILD_PACKAGE_DIR}"
+  COMMAND ${CMAKE_COMMAND} -E remove_directory "${TILEOPS_BUILD_PACKAGE_DIR}"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${PTODSL_PACKAGE_SRC_DIR}"
           "${PTODSL_BUILD_PACKAGE_DIR}"
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           "${PTOAS_PY_PACKAGE_SRC_DIR}"
           "${PTOAS_PY_BUILD_PACKAGE_DIR}"
-  COMMENT "Staging ptodsl package into build/python"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${TILEOPS_PACKAGE_SRC_DIR}"
+          "${TILEOPS_BUILD_PACKAGE_DIR}"
+  COMMENT "Staging ptodsl and TileOps packages into build/python"
   VERBATIM
 )
 
@@ -44,6 +52,14 @@ install(
 
 install(
   DIRECTORY "${PTOAS_PY_PACKAGE_SRC_DIR}"
+  DESTINATION "."
+  COMPONENT PTOAS_Runtime
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
+)
+
+install(
+  DIRECTORY "${TILEOPS_PACKAGE_SRC_DIR}"
   DESTINATION "."
   COMPONENT PTOAS_Runtime
   PATTERN "__pycache__" EXCLUDE

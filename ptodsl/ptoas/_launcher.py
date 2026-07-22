@@ -56,11 +56,9 @@ def main() -> NoReturn:
         )
 
     python_root = package_root.parent if runtime_root.name == "_runtime" else runtime_root
-    tileops_dir = runtime_root / "share" / "ptoas" / "TileOps"
     env = os.environ.copy()
     env["PTOAS_HOME"] = str(runtime_root)
     env["PTOAS_BIN"] = str(binary)
-    env["PTOAS_TILEOPS_DIR"] = str(tileops_dir)
 
     _prepend_env_path(env, "PATH", binary.parent)
     _prepend_env_path(env, "PYTHONPATH", python_root)
@@ -69,10 +67,10 @@ def main() -> NoReturn:
 
     argv = [str(binary)]
     user_args = sys.argv[1:]
-    if not _has_cli_option(user_args, "--tilelang-path"):
-        argv.extend(["--tilelang-path", str(tileops_dir)])
-    if not _has_cli_option(user_args, "--tilelang-pkg-path"):
-        argv.extend(["--tilelang-pkg-path", str(python_root)])
+    if not _has_cli_option(user_args, "--ptodsl-pkg-path"):
+        argv.extend(["--ptodsl-pkg-path", str(python_root)])
+    if not _has_cli_option(user_args, "--tileops-pkg-path"):
+        argv.extend(["--tileops-pkg-path", str(python_root)])
     argv.extend(user_args)
     os.execvpe(str(binary), argv, env)
 

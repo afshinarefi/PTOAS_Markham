@@ -61,6 +61,7 @@ _PTO_INSTALL_DIR = Path(
 )
 _BUILD_DIR = Path(os.environ.get("PTO_BUILD_DIR", str(_REPO / "build")))
 _PTODSL_SOURCE_ROOT = _REPO / "ptodsl"
+_TILEOPS_SOURCE_ROOT = _REPO / "lib"
 _MLIR_PY_PKG = None
 if "MLIR_PYTHON_PACKAGE_DIR" in os.environ:
     _MLIR_PY_PKG = Path(os.environ["MLIR_PYTHON_PACKAGE_DIR"])
@@ -246,9 +247,11 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
         # Prefer the repository PTODSL sources so editable installs pick up
         # local Python edits instead of staged/install-tree copies.
         str(_PTODSL_SOURCE_ROOT),
+        # PTODSL TileLib templates live in the top-level TileOps package.
+        str(_TILEOPS_SOURCE_ROOT),
         # Handwritten Python sources (pto/dialects/pto.py, etc.).
         str(_REPO / "python"),
-        # Installed PTOAS runtime overlay (TileOps/resources when present).
+        # Installed PTOAS runtime overlay.
         str(_PTO_INSTALL_DIR),
         # Generated files (_pto.so, _pto_ops_gen.py) under mlir/ namespace.
         str(_BUILD_DIR / "python"),

@@ -57,6 +57,7 @@ export PTOAS_PYTHON_SITE
 export PTO_PYTHON_ROOT="${PTO_PYTHON_ROOT:-${PTO_INSTALL_DIR}}"
 export PTO_PYTHON_BUILD_ROOT="${PTO_PYTHON_BUILD_ROOT:-${PTO_SOURCE_DIR}/build/python}"
 export PTODSL_PYTHON_ROOT="${PTODSL_PYTHON_ROOT:-${PTO_SOURCE_DIR}/ptodsl}"
+export PTO_TILEOPS_PYTHON_ROOT="${PTO_TILEOPS_PYTHON_ROOT:-${PTO_SOURCE_DIR}/lib}"
 export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 export PTOAS_FLAGS="${PTOAS_FLAGS:-}"
 export PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-${PTO_SOURCE_DIR}/build/output}"
@@ -119,6 +120,7 @@ _ptoas_prepend_path PYTHONPATH "${PTOAS_PYTHON_SITE}"
 _ptoas_prepend_path PYTHONPATH "${MLIR_PYTHON_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTO_PYTHON_BUILD_ROOT}"
 _ptoas_prepend_path PYTHONPATH "${PTODSL_PYTHON_ROOT}"
+_ptoas_prepend_path PYTHONPATH "${PTO_TILEOPS_PYTHON_ROOT}"
 
 _ptoas_prepend_path LD_LIBRARY_PATH "${LLVM_BUILD_DIR}/lib"
 _ptoas_prepend_path LD_LIBRARY_PATH "${PTO_INSTALL_DIR}/lib"

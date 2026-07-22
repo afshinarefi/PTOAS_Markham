@@ -93,9 +93,7 @@ The source-tree build bakes in `$PTOAS_REPO_ROOT/ptodsl` as the package root.
 The `PTODSL_PYTHON_ROOT` environment variable from `scripts/ptoas_env.sh`
 overrides that default. Use `--ptodsl-pkg-path=/path/to/package/root` for an
 explicit command-line override. PTODSL daemon failures are reported as errors
-and never fall back to the TileLang implementation. Use
-`--tile-lib-backend=tilelang` only when explicitly comparing against the legacy
-TileLangDSL template library.
+and never fall back to the TileLang implementation.
 
 `InsertTemplateAttributes` queries legal-candidate metadata before fusion and
 stores an ordered `candidates` array containing only `id`, `name`,

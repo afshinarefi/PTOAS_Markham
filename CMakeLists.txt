@@ -246,7 +246,6 @@ if(PTO_ENABLE_PYTHON_BINDING)
 
   add_subdirectory(python)
   add_subdirectory(ptodsl)
-  add_subdirectory(tilelang-dsl)
 endif()
 
 # =========================================================
@@ -276,25 +275,6 @@ if(BUILD_TESTING)
     )
 
     add_subdirectory(ptodsl/tests)
-    add_test(
-      NAME tilelang_dsl_import
-      COMMAND "${Python3_EXECUTABLE}"
-              "${CMAKE_CURRENT_SOURCE_DIR}/tilelang-dsl/tests/import_tilelang_dsl.py"
-    )
-    set_tests_properties(tilelang_dsl_import PROPERTIES
-      LABELS "PTODSL"
-      ENVIRONMENT "${_pto_python_test_env}"
-    )
-    add_test(
-      NAME tilelang_dsl_unittest
-      COMMAND "${Python3_EXECUTABLE}" -m unittest discover
-              -s "${CMAKE_CURRENT_SOURCE_DIR}/tilelang-dsl/tests"
-              -p "test_*.py"
-    )
-    set_tests_properties(tilelang_dsl_unittest PROPERTIES
-      LABELS "PTODSL"
-      ENVIRONMENT "${_pto_python_test_env}"
-    )
     add_test(
       NAME pto_memory_consistency_bindings
       COMMAND "${Python3_EXECUTABLE}"

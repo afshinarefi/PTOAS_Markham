@@ -22,9 +22,8 @@ class WheelLauncherTests(unittest.TestCase):
         runtime_root = package_root / "_runtime"
         (runtime_root / "bin").mkdir(parents=True, exist_ok=True)
         (runtime_root / "lib").mkdir(parents=True, exist_ok=True)
-        (runtime_root / "share" / "ptoas" / "TileOps").mkdir(parents=True, exist_ok=True)
         (temp_root / "site-packages" / "ptodsl").mkdir(parents=True, exist_ok=True)
-        (temp_root / "site-packages" / "tilelang_dsl").mkdir(parents=True, exist_ok=True)
+        (temp_root / "site-packages" / "TileOps").mkdir(parents=True, exist_ok=True)
         (temp_root / "site-packages" / "mlir").mkdir(parents=True, exist_ok=True)
         (runtime_root / "bin" / "ptoas").write_text("", encoding="utf-8")
         return package_root
@@ -36,8 +35,8 @@ class WheelLauncherTests(unittest.TestCase):
         (package_root).mkdir(parents=True, exist_ok=True)
         (install_root / "bin").mkdir(parents=True, exist_ok=True)
         (install_root / "lib").mkdir(parents=True, exist_ok=True)
-        (install_root / "share" / "ptoas" / "TileOps").mkdir(parents=True, exist_ok=True)
-        (install_root / "tilelang_dsl").mkdir(parents=True, exist_ok=True)
+        (install_root / "ptodsl").mkdir(parents=True, exist_ok=True)
+        (install_root / "TileOps").mkdir(parents=True, exist_ok=True)
         (install_root / "mlir").mkdir(parents=True, exist_ok=True)
         (install_root / "bin" / "ptoas").write_text("", encoding="utf-8")
         return package_root, install_root
@@ -61,18 +60,14 @@ class WheelLauncherTests(unittest.TestCase):
             self.assertEqual(binary, str(package_root / "_runtime" / "bin" / "ptoas"))
             self.assertEqual(argv[:5], [
                 str(package_root / "_runtime" / "bin" / "ptoas"),
-                "--tilelang-path",
-                str(package_root / "_runtime" / "share" / "ptoas" / "TileOps"),
-                "--tilelang-pkg-path",
+                "--ptodsl-pkg-path",
+                str(package_root.parent),
+                "--tileops-pkg-path",
                 str(package_root.parent),
             ])
             self.assertEqual(argv[-1], "--version")
             self.assertEqual(env["PTOAS_HOME"], str(package_root / "_runtime"))
             self.assertEqual(env["PTOAS_BIN"], str(package_root / "_runtime" / "bin" / "ptoas"))
-            self.assertEqual(
-                env["PTOAS_TILEOPS_DIR"],
-                str(package_root / "_runtime" / "share" / "ptoas" / "TileOps"),
-            )
             self.assertTrue(env["PATH"].split(os.pathsep)[0].endswith("ptoas/_runtime/bin"))
             self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(package_root.parent))
 
@@ -103,22 +98,18 @@ class WheelLauncherTests(unittest.TestCase):
             self.assertEqual(binary, str(install_root / "bin" / "ptoas"))
             self.assertEqual(argv[:5], [
                 str(install_root / "bin" / "ptoas"),
-                "--tilelang-path",
-                str(install_root / "share" / "ptoas" / "TileOps"),
-                "--tilelang-pkg-path",
+                "--ptodsl-pkg-path",
+                str(install_root),
+                "--tileops-pkg-path",
                 str(install_root),
             ])
             self.assertEqual(argv[-1], "--version")
             self.assertEqual(env["PTOAS_HOME"], str(install_root))
             self.assertEqual(env["PTOAS_BIN"], str(install_root / "bin" / "ptoas"))
-            self.assertEqual(
-                env["PTOAS_TILEOPS_DIR"],
-                str(install_root / "share" / "ptoas" / "TileOps"),
-            )
             self.assertTrue(env["PATH"].split(os.pathsep)[0].endswith("install/bin"))
             self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(install_root))
 
-    def test_launcher_respects_explicit_tilelang_flags(self):
+    def test_launcher_respects_explicit_ptodsl_flag(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)
             package_root = self._make_runtime_tree(temp_root)
@@ -130,9 +121,10 @@ class WheelLauncherTests(unittest.TestCase):
                 "argv",
                 [
                     "ptoas",
-                    "--tilelang-path=/tmp/custom-tileops",
-                    "--tilelang-pkg-path",
+                    "--ptodsl-pkg-path",
                     "/tmp/custom-python",
+                    "--tileops-pkg-path",
+                    "/tmp/custom-tileops",
                     "--help",
                 ],
             ), mock.patch.object(_launcher.os, "execvpe") as execvpe:
@@ -142,9 +134,10 @@ class WheelLauncherTests(unittest.TestCase):
             _, argv, _ = execvpe.call_args.args
             self.assertEqual(argv, [
                 str(package_root / "_runtime" / "bin" / "ptoas"),
-                "--tilelang-path=/tmp/custom-tileops",
-                "--tilelang-pkg-path",
+                "--ptodsl-pkg-path",
                 "/tmp/custom-python",
+                "--tileops-pkg-path",
+                "/tmp/custom-tileops",
                 "--help",
             ])
 
