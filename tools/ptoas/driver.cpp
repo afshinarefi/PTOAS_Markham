@@ -771,6 +771,10 @@ static LogicalResult emitVPTOLLVMFatobj(
     mlir::pto::PTOASContext &context, llvm::StringRef moduleId,
     llvm::StringRef outputPath);
 
+static LogicalResult emitVPTOLLVMDeviceObject(
+    const mlir::pto::PTOASCompileResult &jobResult,
+    mlir::pto::PTOASContext &context, llvm::StringRef outputPath);
+
 mlir::pto::PTOASContext::PTOASContext(DialectRegistry &registry,
                                       llvm::StringRef outputPath, int argc,
                                       char **argv)
@@ -1153,9 +1157,16 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
   }
 
   std::string moduleId = context.allocModuleId();
-  if (failed(emitVPTOLLVMFatobj(result, context, moduleId,
-                                context.getOutputPath()))) {
-    return failure();
+  if (mlir::pto::emitDeviceObject) {
+    if (failed(emitVPTOLLVMDeviceObject(result, context,
+                                        context.getOutputPath()))) {
+      return failure();
+    }
+  } else {
+    if (failed(emitVPTOLLVMFatobj(result, context, moduleId,
+                                  context.getOutputPath()))) {
+      return failure();
+    }
   }
 
   result.reset();
@@ -1181,6 +1192,24 @@ static LogicalResult emitVPTOLLVMFatobj(
           jobResult.vptoVectorModule.module.get(), stubSource,
           outputPath, moduleId, *toolchain, context.getTempFiles(),
           context.getVFSIMTSizeFixMode(), llvm::errs()))) {
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult emitVPTOLLVMDeviceObject(
+    const mlir::pto::PTOASCompileResult &jobResult, PTOASContext &context,
+    llvm::StringRef outputPath) {
+  const mlir::pto::CANNToolchain *toolchain =
+      context.getToolchain(llvm::errs());
+  if (!toolchain) {
+    return failure();
+  }
+  if (failed(mlir::pto::emitDeviceObjectLLVM(
+          jobResult.vptoCubeModule.module.get(),
+          jobResult.vptoVectorModule.module.get(), outputPath, *toolchain,
+          context.getTempFiles(), context.getVFSIMTSizeFixMode(),
+          llvm::errs()))) {
     return failure();
   }
   return success();
@@ -1339,11 +1368,27 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
   }
 
   if (backendInfo.singleBackend) {
+    if (mlir::pto::emitDeviceObject &&
+        *backendInfo.singleBackend != mlir::pto::PTOBackend::VPTO) {
+      llvm::errs() << "Error: --emit-device-object requires the VPTO backend.\n";
+      return failure();
+    }
+    if (mlir::pto::emitDeviceObject && isUserVisibleIROutputRequested()) {
+      llvm::errs() << "Error: --emit-device-object cannot be combined with "
+                      "debug IR output flags.\n";
+      return failure();
+    }
     backendInfo.requiresToolchain =
         *backendInfo.singleBackend == mlir::pto::PTOBackend::VPTO &&
         !mlir::pto::emitMlirIR && !mlir::pto::emitVPTO &&
         !mlir::pto::emitVPTOLLVMDialect;
     return success();
+  }
+
+  if (mlir::pto::emitDeviceObject) {
+    llvm::errs() << "Error: --emit-device-object does not support mixed "
+                    "pto.backend modules.\n";
+    return failure();
   }
 
   if (mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
