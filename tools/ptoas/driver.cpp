@@ -1238,34 +1238,11 @@ static LogicalResult collectChildJobs(
     SmallVectorImpl<std::unique_ptr<BackendChildJob>> &backendJobs) {
   SmallVector<ModuleOp, mlir::pto::kValue4> children(module.getOps<ModuleOp>());
   for (ModuleOp child : children) {
-    std::optional<mlir::pto::PTOBackend> childBackend;
-    if (failed(parseDriverBackendAttr(child.getOperation(), childBackend))) {
+    if (failed(appendBackendChildJob(module, child, defaultBackend,
+                                     cliBackendOverride, context, fatobjPaths,
+                                     backendJobs))) {
       return failure();
     }
-
-    FailureOr<OwningOpRef<ModuleOp>> jobModuleOr =
-        buildBackendChildCompileUnit(module, child);
-    if (failed(jobModuleOr)) {
-      return failure();
-    }
-    OwningOpRef<ModuleOp> jobModule = std::move(*jobModuleOr);
-    if (llvm::sys::Process::GetEnv("PTOAS_DEBUG_CHILD_UNIT")) {
-      llvm::errs() << "// ----- child compile unit ----- //\n";
-      jobModule->print(llvm::errs());
-      llvm::errs() << "\n";
-    }
-    std::string summary = summarizeMixedChildModule(jobModule.get());
-    mlir::pto::PTOBackend effectiveBackend =
-        cliBackendOverride ? defaultBackend
-                           : childBackend.value_or(defaultBackend);
-    if (effectiveBackend == mlir::pto::PTOBackend::VPTO) {
-      backendJobs.push_back(std::make_unique<VPTOBackendChildJob>(
-          std::move(jobModule), std::move(summary), context.allocModuleId(),
-          fatobjPaths));
-    } else {
-      backendJobs.push_back(std::make_unique<EmitCBackendChildJob>(
-          std::move(jobModule), std::move(summary), fatobjPaths));
-}
   }
   return success();
 }
